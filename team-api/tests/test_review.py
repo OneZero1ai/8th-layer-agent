@@ -156,3 +156,29 @@ class TestReviewStatsDetail:
         resp = client.get("/review/stats", headers=_auth_header(token))
         body = resp.json()
         assert len(body["recent_activity"]) >= 1
+
+    def test_activity_shows_terminal_state_only(self, client: TestClient) -> None:
+        """A reviewed KU should appear once (as approved/rejected), not twice."""
+        token = _login(client)
+        unit = _propose(client)
+        approve_resp = client.post(
+            f"/review/{unit['id']}/approve", headers=_auth_header(token)
+        )
+        assert approve_resp.status_code == 200
+        resp = client.get("/review/stats", headers=_auth_header(token))
+        assert resp.status_code == 200
+        events = resp.json()["recent_activity"]
+        unit_events = [e for e in events if e["unit_id"] == unit["id"]]
+        assert len(unit_events) == 1
+        assert unit_events[0]["type"] == "approved"
+
+    def test_activity_shows_proposed_for_pending(self, client: TestClient) -> None:
+        """A pending KU should appear as proposed."""
+        token = _login(client)
+        unit = _propose(client)
+        resp = client.get("/review/stats", headers=_auth_header(token))
+        assert resp.status_code == 200
+        events = resp.json()["recent_activity"]
+        unit_events = [e for e in events if e["unit_id"] == unit["id"]]
+        assert len(unit_events) == 1
+        assert unit_events[0]["type"] == "proposed"

@@ -448,10 +448,11 @@ class TeamStore:
         return buckets
 
     def recent_activity(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return recent activity (proposals and reviews), sorted by event time.
+        """Return recent activity as one event per knowledge unit.
 
-        Fetches more rows than needed, sorts in-memory by event timestamp,
-        and returns the most recent `limit` entries.
+        Each KU appears once: reviewed KUs show as approved/rejected,
+        pending KUs show as proposed.  Ordered by the most recent
+        timestamp (reviewed_at for reviewed KUs, created_at otherwise).
 
         Args:
             limit: Maximum number of activity entries to return.
@@ -464,7 +465,7 @@ class TeamStore:
             rows = self._conn.execute(
                 "SELECT id, data, status, reviewed_by, reviewed_at "
                 "FROM knowledge_units "
-                "ORDER BY rowid DESC LIMIT ?",
+                "ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?",
                 (limit * 2,),
             ).fetchall()
         activity = []
@@ -475,16 +476,8 @@ class TeamStore:
                 if unit.evidence.first_observed
                 else ""
             )
-            # Every KU generates a "proposed" event.
-            activity.append(
-                {
-                    "type": "proposed",
-                    "unit_id": row[0],
-                    "summary": unit.insight.summary,
-                    "timestamp": proposed_ts,
-                }
-            )
-            # Reviewed KUs also generate an approve/reject event.
+            # Show only the terminal state per KU: the review event if
+            # reviewed, otherwise the proposed event.
             if row[2] in ("approved", "rejected"):
                 activity.append(
                     {
@@ -493,6 +486,15 @@ class TeamStore:
                         "summary": unit.insight.summary,
                         "reviewed_by": row[3],
                         "timestamp": row[4] or proposed_ts,
+                    }
+                )
+            else:
+                activity.append(
+                    {
+                        "type": "proposed",
+                        "unit_id": row[0],
+                        "summary": unit.insight.summary,
+                        "timestamp": proposed_ts,
                     }
                 )
         activity.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
