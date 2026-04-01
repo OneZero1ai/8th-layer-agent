@@ -1,10 +1,12 @@
-name: CI
+name: Python SDK CI
 
 on:
   push:
     branches: [main]
+    paths: ["sdk/python/**", "schema/**"]
   pull_request:
     branches: [main]
+    paths: ["sdk/python/**", "schema/**"]
 
 permissions:
   contents: read
@@ -31,18 +33,8 @@ jobs:
         with:
           enable-cache: true
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: server/frontend/pnpm-lock.yaml
-
       - name: Setup and lint
-        run: make setup lint-sdk-python lint-server
+        run: make setup-sdk-python lint-sdk-python
 
   test:
     name: Test
@@ -59,11 +51,5 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
-      - name: Sync Python dependencies
-        run: |
-          (cd sdk/python && uv sync --group dev)
-          (cd plugins/cq/server && uv sync --group dev)
-          (cd server/backend && uv sync --group dev)
-
       - name: Test
-        run: make test-sdk-python test-server
+        run: make setup-sdk-python test-sdk-python
