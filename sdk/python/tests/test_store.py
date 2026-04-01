@@ -376,9 +376,31 @@ class TestQuery:
         )
         store.insert(python_unit)
         store.insert(go_unit)
-        results = store.query(["databases"], language="python")
+        results = store.query(["databases"], languages=["python"])
         assert len(results) == 2
         assert results[0].id == python_unit.id
+
+    def test_multi_language_boosts_on_any_overlap(self, store: LocalStore):
+        python_unit = _make_unit(
+            domains=["databases"],
+            context=Context(languages=["python"]),
+        )
+        go_unit = _make_unit(
+            domains=["databases"],
+            context=Context(languages=["go"]),
+        )
+        other_unit = _make_unit(
+            domains=["databases"],
+            context=Context(languages=["rust"]),
+        )
+        store.insert(other_unit)
+        store.insert(python_unit)
+        store.insert(go_unit)
+        results = store.query(["databases"], languages=["python", "go"])
+        assert len(results) == 3
+        boosted_ids = {results[0].id, results[1].id}
+        assert python_unit.id in boosted_ids
+        assert go_unit.id in boosted_ids
 
     def test_framework_boosts_ranking_without_excluding(self, store: LocalStore):
         django_unit = _make_unit(
@@ -391,9 +413,31 @@ class TestQuery:
         )
         store.insert(django_unit)
         store.insert(flask_unit)
-        results = store.query(["web"], framework="django")
+        results = store.query(["web"], frameworks=["django"])
         assert len(results) == 2
         assert results[0].id == django_unit.id
+
+    def test_multi_framework_boosts_on_any_overlap(self, store: LocalStore):
+        django_unit = _make_unit(
+            domains=["web"],
+            context=Context(frameworks=["django"]),
+        )
+        flask_unit = _make_unit(
+            domains=["web"],
+            context=Context(frameworks=["flask"]),
+        )
+        other_unit = _make_unit(
+            domains=["web"],
+            context=Context(frameworks=["express"]),
+        )
+        store.insert(other_unit)
+        store.insert(django_unit)
+        store.insert(flask_unit)
+        results = store.query(["web"], frameworks=["django", "flask"])
+        assert len(results) == 3
+        boosted_ids = {results[0].id, results[1].id}
+        assert django_unit.id in boosted_ids
+        assert flask_unit.id in boosted_ids
 
     def test_combined_language_and_framework_boosts_ranking(self, store: LocalStore):
         match = _make_unit(
@@ -406,9 +450,43 @@ class TestQuery:
         )
         store.insert(match)
         store.insert(partial)
-        results = store.query(["web"], language="python", framework="django")
+        results = store.query(["web"], languages=["python"], frameworks=["django"])
         assert len(results) == 2
         assert results[0].id == match.id
+
+    def test_bare_string_language_coerced_to_list(self, store: LocalStore):
+        # The matching unit has lower confidence; the boost must overcome it.
+        python_unit = _make_unit(
+            domains=["databases"],
+            context=Context(languages=["python"]),
+        )
+        go_unit = _make_unit(
+            domains=["databases"],
+            context=Context(languages=["go"]),
+        )
+        store.insert(python_unit)
+        boosted = apply_confirmation(go_unit)
+        store.insert(boosted)
+        results = store.query(["databases"], languages="python")  # type: ignore[arg-type]
+        assert len(results) == 2
+        assert results[0].id == python_unit.id
+
+    def test_bare_string_framework_coerced_to_list(self, store: LocalStore):
+        # The matching unit has lower confidence; the boost must overcome it.
+        django_unit = _make_unit(
+            domains=["web"],
+            context=Context(frameworks=["django"]),
+        )
+        flask_unit = _make_unit(
+            domains=["web"],
+            context=Context(frameworks=["flask"]),
+        )
+        store.insert(django_unit)
+        boosted = apply_confirmation(flask_unit)
+        store.insert(boosted)
+        results = store.query(["web"], frameworks="django")  # type: ignore[arg-type]
+        assert len(results) == 2
+        assert results[0].id == django_unit.id
 
     def test_higher_confidence_ranks_higher(self, store: LocalStore):
         low_conf = _make_unit(domains=["databases"])
@@ -643,7 +721,7 @@ class TestEndToEnd:
         )
         store.insert(unit)
 
-        results = store.query(["api", "payments"], language="python")
+        results = store.query(["api", "payments"], languages=["python"])
         assert len(results) == 1
         assert results[0].evidence.confidence == 0.5
 

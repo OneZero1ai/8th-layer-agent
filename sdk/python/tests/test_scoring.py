@@ -107,14 +107,14 @@ class TestCalculateRelevance:
 
     def test_language_match_adds_secondary_signal(self):
         unit = _make_unit(context=Context(languages=["python"], frameworks=[]))
-        score_with_lang = calculate_relevance(unit, ["databases"], query_language="python")
-        score_without_lang = calculate_relevance(unit, ["databases"], query_language=None)
+        score_with_lang = calculate_relevance(unit, ["databases"], query_languages=["python"])
+        score_without_lang = calculate_relevance(unit, ["databases"], query_languages=None)
         assert score_with_lang > score_without_lang
 
     def test_framework_match_adds_secondary_signal(self):
         unit = _make_unit(context=Context(languages=[], frameworks=["django"]))
-        score_with_fw = calculate_relevance(unit, ["databases"], query_framework="django")
-        score_without_fw = calculate_relevance(unit, ["databases"], query_framework=None)
+        score_with_fw = calculate_relevance(unit, ["databases"], query_frameworks=["django"])
+        score_without_fw = calculate_relevance(unit, ["databases"], query_frameworks=None)
         assert score_with_fw > score_without_fw
 
     def test_full_match_returns_one(self):
@@ -125,10 +125,26 @@ class TestCalculateRelevance:
         score = calculate_relevance(
             unit,
             ["databases"],
-            query_language="python",
-            query_framework="django",
+            query_languages=["python"],
+            query_frameworks=["django"],
         )
         assert score == pytest.approx(1.0)
+
+    def test_multi_language_query_boosts_on_any_overlap(self):
+        unit = _make_unit(context=Context(languages=["python"], frameworks=[]))
+        score_overlap = calculate_relevance(unit, ["databases"], query_languages=["go", "python"])
+        score_no_overlap = calculate_relevance(unit, ["databases"], query_languages=["go", "rust"])
+        score_none = calculate_relevance(unit, ["databases"], query_languages=None)
+        assert score_overlap > score_none
+        assert score_no_overlap == score_none
+
+    def test_multi_framework_query_boosts_on_any_overlap(self):
+        unit = _make_unit(context=Context(languages=[], frameworks=["django"]))
+        score_overlap = calculate_relevance(unit, ["databases"], query_frameworks=["flask", "django"])
+        score_no_overlap = calculate_relevance(unit, ["databases"], query_frameworks=["flask", "fastapi"])
+        score_none = calculate_relevance(unit, ["databases"], query_frameworks=None)
+        assert score_overlap > score_none
+        assert score_no_overlap == score_none
 
     def test_relevance_is_between_zero_and_one(self):
         unit = _make_unit(
@@ -138,7 +154,7 @@ class TestCalculateRelevance:
         score = calculate_relevance(
             unit,
             ["databases", "caching"],
-            query_language="python",
-            query_framework="flask",
+            query_languages=["python"],
+            query_frameworks=["flask"],
         )
         assert 0.0 <= score <= 1.0

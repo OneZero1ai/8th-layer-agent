@@ -86,6 +86,17 @@ CREATE TABLE IF NOT EXISTS metadata (
 """
 
 
+def _as_list(value: list[str] | str) -> list[str]:
+    """Coerce a bare string to a single-item list.
+
+    Python iterates strings character-by-character, so passing ``"python"``
+    where ``["python"]`` is expected silently produces wrong results.
+    """
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
 def _normalize_domains(domains: list[str]) -> list[str]:
     """Lowercase, strip whitespace, drop empties, and deduplicate domain tags."""
     return list(dict.fromkeys(d.strip().lower() for d in domains if d.strip()))
@@ -332,8 +343,8 @@ class LocalStore:
         self,
         domains: list[str],
         *,
-        language: str | None = None,
-        framework: str | None = None,
+        languages: list[str] | None = None,
+        frameworks: list[str] | None = None,
         limit: int = 5,
     ) -> list[KnowledgeUnit]:
         """Search for knowledge units by domain tags with relevance ranking.
@@ -347,6 +358,10 @@ class LocalStore:
         Raises:
             ValueError: If limit is not positive.
         """
+        if languages is not None:
+            languages = _as_list(languages)
+        if frameworks is not None:
+            frameworks = _as_list(frameworks)
         if limit <= 0:
             raise ValueError("limit must be positive")
         if not domains:
@@ -409,8 +424,8 @@ class LocalStore:
             relevance = calculate_relevance(
                 unit,
                 normalized,
-                query_language=language,
-                query_framework=framework,
+                query_languages=languages,
+                query_frameworks=frameworks,
             )
             scored.append((relevance * unit.evidence.confidence, unit))
 
