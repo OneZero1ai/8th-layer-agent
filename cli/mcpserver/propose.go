@@ -26,13 +26,19 @@ func ProposeTool() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("Recommended action for agents encountering this situation."),
 		),
-		mcp.WithArray("domain",
+		mcp.WithArray("domains",
 			mcp.Required(),
 			mcp.Description("Domain tags for this knowledge."),
 			mcp.WithStringItems(),
 		),
-		mcp.WithString("language", mcp.Description("Programming language context.")),
-		mcp.WithString("framework", mcp.Description("Framework context.")),
+		mcp.WithArray("languages",
+			mcp.Description("Programming language context."),
+			mcp.WithStringItems(),
+		),
+		mcp.WithArray("frameworks",
+			mcp.Description("Framework context."),
+			mcp.WithStringItems(),
+		),
 		mcp.WithString("pattern", mcp.Description("Pattern name.")),
 	)
 }
@@ -51,26 +57,22 @@ func (s *Server) HandlePropose(ctx context.Context, req mcp.CallToolRequest) (*m
 	if err != nil {
 		return mcp.NewToolResultError("action is required"), nil
 	}
-	domains, err := req.RequireStringSlice("domain")
-	if err != nil || len(domains) == 0 {
-		return mcp.NewToolResultError("domain is required (string array with at least one tag)"), nil
+	domains, err := req.RequireStringSlice("domains")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid 'domains' argument: '%s'", err)), nil
 	}
-
-	language := req.GetString("language", "")
-	framework := req.GetString("framework", "")
+	if len(domains) == 0 {
+		return mcp.NewToolResultError("domains must contain at least one tag"), nil
+	}
 
 	params := cq.ProposeParams{
-		Summary: summary,
-		Detail:  detail,
-		Action:  action,
-		Domains: domains,
-		Pattern: req.GetString("pattern", ""),
-	}
-	if language != "" {
-		params.Languages = []string{language}
-	}
-	if framework != "" {
-		params.Frameworks = []string{framework}
+		Summary:    summary,
+		Detail:     detail,
+		Action:     action,
+		Domains:    domains,
+		Languages:  req.GetStringSlice("languages", nil),
+		Frameworks: req.GetStringSlice("frameworks", nil),
+		Pattern:    req.GetString("pattern", ""),
 	}
 
 	result, err := s.client.Propose(ctx, params)

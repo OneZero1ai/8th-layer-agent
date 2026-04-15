@@ -65,14 +65,14 @@ Do not query cq for:
 
 Choose domain tags that capture the technology, layer, and integration point. Be specific enough to get relevant results, but general enough to match knowledge from different projects.
 
-> **Schema note.** `query` accepts singular keys (`language`, `framework`). `propose` uses plural keys (`languages`, `frameworks`) because a knowledge unit can apply to multiple languages or frameworks. Do not mix these up; the server does not normalize between them.
+Both `query` and `propose` use the same plural-array keys for `domains`, `languages`, and `frameworks`. Each is a flat top-level argument; there is no `context` wrapper.
 
-| Scenario | `domain` | `context` |
-|----------|----------|-----------|
-| Stripe payment integration | `["api", "payments", "stripe"]` | `{ language: "python" }` |
-| Webpack build configuration | `["bundler", "webpack", "configuration"]` | `{ framework: "react" }` |
-| GitHub Actions CI for Rust | `["ci", "github-actions", "rust"]` | `{ pattern: "ci-pipeline" }` |
-| PostgreSQL connection pooling | `["database", "postgresql", "connection-pooling"]` | `{ language: "go" }` |
+| Scenario | `domains` | other call args |
+|----------|-----------|------------------|
+| Stripe payment integration | `["api", "payments", "stripe"]` | `languages: ["python"]` |
+| Webpack build configuration | `["bundler", "webpack", "configuration"]` | `frameworks: ["react"]` |
+| GitHub Actions CI for Rust | `["ci", "github-actions", "rust"]` | `pattern: "ci-pipeline"` |
+| PostgreSQL connection pooling | `["database", "postgresql", "connection-pooling"]` | `languages: ["go"]` |
 
 Use the `limit` parameter (default 5) to control how many results are returned. For broad exploratory queries, increase the limit.
 
@@ -181,7 +181,7 @@ The server returns a list of candidate knowledge units. Each candidate contains:
 - **summary** — One-line description of the insight.
 - **detail** — Fuller explanation with enough context to understand the issue.
 - **action** — Concrete instruction on what to do about it.
-- **domain** — Suggested domain tags.
+- **domains** — Suggested domain tags.
 - **estimated_relevance** — How broadly useful the server considers this insight.
 
 #### How to Present Candidates
@@ -190,7 +190,7 @@ Present candidates as a numbered list to the user, showing the summary and estim
 
 #### What Happens After Approval
 
-For each approved candidate, call `propose` with the candidate's fields (`summary`, `detail`, `action`, `domain`, and any relevant `context`). If the user edits a candidate before approving, use the edited values.
+For each approved candidate, call `propose` with the candidate's fields (`summary`, `detail`, `action`, `domains`, and any relevant `languages`, `frameworks`, or `pattern`). If the user edits a candidate before approving, use the edited values.
 
 ### Examples
 
@@ -199,7 +199,7 @@ For each approved candidate, call `propose` with the candidate's fields (`summar
 The developer asks you to integrate Stripe payments in a Python project.
 
 1. Recognize the trigger: external API integration.
-2. Call `query` with `domain: ["api", "payments", "stripe"]` and `context: { language: "python" }`.
+2. Call `query` with `domains: ["api", "payments", "stripe"]` and `languages: ["python"]`.
 3. cq returns a knowledge unit. Present the reference table to the user:
 
    | ID | Confidence | Summary |
@@ -214,22 +214,24 @@ The developer asks you to integrate Stripe payments in a Python project.
 
 The developer asks you to configure a webpack build. You encounter a cryptic error: `Module not found: Can't resolve 'stream'`.
 
-1. Call `query` with `domain: ["bundler", "webpack", "nodejs-polyfills"]` and `context: { framework: "react" }`.
+1. Call `query` with `domains: ["bundler", "webpack", "nodejs-polyfills"]` and `frameworks: ["react"]`.
 2. No relevant results returned. Proceed normally.
 3. Debug the issue: webpack 5 removed Node.js polyfills. Add `resolve.fallback: { stream: require.resolve("stream-browserify") }` to the config.
 4. Call `propose`:
    - **summary:** `"webpack 5 removes built-in Node.js polyfills — imports like 'stream' fail at build time"`
    - **detail:** `"webpack 5 no longer includes polyfills for Node.js core modules. Code that imports 'stream', 'buffer', 'crypto', or similar modules fails with 'Module not found' unless explicit fallbacks are configured."`
    - **action:** `"Add resolve.fallback entries in webpack config mapping each required Node.js module to its browserify equivalent (e.g. stream-browserify, buffer, crypto-browserify)."`
-   - **domain:** `["bundler", "webpack", "nodejs-polyfills"]`
-   - **context:** `{ languages: ["typescript"], frameworks: ["react"], pattern: "build-tooling" }`
+   - **domains:** `["bundler", "webpack", "nodejs-polyfills"]`
+   - **languages:** `["typescript"]`
+   - **frameworks:** `["react"]`
+   - **pattern:** `"build-tooling"`
 
 #### Example 3: Avoiding a CI Pitfall
 
 The developer asks you to set up a Rust CI pipeline with GitHub Actions using a matrix strategy for multiple toolchain versions.
 
 1. Recognize the trigger: CI/CD configuration.
-2. Call `query` with `domain: ["ci", "github-actions", "rust"]`.
+2. Call `query` with `domains: ["ci", "github-actions", "rust"]`.
 3. cq returns a knowledge unit. Present the reference table to the user:
 
    | ID | Confidence | Summary |
