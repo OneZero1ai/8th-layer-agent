@@ -146,6 +146,28 @@ class RemoteStore:
                 [(unit.id, d) for d in domains],
             )
 
+    def delete(self, unit_id: str) -> bool:
+        """Hard-delete a knowledge unit by ID.
+
+        Removes the row from knowledge_units and cascades to
+        knowledge_unit_domains. Does NOT touch review_records — the audit
+        trail of why each KU was approved/rejected/now-deleted should
+        survive the deletion of the underlying KU.
+
+        Returns True if a row was deleted, False if no such ID existed.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM knowledge_unit_domains WHERE unit_id = ?",
+                (unit_id,),
+            )
+            cur = self._conn.execute(
+                "DELETE FROM knowledge_units WHERE id = ?",
+                (unit_id,),
+            )
+            return cur.rowcount > 0
+
     def get(self, unit_id: str) -> KnowledgeUnit | None:
         """Retrieve an approved knowledge unit by ID.
 
