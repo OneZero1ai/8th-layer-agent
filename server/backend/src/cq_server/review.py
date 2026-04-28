@@ -182,6 +182,39 @@ def reject_unit(
     return _build_decision(unit_id, updated)
 
 
+@router.delete("/{unit_id}", status_code=204)
+def delete_unit(
+    unit_id: str,
+    username: str = Depends(get_current_user),
+    store: RemoteStore = Depends(get_store),
+) -> None:
+    """Hard-delete a knowledge unit (admin-only — already enforced by JWT).
+
+    Used to remove KUs that should never have been approved (smoke-test garbage,
+    pre-quality-guard pollution, etc.). Confidence-flagging via /flag is the
+    soft path; this is the irreversible nuclear option.
+
+    Args:
+        unit_id: The knowledge unit identifier.
+        username: The authenticated reviewer's username (audit only).
+        store: The remote store dependency.
+
+    Returns:
+        204 No Content on successful delete.
+
+    Raises:
+        HTTPException: With status 404 if the unit does not exist.
+    """
+    deleted = store.delete(unit_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Knowledge unit not found")
+    # Audit context: username is captured implicitly via FastAPI logs;
+    # the review_records table (if populated) preserves prior approve/reject
+    # decisions. We deliberately do not insert a synthetic delete-record;
+    # the absence of the KU + the surviving review trail is the audit shape.
+    return None
+
+
 @router.get("/stats")
 def review_stats(
     _user: str = Depends(get_current_user),
