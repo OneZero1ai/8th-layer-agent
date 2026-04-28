@@ -27,11 +27,19 @@ See [`docs/decisions/08-agent-side-fork.md`](https://github.com/OneZero1ai/8th-l
 
 These are the open protocol; they stay open and we want full interoperability with vanilla cq remotes and other cq-protocol-compatible clients.
 
+## Server-side additions (provisional, candidates to upstream)
+
+These DO touch the server, which the policy above said we wouldn't. Each is a deliberate exception, narrow in scope, and should be proposed upstream as a PR after we've battle-tested them in our deployment:
+
+- **`server/backend/src/cq_server/quality.py`** — propose-time content quality guards. Rejects KU shapes that are clearly placeholder (`domains:['test']`, summary=='test', summary==detail, sub-threshold lengths). The `/propose` endpoint is the choke-point because cq's PoC has no admin-side delete, so junk has to be stopped at intake. Generic content-quality, not 8L-specific — should upstream once stable. Tracked as `OneZero1ai/crosstalk-enterprise#24`.
+
+  *Why this is a justified deviation from the "do not modify server" policy:* a forking project that deploys cq Remote in production needs intake-time integrity guards that the upstream PoC doesn't yet have. Without them, smoke-test garbage and project-internal manifesto KUs accumulate and pollute the queryable commons. The fix is general (any cq deployment benefits) so the right long-term home is upstream — but we need it deployed today.
+
 ## Sync discipline
 
 - **Fork base**: pinned at the cq commit at the time of fork creation (2026-04-26).
 - **Upstream sync cadence**: monthly, or on cq-tagged release.
-- **Contribution back**: bug fixes + perf + protocol clarifications get pushed upstream as PRs to `mozilla-ai/cq`.
+- **Contribution back**: bug fixes + perf + protocol clarifications get pushed upstream as PRs to `mozilla-ai/cq`. The `quality.py` module above is on this list.
 - **Stays in fork**: enterprise-specific capabilities (AIGRP routing, DID-KMS bridge, multi-tenancy, FIPS hooks) — not relevant to upstream's open-standard project scope.
 
 ## Mozilla.AI partnership

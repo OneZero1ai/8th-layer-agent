@@ -22,6 +22,7 @@ from starlette.responses import FileResponse
 
 from .auth import router as auth_router
 from .deps import API_KEY_PEPPER_ENV, require_api_key
+from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import RemoteStore, normalize_domains
@@ -126,6 +127,9 @@ def propose_unit(
     normalized = normalize_domains(request.domains)
     if not normalized:
         raise HTTPException(status_code=422, detail="At least one non-empty domain is required")
+    quality_reason = check_propose_quality(normalized, request.insight)
+    if quality_reason is not None:
+        raise HTTPException(status_code=422, detail=f"propose quality guard: {quality_reason}")
     unit = create_knowledge_unit(
         domains=normalized,
         insight=request.insight,

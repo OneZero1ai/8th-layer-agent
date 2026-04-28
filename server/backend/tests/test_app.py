@@ -122,6 +122,33 @@ class TestPropose:
         assert resp.status_code == 201
         assert resp.json()["domains"] == ["api", "databases"]
 
+    def test_propose_with_test_only_domain_rejected(self, client: TestClient) -> None:
+        # Reproduces the ranger smoke-test garbage pattern that polluted the
+        # commons before quality guards landed.
+        payload = _propose_payload(domains=["test"])
+        resp = client.post("/propose", json=payload)
+        assert resp.status_code == 422
+        assert "placeholder" in resp.json()["detail"].lower()
+
+    def test_propose_with_placeholder_summary_rejected(self, client: TestClient) -> None:
+        payload = _propose_payload(insight={
+            "summary": "test",
+            "detail": "this is a long enough detail that it would normally pass length checks",
+            "action": "do the thing",
+        })
+        resp = client.post("/propose", json=payload)
+        assert resp.status_code == 422
+        assert "placeholder" in resp.json()["detail"].lower()
+
+    def test_propose_with_summary_eq_detail_rejected(self, client: TestClient) -> None:
+        payload = _propose_payload(insight={
+            "summary": "Connections are expensive to create at request time",
+            "detail": "Connections are expensive to create at request time",
+            "action": "Use a connection pool with max size 10.",
+        })
+        resp = client.post("/propose", json=payload)
+        assert resp.status_code == 422
+
 
 class TestQuery:
     def _insert_unit(self, client: TestClient, **overrides: Any) -> dict[str, Any]:
