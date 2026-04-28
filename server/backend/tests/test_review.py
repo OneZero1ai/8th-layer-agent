@@ -44,9 +44,9 @@ def _propose(client: TestClient, **overrides: Any) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "domains": ["api", "testing"],
         "insight": {
-            "summary": "Test insight",
-            "detail": "Detail here.",
-            "action": "Do the thing.",
+            "summary": "An API testing insight worth sharing",
+            "detail": "When testing API endpoints, validate response shape against the schema, not just status codes.",
+            "action": "Use schema-aware assertions in API tests.",
         },
     }
     resp = client.post("/propose", json={**defaults, **overrides})
@@ -206,7 +206,7 @@ class TestGetUnit:
         assert resp.status_code == 200
         body = resp.json()
         assert body["knowledge_unit"]["id"] == unit["id"]
-        assert body["knowledge_unit"]["insight"]["summary"] == "Test insight"
+        assert body["knowledge_unit"]["insight"]["summary"] == "An API testing insight worth sharing"
         assert body["status"] == "pending"
         assert body["reviewed_by"] is None
 
