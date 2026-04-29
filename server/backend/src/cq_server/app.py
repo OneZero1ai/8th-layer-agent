@@ -22,6 +22,7 @@ from starlette.responses import FileResponse
 
 from .auth import router as auth_router
 from .deps import API_KEY_PEPPER_ENV, require_api_key
+from .embed import compose_text, embed_text
 from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
@@ -94,6 +95,31 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+class SemanticHit(BaseModel):
+    """A KU with its similarity score for /query/semantic."""
+
+    knowledge_unit: KnowledgeUnit
+    similarity: float
+
+
+@api_router.get("/query/semantic")
+def query_semantic(
+    q: Annotated[str, Query(min_length=1)],
+    limit: Annotated[int, Query(gt=0, le=50)] = 10,
+    _username: str = Depends(require_api_key),
+) -> list[SemanticHit]:
+    """Embed `q` and return top-N approved KUs by cosine similarity."""
+    store = _get_store()
+    payload = embed_text(q)
+    if payload is None:
+        raise HTTPException(status_code=503, detail="embedding unavailable")
+    from .embed import unpack
+
+    query_vec = unpack(payload[0])
+    hits = store.semantic_query(query_vec, limit=limit)
+    return [SemanticHit(knowledge_unit=u, similarity=s) for u, s in hits]
+
+
 @api_router.get("/query")
 def query_units(
     domains: Annotated[list[str], Query()],
@@ -137,7 +163,18 @@ def propose_unit(
         tier=Tier.PRIVATE,
         created_by=username,
     )
-    store.insert(unit)
+    embed_payload = embed_text(
+        compose_text(
+            request.insight.summary,
+            request.insight.detail,
+            request.insight.action,
+        )
+    )
+    if embed_payload is not None:
+        embedding_bytes, embedding_model = embed_payload
+        store.insert(unit, embedding=embedding_bytes, embedding_model=embedding_model)
+    else:
+        store.insert(unit)
     return unit
 
 

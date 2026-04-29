@@ -37,6 +37,9 @@ RUN uv sync --no-dev --frozen --no-install-project
 COPY backend/src/ src/
 RUN uv sync --no-dev --frozen
 
+# Backfill / migration scripts (invoked via `ecs execute-command`).
+COPY scripts/ /app/scripts/
+
 # Copy the frontend build output into the package's static directory.
 COPY --from=frontend /build/dist src/cq_server/static/
 
