@@ -102,6 +102,112 @@ class SemanticHit(BaseModel):
     similarity: float
 
 
+class AigrpLookupRequest(BaseModel):
+    """Request body for /aigrp/lookup — Phase 2 automatic-trigger endpoint.
+
+    The harness fires this on user_prompt / session_start / tool_failure
+    moments. The server embeds the freeform context, runs semantic search
+    over approved KUs, applies persona+confidence+similarity filters, and
+    returns ranked hits the harness injects as a system-reminder.
+    """
+
+    context: str = Field(min_length=1)
+    trigger: str = "user_prompt"
+    session_id: str = ""
+    persona: str = ""
+    max_results: int = Field(default=5, gt=0, le=20)
+    min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    min_similarity: float = Field(default=0.3, ge=0.0, le=1.0)
+    exclude_self: bool = True
+
+
+class AigrpLookupHit(BaseModel):
+    """Lean wire shape returned by /aigrp/lookup — only the fields the
+    harness needs to inject as a system-reminder. Avoids shipping the
+    full KnowledgeUnit blob (with evidence, context, etc.) on every
+    prompt."""
+
+    ku_id: str
+    summary: str
+    action: str
+    domains: list[str]
+    similarity: float
+    confidence: float
+    created_by: str
+
+
+class AigrpLookupResponse(BaseModel):
+    trigger: str
+    results: list[AigrpLookupHit]
+    elapsed_ms: int
+    filtered_count: int  # how many candidates dropped by filters
+
+
+@api_router.post("/aigrp/lookup")
+def aigrp_lookup(
+    request: AigrpLookupRequest,
+    _username: str = Depends(require_api_key),
+) -> AigrpLookupResponse:
+    """Automatic-trigger lookup for AIGRP-pull (Phase 2).
+
+    Fired by the harness on every prompt / session-start / tool-failure.
+    Embeds the freeform context, runs semantic search, filters by
+    confidence + similarity + exclude_self, returns ranked hits.
+    """
+    import time
+
+    t0 = time.monotonic()
+    store = _get_store()
+    payload = embed_text(request.context)
+    if payload is None:
+        # Don't 503 here — the hook is best-effort and a 503 would
+        # log loudly on every prompt if Bedrock is briefly slow.
+        return AigrpLookupResponse(
+            trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0
+        )
+    from .embed import unpack
+
+    query_vec = unpack(payload[0])
+    raw_hits = store.semantic_query(
+        query_vec,
+        limit=request.max_results * 3,  # over-fetch so filters have headroom
+    )
+
+    filtered: list[AigrpLookupHit] = []
+    dropped = 0
+    for unit, sim in raw_hits:
+        if sim < request.min_similarity:
+            dropped += 1
+            continue
+        if unit.evidence.confidence < request.min_confidence:
+            dropped += 1
+            continue
+        if request.exclude_self and request.persona and unit.created_by == request.persona:
+            dropped += 1
+            continue
+        filtered.append(
+            AigrpLookupHit(
+                ku_id=unit.id,
+                summary=unit.insight.summary,
+                action=unit.insight.action,
+                domains=list(unit.domains),
+                similarity=sim,
+                confidence=unit.evidence.confidence,
+                created_by=unit.created_by,
+            )
+        )
+        if len(filtered) >= request.max_results:
+            break
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    return AigrpLookupResponse(
+        trigger=request.trigger,
+        results=filtered,
+        elapsed_ms=elapsed_ms,
+        filtered_count=dropped,
+    )
+
+
 @api_router.get("/query/semantic")
 def query_semantic(
     q: Annotated[str, Query(min_length=1)],
