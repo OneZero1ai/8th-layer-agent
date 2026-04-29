@@ -16,6 +16,8 @@ dependencies = [
     "cq-sdk~=0.9.1",
     "sqlalchemy>=2.0.49,<2.1",
     "alembic>=1.18.4,<2",
+    "boto3>=1.34",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

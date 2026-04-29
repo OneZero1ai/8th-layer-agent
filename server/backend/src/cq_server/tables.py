@@ -10,6 +10,11 @@ _REVIEW_COLUMN_STATEMENTS = [
     "ALTER TABLE knowledge_units ADD COLUMN tier TEXT NOT NULL DEFAULT 'private'",
 ]
 
+_EMBEDDING_COLUMN_STATEMENTS = [
+    "ALTER TABLE knowledge_units ADD COLUMN embedding BLOB",
+    "ALTER TABLE knowledge_units ADD COLUMN embedding_model TEXT",
+]
+
 USERS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +52,17 @@ def ensure_review_columns(conn: sqlite3.Connection) -> None:
     cursor = conn.execute("PRAGMA table_info(knowledge_units)")
     existing = {row[1] for row in cursor.fetchall()}
     for statement in _REVIEW_COLUMN_STATEMENTS:
+        col = statement.split("COLUMN ")[1].split()[0]
+        if col not in existing:
+            conn.execute(statement)
+    conn.commit()
+
+
+def ensure_embedding_columns(conn: sqlite3.Connection) -> None:
+    """Add embedding columns if they do not exist."""
+    cursor = conn.execute("PRAGMA table_info(knowledge_units)")
+    existing = {row[1] for row in cursor.fetchall()}
+    for statement in _EMBEDDING_COLUMN_STATEMENTS:
         col = statement.split("COLUMN ")[1].split()[0]
         if col not in existing:
             conn.execute(statement)

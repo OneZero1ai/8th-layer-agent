@@ -17,7 +17,7 @@ from typing import Any
 from cq.models import KnowledgeUnit
 
 from ..scoring import calculate_relevance
-from ..tables import ensure_api_keys_table, ensure_review_columns, ensure_users_table
+from ..tables import ensure_api_keys_table, ensure_embedding_columns, ensure_review_columns, ensure_users_table
 from ._protocol import Store
 
 __all__ = ["DEFAULT_DB_PATH", "RemoteStore", "Store", "normalize_domains"]
@@ -84,6 +84,7 @@ class RemoteStore:
         """Create tables and indexes if they do not exist."""
         self._conn.executescript(_SCHEMA_SQL)
         ensure_review_columns(self._conn)
+        ensure_embedding_columns(self._conn)
         ensure_users_table(self._conn)
         ensure_api_keys_table(self._conn)
 
@@ -117,11 +118,19 @@ class RemoteStore:
         """Path to the SQLite database file."""
         return self._db_path
 
-    def insert(self, unit: KnowledgeUnit) -> None:
+    def insert(
+        self,
+        unit: KnowledgeUnit,
+        *,
+        embedding: bytes | None = None,
+        embedding_model: str | None = None,
+    ) -> None:
         """Insert a knowledge unit into the store.
 
         Args:
             unit: The knowledge unit to insert.
+            embedding: Optional packed float32 LE bytes from Titan (or other model).
+            embedding_model: The model id that produced the embedding.
 
         Raises:
             sqlite3.IntegrityError: If a unit with the same ID already exists.
@@ -138,13 +147,83 @@ class RemoteStore:
         )
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT INTO knowledge_units (id, data, created_at, tier) VALUES (?, ?, ?, ?)",
-                (unit.id, data, created_at, unit.tier.value),
+                "INSERT INTO knowledge_units (id, data, created_at, tier, embedding, embedding_model) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (unit.id, data, created_at, unit.tier.value, embedding, embedding_model),
             )
             self._conn.executemany(
                 "INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (?, ?)",
                 [(unit.id, d) for d in domains],
             )
+
+    def set_embedding(self, unit_id: str, embedding: bytes, embedding_model: str) -> bool:
+        """Update the embedding for an existing KU. Used by the backfill script.
+
+        Returns True if a row was updated, False if no such ID existed.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE knowledge_units SET embedding = ?, embedding_model = ? WHERE id = ?",
+                (embedding, embedding_model, unit_id),
+            )
+            return cur.rowcount > 0
+
+    def iter_unembedded(self, *, status: str = "approved", limit: int = 1000) -> list[tuple[str, str]]:
+        """Return (id, data) for KUs with NULL embedding, used for backfill."""
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, data FROM knowledge_units "
+                "WHERE embedding IS NULL AND status = ? LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def semantic_query(
+        self,
+        query_vec: list[float],
+        *,
+        limit: int = 10,
+        status: str = "approved",
+    ) -> list[tuple[KnowledgeUnit, float]]:
+        """Brute-force cosine similarity over all KUs with embeddings.
+
+        Returns list of (unit, similarity) sorted by similarity desc.
+        At ~1k KUs in 1024-dim, this is sub-50ms in numpy. Swap for
+        sqlite-vss / pgvector when corpus exceeds ~10k.
+        """
+        import numpy as np
+
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data, embedding FROM knowledge_units "
+                "WHERE status = ? AND embedding IS NOT NULL",
+                (status,),
+            ).fetchall()
+        if not rows:
+            return []
+
+        query = np.array(query_vec, dtype=np.float32)
+        q_norm = np.linalg.norm(query)
+        if q_norm == 0:
+            return []
+        query = query / q_norm
+
+        scored: list[tuple[KnowledgeUnit, float]] = []
+        for data_str, blob in rows:
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.size == 0:
+                continue
+            v_norm = np.linalg.norm(vec)
+            if v_norm == 0:
+                continue
+            sim = float(np.dot(query, vec / v_norm))
+            unit = KnowledgeUnit.model_validate_json(data_str)
+            scored.append((unit, sim))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
 
     def delete(self, unit_id: str) -> bool:
         """Hard-delete a knowledge unit by ID.
