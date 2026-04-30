@@ -6,6 +6,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { ReviewPage } from "./pages/ReviewPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ApiKeysPage } from "./pages/ApiKeysPage";
+import { NetworkPage } from "./pages/NetworkPage";
 
 function AppRoutes() {
   const { isAuthenticated } = useAuth();
@@ -24,6 +25,7 @@ function AppRoutes() {
       >
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/network" element={<NetworkPage />} />
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/review" replace />} />
