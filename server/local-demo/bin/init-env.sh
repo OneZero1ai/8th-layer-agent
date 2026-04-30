@@ -36,9 +36,14 @@ ORION_AWS_SEED_URL=$(aws --profile "$AWS_PROFILE_FOR_LOOKUP" --region us-east-1 
     cloudformation describe-stacks --stack-name test-orion-eng-l2 \
     --query "Stacks[0].Outputs[?OutputKey=='CqEndpoint'].OutputValue|[0]" \
     --output text 2>/dev/null || echo "")
-# AWS_PROFILE for the *runtime* containers (Bedrock embed) is separate;
-# defaults to the same lookup profile but can differ.
-AWS_PROFILE_USE="${AWS_PROFILE:-$AWS_PROFILE_FOR_LOOKUP}"
+# AWS_PROFILE for the *runtime* containers (Bedrock embed). Defaults to the
+# same account that hosts the test stack so cost attribution + audit trail
+# stay consistent. Operator can override via AWS_PROFILE_FOR_RUNTIME if they
+# want to point Bedrock calls at a different account. Note: we deliberately
+# do NOT track the operator's shell $AWS_PROFILE here — that's almost always
+# wrong (e.g. shell set to `orion` from another project leaks Bedrock cost
+# into the wrong account).
+AWS_PROFILE_USE="${AWS_PROFILE_FOR_RUNTIME:-$AWS_PROFILE_FOR_LOOKUP}"
 
 cat > .env <<EOF
 # Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by bin/init-env.sh
