@@ -242,6 +242,12 @@ class DsnResolveRequest(BaseModel):
     intent: str = Field(min_length=1)
     max_candidates: int = Field(default=5, gt=0, le=20)
     include_consented_cross_enterprise: bool = True
+    # Optional caller scope for policy_if_queried decisions. Defaults
+    # to ('marketing', 'public') when omitted — the public-viewer
+    # scope used by 8thlayer.onezero1.ai. Internal callers can pass
+    # their actual scope to get accurate policy hints.
+    caller_enterprise: str = ""
+    caller_group: str = ""
 
 
 class DsnCandidate(BaseModel):
@@ -604,19 +610,24 @@ def _resolve_caller_scope(store: RemoteStore, username: str) -> tuple[str, str]:
 
 
 @router.post("/dsn/resolve", response_model=DsnResolveResponse)
+@router.get("/dsn/resolve", response_model=DsnResolveResponse)
 async def network_dsn_resolve(
     request: DsnResolveRequest,
-    username: str = Depends(get_current_user),
     store: RemoteStore = Depends(get_store),
 ) -> DsnResolveResponse:
     """Embed the caller's intent and rank fleet L2s by topical similarity.
 
-    The ranking is purely centroid-based — no KU bodies leave the
-    queried L2s. Each candidate carries the policy that *would* be
-    applied if the caller called ``/aigrp/forward-query`` against it,
-    so the frontend can pre-render boundary edges.
+    Public read — no auth. The ranking is purely centroid-based; no KU
+    bodies leave the queried L2s. Each candidate carries the policy
+    that *would* be applied if the caller called
+    ``/aigrp/forward-query`` against it, so the frontend can pre-render
+    boundary edges. Caller scope defaults to ('marketing', 'public')
+    when not provided — that's the public-viewer scope used by
+    8thlayer.onezero1.ai. Internal demo callers can pass their actual
+    scope via ``caller_enterprise`` / ``caller_group``.
     """
-    caller_ent, caller_grp = _resolve_caller_scope(store, username)
+    caller_ent = request.caller_enterprise or "marketing"
+    caller_grp = request.caller_group or "public"
 
     path: list[DsnPathStep] = []
 
@@ -865,10 +876,10 @@ def _final_results_from_forward(body: dict[str, Any] | None) -> list[TraceFinalR
 
 
 @router.post("/demo/{scenario}", response_model=TraceResponse)
+@router.get("/demo/{scenario}", response_model=TraceResponse)
 async def network_demo(
     scenario: str,
     request: DemoScenarioRequest,
-    _username: str = Depends(get_current_user),
     store: RemoteStore = Depends(get_store),
 ) -> TraceResponse:
     """Run one of three named scenarios end-to-end against the live fleet.

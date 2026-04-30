@@ -179,7 +179,7 @@ class TestDsnPolicyDecisions:
         resp = client.post(
             "/api/v1/network/dsn/resolve",
             headers={"Authorization": f"Bearer {jwt}"},
-            json={"intent": "anything", "max_candidates": 6},
+            json={"intent": "anything", "max_candidates": 6, "caller_enterprise": "acme", "caller_group": "engineering"},
         )
         body = resp.json()
         own = next(c for c in body["candidates"] if c["l2_id"] == "acme/engineering")
@@ -216,7 +216,7 @@ class TestDsnPolicyDecisions:
         resp = client.post(
             "/api/v1/network/dsn/resolve",
             headers={"Authorization": f"Bearer {jwt}"},
-            json={"intent": "anything", "max_candidates": 6},
+            json={"intent": "anything", "max_candidates": 6, "caller_enterprise": "acme", "caller_group": "engineering"},
         )
         body = resp.json()
         # acme/solutions vs Alice (acme/engineering) -> summary_only.
