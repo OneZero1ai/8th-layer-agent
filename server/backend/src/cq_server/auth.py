@@ -182,6 +182,26 @@ def get_current_user(request: Request) -> str:
     return payload["sub"]
 
 
+def require_admin(
+    request: Request,
+    username: str = Depends(get_current_user),
+    store: RemoteStore = Depends(get_store),
+) -> str:
+    """FastAPI dependency: caller must be an authenticated admin user.
+
+    Returns the username on success; 401 on missing/invalid JWT (raised
+    by the chained ``get_current_user`` dep), 403 when the caller is
+    authenticated but not an admin. Admin-ness is global in v1 — there
+    is no per-Enterprise scoping yet (see plan doc, Lane D).
+    """
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return username
+
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 

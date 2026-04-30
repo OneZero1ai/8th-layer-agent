@@ -23,8 +23,10 @@ from ..tables import (
     ensure_aigrp_peers_table,
     ensure_api_keys_table,
     ensure_embedding_columns,
+    ensure_peers_schema,
     ensure_review_columns,
     ensure_tenancy_columns,
+    ensure_user_role_column,
     ensure_users_table,
     ensure_xgroup_consent_schema,
 )
@@ -108,6 +110,11 @@ class RemoteStore:
         # registry + cross-L2 audit log. Same idempotent shape so the
         # runtime path matches the Alembic migration.
         ensure_xgroup_consent_schema(self._conn)
+        # Phase 6 step 3 — admin role column + presence registry. Both
+        # idempotent; the ``peers`` table is created lazily on every
+        # startup so a legacy DB picks it up without an explicit migration.
+        ensure_user_role_column(self._conn)
+        ensure_peers_schema(self._conn)
 
     def _check_open(self) -> None:
         """Raise if the store has been closed."""
@@ -645,18 +652,41 @@ class RemoteStore:
             username: The user's login name.
 
         Returns:
-            A dict with id, username, password_hash, and created_at keys, or
-            None if no user with that username exists.
+            A dict with id, username, password_hash, created_at, role,
+            enterprise_id, and group_id keys, or None if no user with
+            that username exists.
         """
         self._check_open()
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+                "SELECT id, username, password_hash, created_at, role, "
+                "enterprise_id, group_id FROM users WHERE username = ?",
                 (username,),
             ).fetchone()
         if row is None:
             return None
-        return {"id": row[0], "username": row[1], "password_hash": row[2], "created_at": row[3]}
+        return {
+            "id": row[0],
+            "username": row[1],
+            "password_hash": row[2],
+            "created_at": row[3],
+            "role": row[4] or "user",
+            "enterprise_id": row[5] or DEFAULT_ENTERPRISE_ID,
+            "group_id": row[6] or DEFAULT_GROUP_ID,
+        }
+
+    def set_user_role(self, username: str, role: str) -> bool:
+        """Set the role on a user. Returns True if a row was updated.
+
+        Used by tests / bootstrap scripts to promote a user to admin.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE users SET role = ? WHERE username = ?",
+                (role, username),
+            )
+        return cur.rowcount > 0
 
     def count_active_api_keys_for_user(self, user_id: int) -> int:
         """Return the number of active API keys for the given user.
@@ -1374,3 +1404,230 @@ class RemoteStore:
             )
             current += timedelta(days=1)
         return result
+
+    # -- Phase 6 step 3: presence registry ------------------------------
+
+    def upsert_peer(
+        self,
+        *,
+        persona: str,
+        user_id: int | None,
+        enterprise_id: str,
+        group_id: str,
+        last_seen_at: str,
+        expertise_domains: list[str] | None,
+        discoverable: bool,
+        working_dir_hint: str | None,
+        metadata_json: str | None = None,
+    ) -> None:
+        """UPSERT a presence row keyed by ``persona``.
+
+        Updates ``last_seen_at`` to the supplied timestamp and replaces
+        the other mutable fields on conflict; the ``expertise_vector``
+        column is left untouched here (recomputed by a future
+        embedding-cron pass — the heartbeat path stays cheap).
+        """
+        self._check_open()
+        domains_json = json.dumps(expertise_domains) if expertise_domains is not None else None
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO peers (
+                    persona, user_id, enterprise_id, group_id, last_seen_at,
+                    expertise_domains, discoverable, working_dir_hint,
+                    metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(persona) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    enterprise_id = excluded.enterprise_id,
+                    group_id = excluded.group_id,
+                    last_seen_at = excluded.last_seen_at,
+                    expertise_domains = excluded.expertise_domains,
+                    discoverable = excluded.discoverable,
+                    working_dir_hint = excluded.working_dir_hint,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    persona, user_id, enterprise_id, group_id, last_seen_at,
+                    domains_json, 1 if discoverable else 0, working_dir_hint,
+                    metadata_json,
+                ),
+            )
+
+    def list_active_peers(
+        self,
+        *,
+        enterprise_id: str,
+        since_iso: str,
+        group_id: str | None = None,
+        exclude_persona: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return discoverable peers seen at or after ``since_iso``.
+
+        Scoped to a single Enterprise — presence is intentionally
+        Enterprise-bounded (consent unlocks knowledge access, not
+        presence visibility). ``group_id`` narrows further within the
+        Enterprise; ``exclude_persona`` filters out the caller.
+        """
+        self._check_open()
+        sql = (
+            "SELECT persona, user_id, enterprise_id, group_id, last_seen_at, "
+            "expertise_domains, discoverable, working_dir_hint, metadata_json "
+            "FROM peers "
+            "WHERE enterprise_id = ? AND last_seen_at >= ? AND discoverable = 1"
+        )
+        params: list[Any] = [enterprise_id, since_iso]
+        if group_id is not None:
+            sql += " AND group_id = ?"
+            params.append(group_id)
+        if exclude_persona is not None:
+            sql += " AND persona != ?"
+            params.append(exclude_persona)
+        sql += " ORDER BY last_seen_at DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "persona": r[0],
+                "user_id": r[1],
+                "enterprise_id": r[2],
+                "group_id": r[3],
+                "last_seen_at": r[4],
+                "expertise_domains": json.loads(r[5]) if r[5] else None,
+                "discoverable": bool(r[6]),
+                "working_dir_hint": r[7],
+                "metadata_json": r[8],
+            }
+            for r in rows
+        ]
+
+    # -- Phase 6 step 3: consent admin -----------------------------------
+
+    def list_cross_enterprise_consents(
+        self,
+        *,
+        include_expired: bool = False,
+        now_iso: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return cross-Enterprise consent rows, newest first.
+
+        ``include_expired=False`` filters out rows whose ``expires_at``
+        is in the past (NULL ``expires_at`` rows are kept — they never
+        expire). ``include_expired=True`` returns everything.
+        """
+        self._check_open()
+        sql = (
+            "SELECT consent_id, requester_enterprise, responder_enterprise, "
+            "requester_group, responder_group, policy, signed_by_admin, "
+            "signed_at, expires_at, audit_log_id "
+            "FROM cross_enterprise_consents"
+        )
+        params: list[Any] = []
+        if not include_expired:
+            sql += " WHERE expires_at IS NULL OR expires_at > ?"
+            params.append(now_iso)
+        sql += " ORDER BY signed_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "consent_id": r[0],
+                "requester_enterprise": r[1],
+                "responder_enterprise": r[2],
+                "requester_group": r[3],
+                "responder_group": r[4],
+                "policy": r[5],
+                "signed_by_admin": r[6],
+                "signed_at": r[7],
+                "expires_at": r[8],
+                "audit_log_id": r[9],
+            }
+            for r in rows
+        ]
+
+    def get_cross_enterprise_consent(self, consent_id: str) -> dict[str, Any] | None:
+        """Return a single consent record by id, or None if absent."""
+        self._check_open()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT consent_id, requester_enterprise, responder_enterprise, "
+                "requester_group, responder_group, policy, signed_by_admin, "
+                "signed_at, expires_at, audit_log_id "
+                "FROM cross_enterprise_consents WHERE consent_id = ?",
+                (consent_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "consent_id": row[0],
+            "requester_enterprise": row[1],
+            "responder_enterprise": row[2],
+            "requester_group": row[3],
+            "responder_group": row[4],
+            "policy": row[5],
+            "signed_by_admin": row[6],
+            "signed_at": row[7],
+            "expires_at": row[8],
+            "audit_log_id": row[9],
+        }
+
+    def find_active_consent_for_pair(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        """Return any non-expired consent matching the exact tuple.
+
+        Distinct from ``find_cross_enterprise_consent`` which scores
+        wildcard matches. This helper is for the duplicate-detection
+        guard on the admin sign endpoint — only an *exact* match (same
+        groups, both NULL or both equal) counts as a duplicate.
+        """
+        self._check_open()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT consent_id FROM cross_enterprise_consents
+                WHERE requester_enterprise = ?
+                  AND responder_enterprise = ?
+                  AND ((requester_group IS NULL AND ? IS NULL)
+                       OR requester_group = ?)
+                  AND ((responder_group IS NULL AND ? IS NULL)
+                       OR responder_group = ?)
+                  AND (expires_at IS NULL OR expires_at > ?)
+                LIMIT 1
+                """,
+                (
+                    requester_enterprise, responder_enterprise,
+                    requester_group, requester_group,
+                    responder_group, responder_group,
+                    now_iso,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_cross_enterprise_consent(row[0])
+
+    def revoke_cross_enterprise_consent(
+        self, *, consent_id: str, revoked_at: str
+    ) -> bool:
+        """Soft-revoke a consent by setting ``expires_at = revoked_at``.
+
+        Returns True if a row was updated. Does not hard-delete; the
+        record remains for the audit trail. Idempotent: revoking an
+        already-revoked consent updates the timestamp again (cheap and
+        consistent with the "expiry advances" semantics elsewhere).
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE cross_enterprise_consents SET expires_at = ? WHERE consent_id = ?",
+                (revoked_at, consent_id),
+            )
+        return cur.rowcount > 0
