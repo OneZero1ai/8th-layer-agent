@@ -85,7 +85,8 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
 
     def _try_bootstrap() -> bool:
         """Hit the seed's /aigrp/hello and absorb its peer table.
-        Returns True on success. Idempotent on the seed side."""
+        Returns True on success. Idempotent on the seed side.
+        """
         try:
             hello_payload = json.dumps({
                 "l2_id": aigrp.self_l2_id(),
@@ -250,7 +251,8 @@ class AigrpLookupHit(BaseModel):
     """Lean wire shape returned by /aigrp/lookup — only the fields the
     harness needs to inject as a system-reminder. Avoids shipping the
     full KnowledgeUnit blob (with evidence, context, etc.) on every
-    prompt."""
+    prompt.
+    """
 
     ku_id: str
     summary: str
@@ -571,9 +573,238 @@ def aigrp_signature(
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpSignatureResponse:
     """Return this L2's current corpus signature — centroid + Bloom filter
-    + counts. Polled by every peer on the AIGRP polling interval."""
+    + counts. Polled by every peer on the AIGRP polling interval.
+    """
     store = _get_store()
     return _build_self_signature(store)
+
+
+class AigrpForwardQueryRequest(BaseModel):
+    """Cross-L2 forward-query — one L2 asking another L2 for KUs.
+
+    Phase 6 step 2 / Lane B. The response shape mirrors /aigrp/lookup
+    where it overlaps but adds tenancy scope (so the requester can
+    correlate to its own peer table) and an explicit ``redacted_fields``
+    list for any policy-suppressed fields.
+    """
+
+    query_vec: list[float] = Field(min_length=1)
+    query_text: str = ""
+    requester_l2_id: str = Field(min_length=1)
+    requester_enterprise: str = Field(min_length=1)
+    requester_group: str = Field(min_length=1)
+    requester_persona: str = ""
+    max_results: int = Field(default=5, gt=0, le=20)
+
+
+class AigrpForwardQueryHit(BaseModel):
+    """One KU returned by /aigrp/forward-query.
+
+    ``detail`` and ``action`` are populated under ``full_body`` policy
+    and omitted (None) under ``summary_only``. ``redacted_fields`` lists
+    the field names that were withheld so the requester knows what to
+    ask for via a higher-trust channel if they need it.
+    """
+
+    ku_id: str
+    summary: str
+    detail: str | None = None
+    action: str | None = None
+    domains: list[str]
+    sim_score: float
+    redacted_fields: list[str] = Field(default_factory=list)
+
+
+class AigrpForwardQueryResponse(BaseModel):
+    """Wire shape for /aigrp/forward-query."""
+
+    responder_l2_id: str
+    responder_enterprise: str
+    responder_group: str
+    policy_applied: str  # "summary_only" | "full_body" | "denied"
+    results: list[AigrpForwardQueryHit]
+    result_count: int
+
+
+def _decide_policy_for_ku(
+    *,
+    ku_enterprise: str,
+    ku_group: str,
+    ku_cross_group_allowed: bool,
+    requester_enterprise: str,
+    requester_group: str,
+    responder_enterprise: str,
+    responder_group: str,
+    cross_enterprise_consent: dict[str, object] | None,
+) -> tuple[str, list[str]]:
+    """Return (policy, redacted_fields) for one KU.
+
+    Implements the rule set spelled out in
+    docs/plans/08-live-network-demo.md Lane B step 2:
+
+      1. Same Enterprise + same Group         -> full_body
+      2. Same Enterprise + different Group    -> full_body iff cross_group_allowed
+                                                else summary_only
+      3. Different Enterprise                 -> consent-driven; default deny
+
+    First match wins. Pure function — no DB access — so it's cheap to
+    fan over every candidate hit.
+    """
+    if requester_enterprise == ku_enterprise:
+        if requester_group == ku_group:
+            return "full_body", []
+        if ku_cross_group_allowed:
+            return "full_body", []
+        return "summary_only", ["detail", "action"]
+    # Different Enterprise.
+    if cross_enterprise_consent is None:
+        return "denied", []
+    policy = str(cross_enterprise_consent.get("policy") or "")
+    if policy == "full_body":
+        return "full_body", []
+    # v1 consent grants only summary_only sharing.
+    return "summary_only", ["detail", "action"]
+
+
+@api_router.post("/aigrp/forward-query")
+def aigrp_forward_query(
+    body: AigrpForwardQueryRequest,
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> AigrpForwardQueryResponse:
+    """Cross-L2 forward-query — Phase 6 step 2.
+
+    A sibling (or, with consent, a foreign-Enterprise) L2 sends a query
+    embedding plus its identity. We run semantic search over our own
+    approved KUs, evaluate the per-KU sharing policy, and return either
+    a redacted summary list, full bodies, or zero results when policy
+    forbids. Every call is appended to the ``cross_l2_audit`` table.
+
+    Auth: shared EnterprisePeerKey (same as the rest of /aigrp/*). For
+    cross-Enterprise calls the additional gate is the
+    ``cross_enterprise_consents`` row — without that the call returns
+    zero results silently rather than 401, so probes can't fingerprint
+    consent state.
+    """
+    import uuid
+
+    store = _get_store()
+
+    responder_enterprise = aigrp.enterprise()
+    responder_group = aigrp.group()
+    responder_l2_id = aigrp.self_l2_id()
+
+    # Same-Enterprise vs cross-Enterprise gate. For cross-Enterprise the
+    # consent record drives whether we even attempt to return rows.
+    consent: dict[str, object] | None = None
+    if body.requester_enterprise != responder_enterprise:
+        consent = store.find_cross_enterprise_consent(
+            requester_enterprise=body.requester_enterprise,
+            responder_enterprise=responder_enterprise,
+            requester_group=body.requester_group,
+            responder_group=responder_group,
+            now_iso=aigrp.now_iso(),
+        )
+        if consent is None:
+            # Silent deny — log the attempt and return empty.
+            store.record_cross_l2_audit(
+                audit_id=uuid.uuid4().hex,
+                ts=aigrp.now_iso(),
+                requester_l2_id=body.requester_l2_id,
+                requester_enterprise=body.requester_enterprise,
+                requester_group=body.requester_group,
+                requester_persona=body.requester_persona or None,
+                responder_l2_id=responder_l2_id,
+                responder_enterprise=responder_enterprise,
+                responder_group=responder_group,
+                policy_applied="denied",
+                result_count=0,
+                consent_id=None,
+            )
+            return AigrpForwardQueryResponse(
+                responder_l2_id=responder_l2_id,
+                responder_enterprise=responder_enterprise,
+                responder_group=responder_group,
+                policy_applied="denied",
+                results=[],
+                result_count=0,
+            )
+
+    raw_hits = store.semantic_query_with_scope(
+        body.query_vec,
+        limit=body.max_results * 3,
+    )
+
+    results: list[AigrpForwardQueryHit] = []
+    # The response-level ``policy_applied`` is the strictest applied
+    # across the returned hits ("summary_only" wins over "full_body" if
+    # any KU was redacted).
+    response_policy = "full_body"
+    for hit in raw_hits:
+        unit: KnowledgeUnit = hit["unit"]
+        policy, redacted = _decide_policy_for_ku(
+            ku_enterprise=hit["enterprise_id"],
+            ku_group=hit["group_id"],
+            ku_cross_group_allowed=hit["cross_group_allowed"],
+            requester_enterprise=body.requester_enterprise,
+            requester_group=body.requester_group,
+            responder_enterprise=responder_enterprise,
+            responder_group=responder_group,
+            cross_enterprise_consent=consent,
+        )
+        if policy == "denied":
+            continue
+        if policy == "summary_only":
+            response_policy = "summary_only"
+            results.append(
+                AigrpForwardQueryHit(
+                    ku_id=unit.id,
+                    summary=unit.insight.summary,
+                    detail=None,
+                    action=None,
+                    domains=list(unit.domains),
+                    sim_score=hit["similarity"],
+                    redacted_fields=redacted,
+                )
+            )
+        else:
+            results.append(
+                AigrpForwardQueryHit(
+                    ku_id=unit.id,
+                    summary=unit.insight.summary,
+                    detail=unit.insight.detail,
+                    action=unit.insight.action,
+                    domains=list(unit.domains),
+                    sim_score=hit["similarity"],
+                    redacted_fields=[],
+                )
+            )
+        if len(results) >= body.max_results:
+            break
+
+    consent_id = str(consent["consent_id"]) if consent else None
+    store.record_cross_l2_audit(
+        audit_id=uuid.uuid4().hex,
+        ts=aigrp.now_iso(),
+        requester_l2_id=body.requester_l2_id,
+        requester_enterprise=body.requester_enterprise,
+        requester_group=body.requester_group,
+        requester_persona=body.requester_persona or None,
+        responder_l2_id=responder_l2_id,
+        responder_enterprise=responder_enterprise,
+        responder_group=responder_group,
+        policy_applied=response_policy,
+        result_count=len(results),
+        consent_id=consent_id,
+    )
+
+    return AigrpForwardQueryResponse(
+        responder_l2_id=responder_l2_id,
+        responder_enterprise=responder_enterprise,
+        responder_group=responder_group,
+        policy_applied=response_policy,
+        results=results,
+        result_count=len(results),
+    )
 
 
 @api_router.get("/query/semantic")

@@ -26,6 +26,7 @@ from ..tables import (
     ensure_review_columns,
     ensure_tenancy_columns,
     ensure_users_table,
+    ensure_xgroup_consent_schema,
 )
 from ._protocol import Store
 
@@ -103,6 +104,10 @@ class RemoteStore:
         # run on every startup. Backfills legacy rows so the columns can
         # be queried without NULL handling once enforcement lands.
         ensure_tenancy_columns(self._conn)
+        # Phase 6 step 2 — cross-group flag + cross-Enterprise consent
+        # registry + cross-L2 audit log. Same idempotent shape so the
+        # runtime path matches the Alembic migration.
+        ensure_xgroup_consent_schema(self._conn)
 
     def _check_open(self) -> None:
         """Raise if the store has been closed."""
@@ -951,8 +956,10 @@ class RemoteStore:
                 )
 
     def list_aigrp_peers(self, enterprise: str) -> list[dict[str, Any]]:
-        """Return every known peer in the given Enterprise (no TTL filter —
-        peers age out via the periodic poll task overwriting last_seen).
+        """Return every known peer in the given Enterprise.
+
+        No TTL filter — peers age out via the periodic poll task
+        overwriting ``last_seen``.
         """
         self._check_open()
         with self._lock:
@@ -987,8 +994,9 @@ class RemoteStore:
         ]
 
     def approved_embeddings_iter(self) -> list[bytes]:
-        """Return all non-null approved KU embedding blobs — used to compute
-        this L2's signature centroid.
+        """Return all non-null approved KU embedding blobs.
+
+        Used to compute this L2's signature centroid.
         """
         self._check_open()
         with self._lock:
@@ -1009,6 +1017,227 @@ class RemoteStore:
                 "WHERE ku.status = 'approved'"
             ).fetchall()
         return {r[0] for r in rows if r[0]}
+
+    # -- Phase 6 step 2: cross-L2 forward-query support ------------------
+
+    def semantic_query_with_scope(
+        self,
+        query_vec: list[float],
+        *,
+        limit: int = 10,
+        status: str = "approved",
+    ) -> list[dict[str, Any]]:
+        """Cosine-rank approved KUs, returning scope + xgroup flag per row.
+
+        Used by /aigrp/forward-query — the policy-evaluation step needs
+        ``enterprise_id`` / ``group_id`` / ``cross_group_allowed`` per
+        candidate KU, which the plain ``semantic_query`` path doesn't
+        return. Kept separate to avoid widening the returned tuple shape
+        of the existing call sites.
+
+        Returns one dict per hit, sorted by similarity desc, limited.
+        """
+        import numpy as np
+
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data, embedding, enterprise_id, group_id, "
+                "cross_group_allowed FROM knowledge_units "
+                "WHERE status = ? AND embedding IS NOT NULL",
+                (status,),
+            ).fetchall()
+        if not rows:
+            return []
+
+        query = np.array(query_vec, dtype=np.float32)
+        q_norm = np.linalg.norm(query)
+        if q_norm == 0:
+            return []
+        query = query / q_norm
+
+        scored: list[tuple[float, KnowledgeUnit, str, str, int]] = []
+        for data_str, blob, ent, grp, xgroup in rows:
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.size == 0:
+                continue
+            v_norm = np.linalg.norm(vec)
+            if v_norm == 0:
+                continue
+            sim = float(np.dot(query, vec / v_norm))
+            unit = KnowledgeUnit.model_validate_json(data_str)
+            scored.append((sim, unit, ent or DEFAULT_ENTERPRISE_ID, grp or DEFAULT_GROUP_ID, int(xgroup or 0)))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [
+            {
+                "unit": unit,
+                "similarity": sim,
+                "enterprise_id": ent,
+                "group_id": grp,
+                "cross_group_allowed": bool(xgroup),
+            }
+            for sim, unit, ent, grp, xgroup in scored[:limit]
+        ]
+
+    def find_cross_enterprise_consent(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        """Look up an active consent record for a (req-ent, resp-ent) pair.
+
+        Group-level columns are nullable in the schema — null means "any
+        group on that side". The lookup picks the most-specific match
+        first (both groups specified) and falls back through the wildcard
+        rows. ``now_iso`` lets the caller pin "active" to a specific
+        clock; expired rows are skipped.
+        """
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT consent_id, requester_group, responder_group,
+                       policy, signed_by_admin, signed_at, expires_at,
+                       audit_log_id
+                FROM cross_enterprise_consents
+                WHERE requester_enterprise = ?
+                  AND responder_enterprise = ?
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """,
+                (requester_enterprise, responder_enterprise, now_iso),
+            ).fetchall()
+        if not rows:
+            return None
+
+        # Score: exact group match worth more than null wildcard.
+        def _score(req_g: str | None, resp_g: str | None) -> int:
+            return (
+                (2 if req_g == requester_group and req_g is not None else 0)
+                + (2 if resp_g == responder_group and resp_g is not None else 0)
+                + (1 if req_g is None else 0)
+                + (1 if resp_g is None else 0)
+            )
+
+        best = None
+        best_score = -1
+        for r in rows:
+            req_g, resp_g = r[1], r[2]
+            # Only accept rows where the group constraints are satisfied
+            # — exact match OR null (wildcard).
+            if req_g is not None and req_g != requester_group:
+                continue
+            if resp_g is not None and resp_g != responder_group:
+                continue
+            score = _score(req_g, resp_g)
+            if score > best_score:
+                best_score = score
+                best = r
+        if best is None:
+            return None
+        return {
+            "consent_id": best[0],
+            "requester_group": best[1],
+            "responder_group": best[2],
+            "policy": best[3],
+            "signed_by_admin": best[4],
+            "signed_at": best[5],
+            "expires_at": best[6],
+            "audit_log_id": best[7],
+        }
+
+    def insert_cross_enterprise_consent(
+        self,
+        *,
+        consent_id: str,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        policy: str,
+        signed_by_admin: str,
+        signed_at: str,
+        expires_at: str | None,
+        audit_log_id: str,
+    ) -> None:
+        """Insert a consent record.
+
+        Used by tests today; the admin sign-consent endpoint (Lane D)
+        will call this in a follow-up PR.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO cross_enterprise_consents (
+                    consent_id, requester_enterprise, responder_enterprise,
+                    requester_group, responder_group, policy,
+                    signed_by_admin, signed_at, expires_at, audit_log_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    consent_id, requester_enterprise, responder_enterprise,
+                    requester_group, responder_group, policy,
+                    signed_by_admin, signed_at, expires_at, audit_log_id,
+                ),
+            )
+
+    def record_cross_l2_audit(
+        self,
+        *,
+        audit_id: str,
+        ts: str,
+        requester_l2_id: str | None,
+        requester_enterprise: str | None,
+        requester_group: str | None,
+        requester_persona: str | None,
+        responder_l2_id: str | None,
+        responder_enterprise: str | None,
+        responder_group: str | None,
+        policy_applied: str,
+        result_count: int,
+        consent_id: str | None,
+    ) -> None:
+        """Append a row to ``cross_l2_audit``.
+
+        Every /aigrp/forward-query call writes one row regardless of
+        outcome — even denied requests are logged so an Enterprise admin
+        can see who tried to ask what.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO cross_l2_audit (
+                    audit_id, ts, requester_l2_id, requester_enterprise,
+                    requester_group, requester_persona,
+                    responder_l2_id, responder_enterprise, responder_group,
+                    policy_applied, result_count, consent_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_id, ts, requester_l2_id, requester_enterprise,
+                    requester_group, requester_persona,
+                    responder_l2_id, responder_enterprise, responder_group,
+                    policy_applied, result_count, consent_id,
+                ),
+            )
+
+    def set_ku_cross_group_allowed(self, unit_id: str, allowed: bool) -> bool:
+        """Flip the per-KU cross-group sharing flag.
+
+        Returns True if a row was updated.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE knowledge_units SET cross_group_allowed = ? WHERE id = ?",
+                (1 if allowed else 0, unit_id),
+            )
+        return cur.rowcount > 0
 
     def confidence_distribution(self) -> dict[str, int]:
         """Return confidence distribution buckets for approved KUs."""
