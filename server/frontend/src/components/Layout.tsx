@@ -8,6 +8,8 @@ export function Layout() {
   const location = useLocation();
   const [pendingCount, setPendingCount] = useState(0);
   const onDashboard = location.pathname === "/dashboard";
+  // Network page needs a full-width main; everything else stays narrow.
+  const wide = location.pathname === "/network";
 
   useEffect(() => {
     if (onDashboard) return;
@@ -48,6 +50,7 @@ export function Layout() {
             <span className="text-lg font-bold text-indigo-600">cq</span>
             {navLink("/review", "Review")}
             {navLink("/dashboard", "Dashboard")}
+            {navLink("/network", "Network")}
             {navLink("/settings/api-keys", "API Keys")}
           </div>
           <div className="flex items-center gap-3">
@@ -61,7 +64,11 @@ export function Layout() {
           </div>
         </div>
       </nav>
-      <main className="max-w-2xl mx-auto py-8 px-4">
+      <main
+        className={
+          wide ? "w-full px-0 py-0" : "max-w-2xl mx-auto py-8 px-4"
+        }
+      >
         <Outlet context={{ setPendingCount }} />
       </main>
     </div>
