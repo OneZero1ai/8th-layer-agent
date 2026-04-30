@@ -15,6 +15,24 @@ _EMBEDDING_COLUMN_STATEMENTS = [
     "ALTER TABLE knowledge_units ADD COLUMN embedding_model TEXT",
 ]
 
+AIGRP_PEERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS aigrp_peers (
+    l2_id TEXT PRIMARY KEY,
+    enterprise TEXT NOT NULL,
+    "group" TEXT NOT NULL,
+    endpoint_url TEXT NOT NULL,
+    embedding_centroid BLOB,
+    domain_bloom BLOB,
+    ku_count INTEGER NOT NULL DEFAULT 0,
+    domain_count INTEGER NOT NULL DEFAULT 0,
+    embedding_model TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_signature_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_aigrp_peers_enterprise ON aigrp_peers(enterprise);
+"""
+
 USERS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +85,17 @@ def ensure_embedding_columns(conn: sqlite3.Connection) -> None:
         if col not in existing:
             conn.execute(statement)
     conn.commit()
+
+
+def ensure_aigrp_peers_table(conn: sqlite3.Connection) -> None:
+    """Create the AIGRP peer table if it does not exist.
+
+    Holds this L2's view of every other L2 it knows about in the same
+    Enterprise, including their last-published signature (centroid +
+    Bloom). Built up via /aigrp/hello flooding at deploy time and
+    refreshed by the periodic peer-poll task.
+    """
+    conn.executescript(AIGRP_PEERS_TABLE_SQL)
 
 
 def ensure_users_table(conn: sqlite3.Connection) -> None:

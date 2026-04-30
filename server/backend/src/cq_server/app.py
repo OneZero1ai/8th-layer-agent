@@ -1,5 +1,6 @@
 """cq knowledge store API."""
 
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,9 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.responses import FileResponse
 
+from . import aigrp
 from .auth import router as auth_router
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
+from .embed import model_id as embed_model_id
 from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
@@ -64,9 +67,107 @@ def _get_store() -> RemoteStore:
     return _store
 
 
+async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
+    """Bootstrap into the Enterprise mesh on first start, then poll
+    every known peer's /aigrp/signature on a 5-min interval forever.
+
+    Best-effort: any individual call failure is logged and skipped;
+    convergence happens on the next poll. This task lives for the
+    lifetime of the FastAPI process.
+    """
+    import asyncio
+    import logging
+    import urllib.request
+
+    log = logging.getLogger("aigrp")
+    poll_interval = int(os.environ.get("CQ_AIGRP_POLL_INTERVAL_SEC", "300"))
+
+    # 1. If not first deploy, hit the seed peer's /aigrp/hello once.
+    if not aigrp.is_first_deploy() and aigrp.seed_peer_url():
+        try:
+            hello_payload = json.dumps({
+                "l2_id": aigrp.self_l2_id(),
+                "enterprise": aigrp.enterprise(),
+                "group": aigrp.group(),
+                "endpoint_url": aigrp.self_url(),
+            }).encode()
+            req = urllib.request.Request(
+                f"{aigrp.seed_peer_url()}/api/v1/aigrp/hello",
+                method="POST",
+                data=hello_payload,
+                headers={
+                    "content-type": "application/json",
+                    "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read())
+            for p in body.get("peers", []):
+                if p.get("l2_id") == aigrp.self_l2_id():
+                    continue
+                store.upsert_aigrp_peer(
+                    l2_id=p["l2_id"],
+                    enterprise=p["enterprise"],
+                    group=p["group"],
+                    endpoint_url=p["endpoint_url"],
+                    embedding_centroid=None,
+                    domain_bloom=None,
+                    ku_count=p.get("ku_count", 0),
+                    domain_count=p.get("domain_count", 0),
+                    embedding_model=p.get("embedding_model"),
+                    signature_received=False,
+                )
+            log.info("aigrp bootstrap: seed=%s peers=%d", aigrp.seed_peer_url(), len(body.get("peers", [])))
+        except Exception:
+            log.exception("aigrp bootstrap to seed=%s failed; will retry via poll loop", aigrp.seed_peer_url())
+
+    # 2. Periodic peer-poll loop — fetch each peer's /aigrp/signature.
+    import base64
+
+    while True:
+        try:
+            await asyncio.sleep(poll_interval)
+            peers = store.list_aigrp_peers(aigrp.enterprise())
+            for p in peers:
+                if p["l2_id"] == aigrp.self_l2_id():
+                    continue
+                if not p["endpoint_url"]:
+                    continue
+                try:
+                    req = urllib.request.Request(
+                        f"{p['endpoint_url'].rstrip('/')}/api/v1/aigrp/signature",
+                        method="GET",
+                        headers={"authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}"},
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        sig = json.loads(resp.read())
+                    centroid = base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
+                    bloom = base64.b64decode(sig["domain_bloom_b64"]) if sig.get("domain_bloom_b64") else None
+                    store.upsert_aigrp_peer(
+                        l2_id=sig["l2_id"],
+                        enterprise=sig["enterprise"],
+                        group=sig["group"],
+                        endpoint_url=sig.get("endpoint_url") or p["endpoint_url"],
+                        embedding_centroid=centroid,
+                        domain_bloom=bloom,
+                        ku_count=sig.get("ku_count", 0),
+                        domain_count=sig.get("domain_count", 0),
+                        embedding_model=sig.get("embedding_model"),
+                        signature_received=True,
+                    )
+                except Exception:
+                    log.warning("aigrp poll of peer %s failed", p["l2_id"])
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("aigrp poll loop iteration crashed; continuing")
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
-    """Manage the store lifecycle."""
+    """Manage the store lifecycle + AIGRP background task."""
+    import asyncio
+
     global _store  # noqa: PLW0603
     jwt_secret = os.environ.get("CQ_JWT_SECRET")
     if not jwt_secret:
@@ -78,7 +179,19 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     _store = RemoteStore(db_path=db_path)
     app_instance.state.store = _store
     app_instance.state.api_key_pepper = pepper
+
+    aigrp_task = None
+    if aigrp.aigrp_enabled():
+        aigrp_task = asyncio.create_task(_aigrp_bootstrap_and_poll(_store))
+
     yield
+
+    if aigrp_task is not None:
+        aigrp_task.cancel()
+        try:
+            await aigrp_task
+        except (asyncio.CancelledError, Exception):
+            pass
     _store.close()
 
 
@@ -206,6 +319,221 @@ def aigrp_lookup(
         elapsed_ms=elapsed_ms,
         filtered_count=dropped,
     )
+
+
+class AigrpHelloRequest(BaseModel):
+    """A new L2 introducing itself to a seed peer."""
+
+    l2_id: str = Field(min_length=1, description="canonical Enterprise/Group identity")
+    enterprise: str = Field(min_length=1)
+    group: str = Field(min_length=1)
+    endpoint_url: str = Field(min_length=1, description="how peers should reach me")
+
+
+class AigrpAnnounceRequest(BaseModel):
+    """A peer flooding the existence of another L2 to its sibling peers."""
+
+    l2_id: str = Field(min_length=1)
+    enterprise: str = Field(min_length=1)
+    group: str = Field(min_length=1)
+    endpoint_url: str = Field(min_length=1)
+    announced_by: str = Field(default="", description="l2_id of the peer doing the flooding")
+
+
+class AigrpPeer(BaseModel):
+    """One row from the peer table — wire shape."""
+
+    l2_id: str
+    enterprise: str
+    group: str
+    endpoint_url: str
+    ku_count: int
+    domain_count: int
+    embedding_model: str | None = None
+    first_seen_at: str
+    last_seen_at: str
+    last_signature_at: str | None = None
+
+
+class AigrpPeersResponse(BaseModel):
+    enterprise: str
+    self_l2_id: str
+    peer_count: int
+    peers: list[AigrpPeer]
+
+
+class AigrpSignatureResponse(BaseModel):
+    """This L2's current corpus signature."""
+
+    l2_id: str
+    enterprise: str
+    group: str
+    endpoint_url: str
+    ku_count: int
+    domain_count: int
+    embedding_model: str | None = None
+    embedding_centroid_b64: str | None = None
+    domain_bloom_b64: str | None = None
+    computed_at: str
+
+
+def _build_self_signature(store: RemoteStore) -> AigrpSignatureResponse:
+    """Walk the local approved corpus and produce this L2's signature."""
+    import base64
+
+    embeddings = store.approved_embeddings_iter()
+    centroid = aigrp.compute_centroid(embeddings)
+    domains = store.approved_domains()
+    bloom = aigrp.compute_domain_bloom(domains)
+    return AigrpSignatureResponse(
+        l2_id=aigrp.self_l2_id(),
+        enterprise=aigrp.enterprise(),
+        group=aigrp.group(),
+        endpoint_url=aigrp.self_url(),
+        ku_count=len(embeddings),
+        domain_count=len(domains),
+        embedding_model=embed_model_id() if embeddings else None,
+        embedding_centroid_b64=base64.b64encode(centroid).decode("ascii") if centroid else None,
+        domain_bloom_b64=base64.b64encode(bloom).decode("ascii"),
+        computed_at=aigrp.now_iso(),
+    )
+
+
+@api_router.post("/aigrp/hello", status_code=201)
+def aigrp_hello(
+    body: AigrpHelloRequest,
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> AigrpPeersResponse:
+    """A new L2 announces itself to this seed peer.
+
+    Validates the shared EnterprisePeerKey, refuses if the new L2 claims
+    a different Enterprise. Records the new peer in our local table,
+    then fans out /aigrp/announce to every other known peer (best-effort,
+    background — does not block the hello response).
+    """
+    if body.enterprise != aigrp.enterprise():
+        raise HTTPException(
+            status_code=403,
+            detail=f"this L2 belongs to enterprise={aigrp.enterprise()!r}; refusing hello from {body.enterprise!r}",
+        )
+
+    store = _get_store()
+    store.upsert_aigrp_peer(
+        l2_id=body.l2_id,
+        enterprise=body.enterprise,
+        group=body.group,
+        endpoint_url=body.endpoint_url,
+        embedding_centroid=None,
+        domain_bloom=None,
+        ku_count=0,
+        domain_count=0,
+        embedding_model=None,
+        signature_received=False,
+    )
+
+    # Compose the response — current peer table from this L2's POV.
+    peers = store.list_aigrp_peers(aigrp.enterprise())
+
+    # Fan out the new peer's existence to every other known peer
+    # asynchronously. Failures are best-effort; convergence is via
+    # subsequent polls.
+    import asyncio
+
+    async def _flood() -> None:
+        try:
+            import urllib.request
+
+            announce_payload = json.dumps({
+                "l2_id": body.l2_id,
+                "enterprise": body.enterprise,
+                "group": body.group,
+                "endpoint_url": body.endpoint_url,
+                "announced_by": aigrp.self_l2_id(),
+            }).encode()
+            for p in peers:
+                if p["l2_id"] == body.l2_id or p["l2_id"] == aigrp.self_l2_id():
+                    continue
+                if not p["endpoint_url"]:
+                    continue
+                req = urllib.request.Request(
+                    f"{p['endpoint_url'].rstrip('/')}/api/v1/aigrp/announce",
+                    method="POST",
+                    data=announce_payload,
+                    headers={
+                        "content-type": "application/json",
+                        "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=5):
+                        pass
+                except Exception:
+                    pass  # best-effort flood
+
+        except Exception:
+            pass
+
+    asyncio.create_task(_flood())
+
+    return AigrpPeersResponse(
+        enterprise=aigrp.enterprise(),
+        self_l2_id=aigrp.self_l2_id(),
+        peer_count=len(peers),
+        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers],
+    )
+
+
+@api_router.post("/aigrp/announce", status_code=201)
+def aigrp_announce(
+    body: AigrpAnnounceRequest,
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> dict[str, str]:
+    """A sibling L2 is informing us that a new peer has joined the mesh."""
+    if body.enterprise != aigrp.enterprise():
+        raise HTTPException(
+            status_code=403,
+            detail=f"this L2 belongs to enterprise={aigrp.enterprise()!r}; refusing announce for {body.enterprise!r}",
+        )
+
+    store = _get_store()
+    store.upsert_aigrp_peer(
+        l2_id=body.l2_id,
+        enterprise=body.enterprise,
+        group=body.group,
+        endpoint_url=body.endpoint_url,
+        embedding_centroid=None,
+        domain_bloom=None,
+        ku_count=0,
+        domain_count=0,
+        embedding_model=None,
+        signature_received=False,
+    )
+    return {"recorded": body.l2_id, "by": aigrp.self_l2_id()}
+
+
+@api_router.get("/aigrp/peers")
+def aigrp_peers(
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> AigrpPeersResponse:
+    """Return our current view of the Enterprise's peer mesh."""
+    store = _get_store()
+    peers = store.list_aigrp_peers(aigrp.enterprise())
+    return AigrpPeersResponse(
+        enterprise=aigrp.enterprise(),
+        self_l2_id=aigrp.self_l2_id(),
+        peer_count=len(peers),
+        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers],
+    )
+
+
+@api_router.get("/aigrp/signature")
+def aigrp_signature(
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> AigrpSignatureResponse:
+    """Return this L2's current corpus signature — centroid + Bloom filter
+    + counts. Polled by every peer on the AIGRP polling interval."""
+    store = _get_store()
+    return _build_self_signature(store)
 
 
 @api_router.get("/query/semantic")
