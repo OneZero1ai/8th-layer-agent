@@ -32,6 +32,49 @@ _TENANCY_COLUMN_STATEMENTS_USERS = [
     f"ALTER TABLE users ADD COLUMN group_id TEXT NOT NULL DEFAULT '{DEFAULT_GROUP_ID}'",
 ]
 
+# Phase 6 step 2 — cross-group / cross-enterprise sharing controls.
+# `cross_group_allowed` is the per-KU opt-in flag the forward-query
+# endpoint consults when an in-Enterprise sibling Group asks. Default 0
+# preserves the prior behavior (no implicit cross-Group sharing) for
+# every existing row.
+_XGROUP_COLUMN_STATEMENTS = [
+    "ALTER TABLE knowledge_units ADD COLUMN cross_group_allowed INTEGER NOT NULL DEFAULT 0",
+]
+
+CROSS_ENTERPRISE_CONSENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS cross_enterprise_consents (
+    consent_id TEXT PRIMARY KEY,
+    requester_enterprise TEXT NOT NULL,
+    responder_enterprise TEXT NOT NULL,
+    requester_group TEXT,
+    responder_group TEXT,
+    policy TEXT NOT NULL,
+    signed_by_admin TEXT NOT NULL,
+    signed_at TEXT NOT NULL,
+    expires_at TEXT,
+    audit_log_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_xent_consents_pair
+    ON cross_enterprise_consents(requester_enterprise, responder_enterprise);
+"""
+
+CROSS_L2_AUDIT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS cross_l2_audit (
+    audit_id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    requester_l2_id TEXT,
+    requester_enterprise TEXT,
+    requester_group TEXT,
+    requester_persona TEXT,
+    responder_l2_id TEXT,
+    responder_enterprise TEXT,
+    responder_group TEXT,
+    policy_applied TEXT,
+    result_count INTEGER,
+    consent_id TEXT
+);
+"""
+
 AIGRP_PEERS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS aigrp_peers (
     l2_id TEXT PRIMARY KEY,
@@ -159,4 +202,28 @@ def ensure_tenancy_columns(conn: sqlite3.Connection) -> None:
     conn.execute(f"UPDATE knowledge_units SET group_id = '{DEFAULT_GROUP_ID}' WHERE group_id IS NULL")
     conn.execute(f"UPDATE users SET enterprise_id = '{DEFAULT_ENTERPRISE_ID}' WHERE enterprise_id IS NULL")
     conn.execute(f"UPDATE users SET group_id = '{DEFAULT_GROUP_ID}' WHERE group_id IS NULL")
+    conn.commit()
+
+
+def ensure_xgroup_consent_schema(conn: sqlite3.Connection) -> None:
+    """Phase 6 step 2 — additive schema for cross-L2 forward-query.
+
+    Idempotent on every startup, mirroring ``ensure_tenancy_columns``.
+    Adds ``cross_group_allowed`` to ``knowledge_units`` (default 0 — no
+    implicit sharing) and creates the ``cross_enterprise_consents`` and
+    ``cross_l2_audit`` tables. Both tables are write-once-from-server's
+    perspective (admin signs consents in Lane D; audits are append-only)
+    so no schema migration besides the initial CREATE.
+    """
+    cursor = conn.execute("PRAGMA table_info(knowledge_units)")
+    existing_ku = {row[1] for row in cursor.fetchall()}
+    for statement in _XGROUP_COLUMN_STATEMENTS:
+        col = statement.split("COLUMN ")[1].split()[0]
+        if col not in existing_ku:
+            conn.execute(statement)
+    # Backfill: SQLite's ADD COLUMN ... DEFAULT 0 leaves pre-existing
+    # rows NULL on some older builds; force every row to 0 for safety.
+    conn.execute("UPDATE knowledge_units SET cross_group_allowed = 0 WHERE cross_group_allowed IS NULL")
+    conn.executescript(CROSS_ENTERPRISE_CONSENTS_TABLE_SQL)
+    conn.executescript(CROSS_L2_AUDIT_TABLE_SQL)
     conn.commit()
