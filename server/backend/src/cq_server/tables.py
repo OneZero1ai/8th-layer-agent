@@ -100,8 +100,32 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
     enterprise_id TEXT NOT NULL DEFAULT '{DEFAULT_ENTERPRISE_ID}',
-    group_id TEXT NOT NULL DEFAULT '{DEFAULT_GROUP_ID}'
+    group_id TEXT NOT NULL DEFAULT '{DEFAULT_GROUP_ID}',
+    role TEXT NOT NULL DEFAULT 'user'
 );
+"""
+
+# Phase 6 step 3 — role column on users for admin-only routes.
+# Defaults to 'user'; promote with an UPDATE to grant admin (Lane D).
+_USER_ROLE_COLUMN_STATEMENTS = [
+    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+]
+
+PEERS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS peers (
+    persona TEXT PRIMARY KEY,
+    user_id INTEGER,
+    enterprise_id TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    expertise_vector BLOB,
+    expertise_domains TEXT,
+    discoverable INTEGER NOT NULL DEFAULT 0,
+    working_dir_hint TEXT,
+    metadata_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_peers_enterprise_group ON peers(enterprise_id, group_id);
+CREATE INDEX IF NOT EXISTS idx_peers_last_seen ON peers(last_seen_at);
 """
 
 API_KEYS_TABLE_SQL = """
@@ -202,6 +226,40 @@ def ensure_tenancy_columns(conn: sqlite3.Connection) -> None:
     conn.execute(f"UPDATE knowledge_units SET group_id = '{DEFAULT_GROUP_ID}' WHERE group_id IS NULL")
     conn.execute(f"UPDATE users SET enterprise_id = '{DEFAULT_ENTERPRISE_ID}' WHERE enterprise_id IS NULL")
     conn.execute(f"UPDATE users SET group_id = '{DEFAULT_GROUP_ID}' WHERE group_id IS NULL")
+    conn.commit()
+
+
+def ensure_user_role_column(conn: sqlite3.Connection) -> None:
+    """Phase 6 step 3 — add ``role`` column to ``users`` if missing.
+
+    Idempotent: checks the existing schema and only ALTERs when the
+    column doesn't already exist. Pre-existing rows backfill to ``'user'``
+    so the admin gate stays closed by default.
+    """
+    cursor = conn.execute("PRAGMA table_info(users)")
+    existing = {row[1] for row in cursor.fetchall()}
+    for statement in _USER_ROLE_COLUMN_STATEMENTS:
+        col = statement.split("COLUMN ")[1].split()[0]
+        if col not in existing:
+            conn.execute(statement)
+    # Same SQLite quirk as the tenancy backfill — explicit UPDATE so any
+    # legacy row that pre-dates the column add picks up the default.
+    conn.execute("UPDATE users SET role = 'user' WHERE role IS NULL")
+    conn.commit()
+
+
+def ensure_peers_schema(conn: sqlite3.Connection) -> None:
+    """Phase 6 step 3 — create the presence registry table + indexes.
+
+    Idempotent on every startup, mirroring ``ensure_xgroup_consent_schema``.
+    The ``peers`` table is the live registry of which personas are heart-
+    beating against this L2; surfaces "active agents per L2" to the demo
+    frontend. Schema is wholly additive — no relationship to existing
+    tables beyond an optional FK-shaped ``user_id`` column (kept as a
+    plain integer to avoid retro-fitting FK constraints across legacy
+    DBs).
+    """
+    conn.executescript(PEERS_TABLE_SQL)
     conn.commit()
 
 

@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import FileResponse
 
 from . import aigrp
+from .auth import require_admin
 from .auth import router as auth_router
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
@@ -805,6 +806,354 @@ def aigrp_forward_query(
         results=results,
         result_count=len(results),
     )
+
+
+# --- Phase 6 step 3 — Lane C: presence registry ---------------------------
+
+# Heartbeat cadence advertised back to the client. 5-min default keeps the
+# table fresh without hammering the DB; clients can over-shoot but we expect
+# the harness hook to land near this number.
+PEER_HEARTBEAT_INTERVAL_SECONDS = 300
+PEER_ACTIVE_DEFAULT_WINDOW_MIN = 15
+
+
+class PeerHeartbeatRequest(BaseModel):
+    """Request body for ``POST /peers/heartbeat``.
+
+    ``persona`` is the agent identity within the caller's tenant — e.g.
+    ``persona-cloudfront-asker``. ``discoverable=False`` keeps the
+    persona out of the active-peers listing while still recording the
+    heartbeat (so an admin dashboard can show presence even for opted-
+    out personas). ``expertise_domains`` is a free-text tag list; the
+    server stores it as JSON and returns it verbatim.
+    """
+
+    persona: str = Field(min_length=1, max_length=128)
+    discoverable: bool = False
+    working_dir_hint: str | None = Field(default=None, max_length=512)
+    expertise_domains: list[str] | None = None
+
+
+class PeerHeartbeatResponse(BaseModel):
+    """Response from a successful heartbeat — echoes the persona and tells the client when to next call back."""
+
+    persona: str
+    registered_at: str
+    next_heartbeat_in_seconds: int
+
+
+class ActivePeer(BaseModel):
+    """One row of the active-peers listing returned by GET /peers/active."""
+
+    persona: str
+    enterprise_id: str
+    group_id: str
+    last_seen_at: str
+    minutes_since_last_seen: float
+    discoverable: bool
+    working_dir_hint: str | None = None
+    expertise_domains: list[str] | None = None
+
+
+class ActivePeersResponse(BaseModel):
+    """Wire shape for GET /peers/active — list + count for client-side rendering."""
+
+    active_peers: list[ActivePeer]
+    count: int
+
+
+@api_router.post("/peers/heartbeat")
+def peers_heartbeat(
+    request: PeerHeartbeatRequest,
+    username: str = Depends(require_api_key),
+) -> PeerHeartbeatResponse:
+    """Register or refresh a persona's presence on this L2.
+
+    Auth: any valid API key. Tenancy scope (``enterprise_id`` /
+    ``group_id``) is resolved from the authenticated user's row — the
+    request body never carries scope to avoid spoofing. The row is
+    UPSERTed; ``last_seen_at`` advances to "now" on every call.
+    """
+    from datetime import UTC, datetime
+
+    store = _get_store()
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    now = datetime.now(UTC).isoformat()
+    store.upsert_peer(
+        persona=request.persona,
+        user_id=int(user["id"]),
+        enterprise_id=user["enterprise_id"],
+        group_id=user["group_id"],
+        last_seen_at=now,
+        expertise_domains=request.expertise_domains,
+        discoverable=request.discoverable,
+        working_dir_hint=request.working_dir_hint,
+    )
+    return PeerHeartbeatResponse(
+        persona=request.persona,
+        registered_at=now,
+        next_heartbeat_in_seconds=PEER_HEARTBEAT_INTERVAL_SECONDS,
+    )
+
+
+@api_router.get("/peers/active")
+def peers_active(
+    group: Annotated[str | None, Query()] = None,
+    since_minutes: Annotated[int, Query(gt=0, le=24 * 60)] = PEER_ACTIVE_DEFAULT_WINDOW_MIN,
+    include_self: Annotated[bool, Query()] = False,
+    self_persona: Annotated[str | None, Query(alias="self_persona")] = None,
+    username: str = Depends(require_api_key),
+) -> ActivePeersResponse:
+    """Return discoverable peers in the caller's Enterprise.
+
+    Scoping rules (intentionally Enterprise-bounded):
+
+      - Cross-Enterprise visibility is NOT granted by consent; presence
+        is its own privacy plane. A consent record unlocks knowledge
+        access via /aigrp/forward-query, not who's online.
+      - ``group`` narrows further to a single Group inside the caller's
+        Enterprise.
+      - ``include_self=False`` hides ``self_persona`` from the result.
+        The requester provides ``self_persona`` because the API key
+        does not pin a single persona — one user can own many personas.
+
+    ``minutes_since_last_seen`` is computed against the row's ISO
+    timestamp at request time, so it's monotone-decreasing across calls.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    store = _get_store()
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    now = datetime.now(UTC)
+    since_iso = (now - timedelta(minutes=since_minutes)).isoformat()
+    rows = store.list_active_peers(
+        enterprise_id=user["enterprise_id"],
+        since_iso=since_iso,
+        group_id=group,
+        exclude_persona=None if include_self else self_persona,
+    )
+    active: list[ActivePeer] = []
+    for r in rows:
+        try:
+            last_seen = datetime.fromisoformat(r["last_seen_at"])
+        except ValueError:
+            # Defensive — should never happen since we wrote ISO-8601.
+            continue
+        delta_min = max(0.0, (now - last_seen).total_seconds() / 60.0)
+        active.append(
+            ActivePeer(
+                persona=r["persona"],
+                enterprise_id=r["enterprise_id"],
+                group_id=r["group_id"],
+                last_seen_at=r["last_seen_at"],
+                minutes_since_last_seen=round(delta_min, 2),
+                discoverable=r["discoverable"],
+                working_dir_hint=r["working_dir_hint"],
+                expertise_domains=r["expertise_domains"],
+            )
+        )
+    return ActivePeersResponse(active_peers=active, count=len(active))
+
+
+# --- Phase 6 step 3 — Lane D: consent admin endpoints ---------------------
+
+
+class SignConsentRequest(BaseModel):
+    """Request body for ``POST /consents/sign``.
+
+    Group columns are optional — null means "any group on that side"
+    (wildcard). Same shape as the row schema in
+    ``cross_enterprise_consents``. Only ``summary_only`` is accepted in
+    v1; ``full_body`` cross-Enterprise sharing is intentionally deferred
+    until a higher-trust signing flow exists.
+    """
+
+    requester_enterprise: str = Field(min_length=1)
+    responder_enterprise: str = Field(min_length=1)
+    requester_group: str | None = None
+    responder_group: str | None = None
+    policy: str = Field(default="summary_only")
+    expires_at: str | None = None
+
+
+class SignConsentResponse(BaseModel):
+    """Response from POST /consents/sign — echoes the new consent_id and audit pairing."""
+
+    consent_id: str
+    signed_by_admin: str
+    signed_at: str
+    audit_log_id: str
+
+
+class ConsentRecord(BaseModel):
+    """Public view of one row from cross_enterprise_consents."""
+
+    consent_id: str
+    requester_enterprise: str
+    responder_enterprise: str
+    requester_group: str | None = None
+    responder_group: str | None = None
+    policy: str
+    signed_by_admin: str
+    signed_at: str
+    expires_at: str | None = None
+    audit_log_id: str
+
+
+class ConsentListResponse(BaseModel):
+    """Wire shape for GET /consents — listing + count."""
+
+    consents: list[ConsentRecord]
+    count: int
+
+
+@api_router.post("/consents/sign", status_code=201)
+def consents_sign(
+    request: SignConsentRequest,
+    admin_username: str = Depends(require_admin),
+) -> SignConsentResponse:
+    """Admin-only: sign a cross-Enterprise consent.
+
+    422 when the request is malformed (intra-Enterprise pair, unsupported
+    policy). 409 when an unexpired consent already exists for the same
+    ``(req_ent, resp_ent, req_grp, resp_grp)`` tuple. On success a row
+    is inserted into ``cross_enterprise_consents`` and a paired audit
+    record into ``cross_l2_audit`` with ``policy_applied='consent_signed'``.
+    """
+    import uuid
+
+    if request.requester_enterprise == request.responder_enterprise:
+        raise HTTPException(
+            status_code=422,
+            detail="cross-Enterprise consents must span two distinct Enterprises; "
+                   "use the per-KU cross_group_allowed flag for intra-Enterprise scoping",
+        )
+    if request.policy != "summary_only":
+        raise HTTPException(
+            status_code=422,
+            detail=f"unsupported policy {request.policy!r}; only 'summary_only' is allowed in v1",
+        )
+
+    store = _get_store()
+    now = aigrp.now_iso()
+    existing = store.find_active_consent_for_pair(
+        requester_enterprise=request.requester_enterprise,
+        responder_enterprise=request.responder_enterprise,
+        requester_group=request.requester_group,
+        responder_group=request.responder_group,
+        now_iso=now,
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"active consent already exists: {existing['consent_id']}",
+        )
+
+    consent_id = "consent_" + uuid.uuid4().hex[:20]
+    audit_log_id = "aud_" + uuid.uuid4().hex[:20]
+    store.insert_cross_enterprise_consent(
+        consent_id=consent_id,
+        requester_enterprise=request.requester_enterprise,
+        responder_enterprise=request.responder_enterprise,
+        requester_group=request.requester_group,
+        responder_group=request.responder_group,
+        policy=request.policy,
+        signed_by_admin=admin_username,
+        signed_at=now,
+        expires_at=request.expires_at,
+        audit_log_id=audit_log_id,
+    )
+    # Pair the sign event with a row in cross_l2_audit so the audit log
+    # tells the full story of "who signed what, when".
+    store.record_cross_l2_audit(
+        audit_id=audit_log_id,
+        ts=now,
+        requester_l2_id=None,
+        requester_enterprise=request.requester_enterprise,
+        requester_group=request.requester_group,
+        requester_persona=None,
+        responder_l2_id=None,
+        responder_enterprise=request.responder_enterprise,
+        responder_group=request.responder_group,
+        policy_applied="consent_signed",
+        result_count=0,
+        consent_id=consent_id,
+    )
+    return SignConsentResponse(
+        consent_id=consent_id,
+        signed_by_admin=admin_username,
+        signed_at=now,
+        audit_log_id=audit_log_id,
+    )
+
+
+@api_router.get("/consents")
+def consents_list(
+    include_expired: Annotated[bool, Query()] = False,
+    limit: Annotated[int, Query(gt=0, le=500)] = 50,
+    _admin: str = Depends(require_admin),
+) -> ConsentListResponse:
+    """Admin-only: list cross-Enterprise consents.
+
+    By default only active (non-expired) rows are returned; pass
+    ``include_expired=true`` to see soft-revoked / time-boxed records.
+    Records are ordered newest-first by ``signed_at``.
+    """
+    store = _get_store()
+    rows = store.list_cross_enterprise_consents(
+        include_expired=include_expired,
+        now_iso=aigrp.now_iso(),
+        limit=limit,
+    )
+    return ConsentListResponse(
+        consents=[ConsentRecord(**r) for r in rows],
+        count=len(rows),
+    )
+
+
+@api_router.delete("/consents/{consent_id}", status_code=200)
+def consents_revoke(
+    consent_id: str,
+    admin_username: str = Depends(require_admin),
+) -> dict[str, str]:
+    """Admin-only: soft-revoke a consent.
+
+    Sets ``expires_at`` to "now" rather than deleting the row, so the
+    consent's audit history (who signed it, when) survives revocation.
+    Writes a paired ``cross_l2_audit`` row with
+    ``policy_applied='consent_revoked'``. 404 when the id is unknown.
+    """
+    import uuid
+
+    store = _get_store()
+    row = store.get_cross_enterprise_consent(consent_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Consent not found")
+    now = aigrp.now_iso()
+    store.revoke_cross_enterprise_consent(consent_id=consent_id, revoked_at=now)
+    store.record_cross_l2_audit(
+        audit_id="aud_" + uuid.uuid4().hex[:20],
+        ts=now,
+        requester_l2_id=None,
+        requester_enterprise=row["requester_enterprise"],
+        requester_group=row["requester_group"],
+        requester_persona=None,
+        responder_l2_id=None,
+        responder_enterprise=row["responder_enterprise"],
+        responder_group=row["responder_group"],
+        policy_applied="consent_revoked",
+        result_count=0,
+        consent_id=consent_id,
+    )
+    return {
+        "consent_id": consent_id,
+        "revoked_at": now,
+        "revoked_by_admin": admin_username,
+    }
 
 
 @api_router.get("/query/semantic")
