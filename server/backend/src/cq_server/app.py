@@ -407,7 +407,7 @@ def _build_self_signature(store: RemoteStore) -> AigrpSignatureResponse:
 
 
 @api_router.post("/aigrp/hello", status_code=201)
-def aigrp_hello(
+async def aigrp_hello(
     body: AigrpHelloRequest,
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpPeersResponse:
@@ -417,6 +417,9 @@ def aigrp_hello(
     a different Enterprise. Records the new peer in our local table,
     then fans out /aigrp/announce to every other known peer (best-effort,
     background — does not block the hello response).
+
+    Async because we spawn the flood as an asyncio.Task. The SQLite
+    store calls are fast enough to run inline on the event loop.
     """
     if body.enterprise != aigrp.enterprise():
         raise HTTPException(
