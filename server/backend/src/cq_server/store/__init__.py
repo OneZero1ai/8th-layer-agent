@@ -18,10 +18,13 @@ from cq.models import KnowledgeUnit
 
 from ..scoring import calculate_relevance
 from ..tables import (
+    DEFAULT_ENTERPRISE_ID,
+    DEFAULT_GROUP_ID,
     ensure_aigrp_peers_table,
     ensure_api_keys_table,
     ensure_embedding_columns,
     ensure_review_columns,
+    ensure_tenancy_columns,
     ensure_users_table,
 )
 from ._protocol import Store
@@ -32,10 +35,12 @@ _logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path("/data/cq.db")
 
-_SCHEMA_SQL = """
+_SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS knowledge_units (
     id TEXT PRIMARY KEY,
-    data TEXT NOT NULL
+    data TEXT NOT NULL,
+    enterprise_id TEXT NOT NULL DEFAULT '{DEFAULT_ENTERPRISE_ID}',
+    group_id TEXT NOT NULL DEFAULT '{DEFAULT_GROUP_ID}'
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_unit_domains (
@@ -94,6 +99,10 @@ class RemoteStore:
         ensure_users_table(self._conn)
         ensure_api_keys_table(self._conn)
         ensure_aigrp_peers_table(self._conn)
+        # Phase 6 step 1 — additive tenancy columns. Idempotent; safe to
+        # run on every startup. Backfills legacy rows so the columns can
+        # be queried without NULL handling once enforcement lands.
+        ensure_tenancy_columns(self._conn)
 
     def _check_open(self) -> None:
         """Raise if the store has been closed."""
@@ -153,10 +162,25 @@ class RemoteStore:
             unit.evidence.first_observed.isoformat() if unit.evidence.first_observed else datetime.now(UTC).isoformat()
         )
         with self._lock, self._conn:
+            # Phase 6 step 1: stamp default tenancy scope on every new
+            # row. Future PRs will pull these from JWT claims (and an
+            # API-key payload extension); for now the columns are
+            # additive and every row lands in the default scope.
             self._conn.execute(
-                "INSERT INTO knowledge_units (id, data, created_at, tier, embedding, embedding_model) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (unit.id, data, created_at, unit.tier.value, embedding, embedding_model),
+                "INSERT INTO knowledge_units "
+                "(id, data, created_at, tier, embedding, embedding_model, "
+                "enterprise_id, group_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    unit.id,
+                    data,
+                    created_at,
+                    unit.tier.value,
+                    embedding,
+                    embedding_model,
+                    DEFAULT_ENTERPRISE_ID,
+                    DEFAULT_GROUP_ID,
+                ),
             )
             self._conn.executemany(
                 "INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (?, ?)",
@@ -595,9 +619,18 @@ class RemoteStore:
         self._check_open()
         now = datetime.now(UTC).isoformat()
         with self._lock, self._conn:
+            # Phase 6 step 1: stamp default tenancy scope on every new user.
             self._conn.execute(
-                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                (username, password_hash, now),
+                "INSERT INTO users "
+                "(username, password_hash, created_at, enterprise_id, group_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    username,
+                    password_hash,
+                    now,
+                    DEFAULT_ENTERPRISE_ID,
+                    DEFAULT_GROUP_ID,
+                ),
             )
 
     def get_user(self, username: str) -> dict[str, Any] | None:
@@ -955,7 +988,8 @@ class RemoteStore:
 
     def approved_embeddings_iter(self) -> list[bytes]:
         """Return all non-null approved KU embedding blobs — used to compute
-        this L2's signature centroid."""
+        this L2's signature centroid.
+        """
         self._check_open()
         with self._lock:
             rows = self._conn.execute(
