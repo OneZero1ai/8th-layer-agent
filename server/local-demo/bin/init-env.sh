@@ -24,14 +24,21 @@ ORION_BRIDGE_JWT_SECRET=$(gen_secret)
 ORION_BRIDGE_API_KEY_PEPPER=$(gen_secret)
 
 # Pull the AWS-side orion peer key + seed URL from SSM + describe-stacks.
-AWS_PROFILE_USE="${AWS_PROFILE:-8th-layer-app}"
-ORION_AWS_PEER_KEY=$(aws --profile "$AWS_PROFILE_USE" --region us-east-1 \
+# These resources live in the 8th-layer-app account specifically — NOT in
+# whatever $AWS_PROFILE the operator's shell is currently set to. Allow
+# override via AWS_PROFILE_FOR_LOOKUP, otherwise hard-default to the right
+# profile so the lookup works regardless of shell context.
+AWS_PROFILE_FOR_LOOKUP="${AWS_PROFILE_FOR_LOOKUP:-8th-layer-app}"
+ORION_AWS_PEER_KEY=$(aws --profile "$AWS_PROFILE_FOR_LOOKUP" --region us-east-1 \
     ssm get-parameter --name /8l-aigrp/orion/peer-key --with-decryption \
     --query Parameter.Value --output text 2>/dev/null || echo "")
-ORION_AWS_SEED_URL=$(aws --profile "$AWS_PROFILE_USE" --region us-east-1 \
+ORION_AWS_SEED_URL=$(aws --profile "$AWS_PROFILE_FOR_LOOKUP" --region us-east-1 \
     cloudformation describe-stacks --stack-name test-orion-eng-l2 \
     --query "Stacks[0].Outputs[?OutputKey=='CqEndpoint'].OutputValue|[0]" \
     --output text 2>/dev/null || echo "")
+# AWS_PROFILE for the *runtime* containers (Bedrock embed) is separate;
+# defaults to the same lookup profile but can differ.
+AWS_PROFILE_USE="${AWS_PROFILE:-$AWS_PROFILE_FOR_LOOKUP}"
 
 cat > .env <<EOF
 # Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by bin/init-env.sh

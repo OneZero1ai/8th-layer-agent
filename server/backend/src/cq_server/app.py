@@ -81,9 +81,11 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
 
     log = logging.getLogger("aigrp")
     poll_interval = int(os.environ.get("CQ_AIGRP_POLL_INTERVAL_SEC", "300"))
+    needs_bootstrap = (not aigrp.is_first_deploy()) and bool(aigrp.seed_peer_url())
 
-    # 1. If not first deploy, hit the seed peer's /aigrp/hello once.
-    if not aigrp.is_first_deploy() and aigrp.seed_peer_url():
+    def _try_bootstrap() -> bool:
+        """Hit the seed's /aigrp/hello and absorb its peer table.
+        Returns True on success. Idempotent on the seed side."""
         try:
             hello_payload = json.dumps({
                 "l2_id": aigrp.self_l2_id(),
@@ -118,15 +120,25 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     signature_received=False,
                 )
             log.info("aigrp bootstrap: seed=%s peers=%d", aigrp.seed_peer_url(), len(body.get("peers", [])))
+            return True
         except Exception:
-            log.exception("aigrp bootstrap to seed=%s failed; will retry via poll loop", aigrp.seed_peer_url())
+            log.warning("aigrp bootstrap to seed=%s failed; will retry on next poll cycle", aigrp.seed_peer_url())
+            return False
+
+    # 1. First-attempt bootstrap on startup (best effort).
+    if needs_bootstrap and _try_bootstrap():
+        needs_bootstrap = False
 
     # 2. Periodic peer-poll loop — fetch each peer's /aigrp/signature.
+    #    Also re-attempts bootstrap on every cycle while it's still
+    #    pending; gives self-healing if the seed was down at start.
     import base64
 
     while True:
         try:
             await asyncio.sleep(poll_interval)
+            if needs_bootstrap and _try_bootstrap():
+                needs_bootstrap = False
             peers = store.list_aigrp_peers(aigrp.enterprise())
             for p in peers:
                 if p["l2_id"] == aigrp.self_l2_id():
