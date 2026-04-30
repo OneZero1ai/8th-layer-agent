@@ -17,7 +17,13 @@ from typing import Any
 from cq.models import KnowledgeUnit
 
 from ..scoring import calculate_relevance
-from ..tables import ensure_api_keys_table, ensure_embedding_columns, ensure_review_columns, ensure_users_table
+from ..tables import (
+    ensure_aigrp_peers_table,
+    ensure_api_keys_table,
+    ensure_embedding_columns,
+    ensure_review_columns,
+    ensure_users_table,
+)
 from ._protocol import Store
 
 __all__ = ["DEFAULT_DB_PATH", "RemoteStore", "Store", "normalize_domains"]
@@ -87,6 +93,7 @@ class RemoteStore:
         ensure_embedding_columns(self._conn)
         ensure_users_table(self._conn)
         ensure_api_keys_table(self._conn)
+        ensure_aigrp_peers_table(self._conn)
 
     def _check_open(self) -> None:
         """Raise if the store has been closed."""
@@ -835,6 +842,139 @@ class RemoteStore:
                 )
         except sqlite3.Error:
             _logger.exception("Failed to update last_used_at for api key %s", key_id)
+
+    # -- AIGRP peer mesh -------------------------------------------------
+
+    def upsert_aigrp_peer(
+        self,
+        *,
+        l2_id: str,
+        enterprise: str,
+        group: str,
+        endpoint_url: str,
+        embedding_centroid: bytes | None,
+        domain_bloom: bytes | None,
+        ku_count: int,
+        domain_count: int,
+        embedding_model: str | None,
+        signature_received: bool,
+    ) -> None:
+        """Insert or update an AIGRP peer record.
+
+        signature_received=True means the caller is supplying a fresh
+        signature; we update last_signature_at. signature_received=False
+        means the caller is just announcing the peer's existence (e.g.
+        from /aigrp/hello before the peer's signature is fetched); we
+        leave the signature columns alone if the row already exists.
+        """
+        self._check_open()
+        now = datetime.now(UTC).isoformat()
+        with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT 1 FROM aigrp_peers WHERE l2_id = ?", (l2_id,)
+            ).fetchone()
+            if existing is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO aigrp_peers (
+                        l2_id, enterprise, "group", endpoint_url,
+                        embedding_centroid, domain_bloom, ku_count, domain_count,
+                        embedding_model, first_seen_at, last_seen_at, last_signature_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        l2_id, enterprise, group, endpoint_url,
+                        embedding_centroid, domain_bloom, ku_count, domain_count,
+                        embedding_model, now, now, now if signature_received else None,
+                    ),
+                )
+            elif signature_received:
+                self._conn.execute(
+                    """
+                    UPDATE aigrp_peers SET
+                        enterprise = ?, "group" = ?, endpoint_url = ?,
+                        embedding_centroid = ?, domain_bloom = ?,
+                        ku_count = ?, domain_count = ?, embedding_model = ?,
+                        last_seen_at = ?, last_signature_at = ?
+                    WHERE l2_id = ?
+                    """,
+                    (
+                        enterprise, group, endpoint_url,
+                        embedding_centroid, domain_bloom,
+                        ku_count, domain_count, embedding_model,
+                        now, now, l2_id,
+                    ),
+                )
+            else:
+                # touch last_seen but keep cached signature
+                self._conn.execute(
+                    """
+                    UPDATE aigrp_peers SET
+                        enterprise = ?, "group" = ?, endpoint_url = ?,
+                        last_seen_at = ?
+                    WHERE l2_id = ?
+                    """,
+                    (enterprise, group, endpoint_url, now, l2_id),
+                )
+
+    def list_aigrp_peers(self, enterprise: str) -> list[dict[str, Any]]:
+        """Return every known peer in the given Enterprise (no TTL filter —
+        peers age out via the periodic poll task overwriting last_seen).
+        """
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT l2_id, enterprise, "group", endpoint_url,
+                       embedding_centroid, domain_bloom,
+                       ku_count, domain_count, embedding_model,
+                       first_seen_at, last_seen_at, last_signature_at
+                FROM aigrp_peers
+                WHERE enterprise = ?
+                ORDER BY last_seen_at DESC
+                """,
+                (enterprise,),
+            ).fetchall()
+        return [
+            {
+                "l2_id": r[0],
+                "enterprise": r[1],
+                "group": r[2],
+                "endpoint_url": r[3],
+                "embedding_centroid": r[4],
+                "domain_bloom": r[5],
+                "ku_count": r[6],
+                "domain_count": r[7],
+                "embedding_model": r[8],
+                "first_seen_at": r[9],
+                "last_seen_at": r[10],
+                "last_signature_at": r[11],
+            }
+            for r in rows
+        ]
+
+    def approved_embeddings_iter(self) -> list[bytes]:
+        """Return all non-null approved KU embedding blobs — used to compute
+        this L2's signature centroid."""
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT embedding FROM knowledge_units "
+                "WHERE status = 'approved' AND embedding IS NOT NULL"
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
+
+    def approved_domains(self) -> set[str]:
+        """Return distinct domains across approved KUs — for the Bloom filter."""
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT d.domain "
+                "FROM knowledge_unit_domains d "
+                "JOIN knowledge_units ku ON ku.id = d.unit_id "
+                "WHERE ku.status = 'approved'"
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
 
     def confidence_distribution(self) -> dict[str, int]:
         """Return confidence distribution buckets for approved KUs."""
