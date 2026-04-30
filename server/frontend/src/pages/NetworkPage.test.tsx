@@ -3,58 +3,20 @@ import { render, screen } from "@testing-library/react";
 import { NetworkPage } from "./NetworkPage";
 import { topologyFixture } from "../network/fixtures/topology.fixture";
 
-// Cytoscape touches canvas APIs that happy-dom doesn't fully implement,
-// so we mock the canvas component and rely on the props it receives.
-vi.mock("../network/components/TopologyCanvas", () => ({
-  TopologyCanvas: ({
-    elements,
-  }: {
-    elements: Array<{
-      data: Record<string, unknown>;
-      classes?: string;
-    }>;
-  }) => (
-    <div data-testid="topology-canvas">
-      {elements.map((e) => {
-        const data = e.data as {
-          id: string;
-          kind?: string;
-          enterprise?: string;
-          source?: string;
-          target?: string;
-          consented?: boolean;
-        };
-        if (data.kind === "l2" || data.kind === "enterprise-cluster") {
-          return (
-            <span
-              key={data.id}
-              data-testid={`mirror-node-${data.kind}`}
-              data-node-id={data.id}
-              data-enterprise={data.enterprise}
-            />
-          );
-        }
-        if (data.kind === "peer" || data.kind === "cross") {
-          return (
-            <span
-              key={data.id}
-              data-testid={`mirror-edge-${data.kind}`}
-              data-edge-id={data.id}
-              data-consented={String(!!data.consented)}
-              data-classes={e.classes ?? ""}
-            />
-          );
-        }
-        return null;
-      })}
-    </div>
-  ),
+// NocCanvas uses requestAnimationFrame + SVG sub-pixel things happy-dom doesn't
+// fully implement. Mock to a passthrough so we can assert via TopologyMirror.
+vi.mock("../network/components/NocCanvas", () => ({
+  NocCanvas: () => <div data-testid="topology-canvas" />,
 }));
+
+// Width gate would otherwise block the page in happy-dom (default 1024 width).
+// Force the gate open by mocking innerWidth.
+beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", { writable: true, value: 1440 });
+});
 
 describe("NetworkPage", () => {
   beforeEach(() => {
-    // Stub fetch so the polling hook never makes real requests if
-    // initialData isn't supplied for some reason.
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -95,20 +57,35 @@ describe("NetworkPage", () => {
     expect(peerEdges).toHaveLength(6);
   });
 
-  it("renders the demo controls strip with 3 disabled buttons", () => {
+  it("renders the demo controls strip with 3 wired buttons", () => {
     render(<NetworkPage initialData={topologyFixture} />);
     const controls = screen.getByTestId("demo-controls");
     const buttons = controls.querySelectorAll("button");
     expect(buttons).toHaveLength(3);
-    for (const b of buttons) {
-      expect(b).toBeDisabled();
-      expect(b.title).toBe("Wired in Lane F");
-    }
+    // Tier 3: buttons are wired (no longer disabled). Verify the three IDs.
+    const ids = Array.from(buttons).map((b) => b.getAttribute("data-demo-button"));
+    expect(ids).toEqual(
+      expect.arrayContaining(["run-cross-group", "try-cross-enterprise", "sign-consent"]),
+    );
   });
 
-  it("shows the page header and last-updated indicator", () => {
+  it("shows the NOC top bar and last-updated indicator", () => {
     render(<NetworkPage initialData={topologyFixture} />);
-    expect(screen.getByText(/live network topology/i)).toBeInTheDocument();
+    expect(screen.getByTestId("noc-topbar")).toBeInTheDocument();
     expect(screen.getByTestId("last-updated")).toBeInTheDocument();
+  });
+
+  it("includes the L1/L2/L3 layer rail with L2 active by default", () => {
+    render(<NetworkPage initialData={topologyFixture} />);
+    expect(screen.getByTestId("layer-rail")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-L1")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-L2")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-L3")).toBeDisabled();
+  });
+
+  it("includes the DSN search bar and event ticker", () => {
+    render(<NetworkPage initialData={topologyFixture} />);
+    expect(screen.getByTestId("dsn-search")).toBeInTheDocument();
+    expect(screen.getByTestId("event-ticker")).toBeInTheDocument();
   });
 });
