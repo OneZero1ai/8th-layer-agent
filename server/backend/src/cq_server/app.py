@@ -322,12 +322,19 @@ def aigrp_lookup(
 
 
 class AigrpHelloRequest(BaseModel):
-    """A new L2 introducing itself to a seed peer."""
+    """A new L2 introducing itself to a seed peer.
+
+    Empty `endpoint_url` flags the joiner as a *stub L2* — it can poll
+    peers but cannot be polled back (typical for an L2 behind NAT, e.g.
+    a developer laptop or a customer-edge node without inbound exposure).
+    Stub peers are recorded in the table but skipped by the periodic
+    poll loop (since there's no address to poll).
+    """
 
     l2_id: str = Field(min_length=1, description="canonical Enterprise/Group identity")
     enterprise: str = Field(min_length=1)
     group: str = Field(min_length=1)
-    endpoint_url: str = Field(min_length=1, description="how peers should reach me")
+    endpoint_url: str = Field(default="", description="how peers should reach me; empty = stub L2 (consumer-only)")
 
 
 class AigrpAnnounceRequest(BaseModel):
@@ -336,7 +343,7 @@ class AigrpAnnounceRequest(BaseModel):
     l2_id: str = Field(min_length=1)
     enterprise: str = Field(min_length=1)
     group: str = Field(min_length=1)
-    endpoint_url: str = Field(min_length=1)
+    endpoint_url: str = Field(default="", description="empty = stub L2 (consumer-only)")
     announced_by: str = Field(default="", description="l2_id of the peer doing the flooding")
 
 
