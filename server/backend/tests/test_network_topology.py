@@ -193,6 +193,14 @@ class TestTopologyCache:
 
 
 class TestTopologyAuth:
-    def test_missing_jwt_returns_401(self, client: TestClient) -> None:
+    def test_no_auth_required_public_read(self, client: TestClient) -> None:
+        # Topology is intentionally public for the marketing site at
+        # 8thlayer.onezero1.ai — no JWT required.
         resp = client.post("/api/v1/network/topology")
-        assert resp.status_code == 401
+        assert resp.status_code == 200
+
+    def test_get_method_also_works(self, client: TestClient) -> None:
+        # GET supported alongside POST so the marketing site can poll
+        # without preflight CORS gymnastics.
+        resp = client.get("/api/v1/network/topology")
+        assert resp.status_code == 200

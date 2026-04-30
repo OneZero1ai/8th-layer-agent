@@ -565,11 +565,16 @@ router = APIRouter(prefix="/network", tags=["network"])
 
 
 @router.post("/topology", response_model=TopologyResponse)
+@router.get("/topology", response_model=TopologyResponse)
 async def network_topology(
-    _username: str = Depends(get_current_user),
     store: RemoteStore = Depends(get_store),
 ) -> TopologyResponse:
     """Aggregate per-L2 metadata + consent edges into the topology view.
+
+    Public read — no auth. Returns only operator-authorized topology
+    metadata (L2 names, KU counts, peer table, declared-discoverable
+    presence rows, active consent edges). The data is intended for the
+    public marketing site at 8thlayer.onezero1.ai.
 
     Cached in-process for ``TOPOLOGY_CACHE_TTL_SECONDS`` to damp the
     frontend's 5s poll loop. Per-L2 failures are tolerated (rendered
