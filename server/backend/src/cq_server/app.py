@@ -482,11 +482,29 @@ def aigrp_hello(
 
     asyncio.create_task(_flood())
 
+    # Include ourselves (the seed) in the peer list. New L2 needs to know
+    # we exist as a peer; otherwise it learns about every OTHER peer the
+    # seed knows but never records the seed itself. Real EIGRP neighbor
+    # adjacency advertisements include the speaker too.
+    self_entry = {
+        "l2_id": aigrp.self_l2_id(),
+        "enterprise": aigrp.enterprise(),
+        "group": aigrp.group(),
+        "endpoint_url": aigrp.self_url(),
+        "ku_count": 0,
+        "domain_count": 0,
+        "embedding_model": None,
+        "first_seen_at": aigrp.now_iso(),
+        "last_seen_at": aigrp.now_iso(),
+        "last_signature_at": None,
+    }
+    peers_plus_self = peers + [self_entry]
+
     return AigrpPeersResponse(
         enterprise=aigrp.enterprise(),
         self_l2_id=aigrp.self_l2_id(),
-        peer_count=len(peers),
-        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers],
+        peer_count=len(peers_plus_self),
+        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers_plus_self],
     )
 
 
