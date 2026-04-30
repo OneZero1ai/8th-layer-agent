@@ -1,0 +1,180 @@
+# 8th-Layer L2 local demo — runs the same cq-server container that
+# Fargate runs, but on plain Docker on your laptop.
+#
+# Three "shapes" you can bring up via docker compose --profile:
+#
+#   acme         shape A — two-Enterprise mesh, fully local
+#                acme-engineering + acme-solutions converge to a 2-peer
+#                mesh on a private docker network. orion-local stands
+#                up on a separate network with a different peer key,
+#                completely invisible to acme.
+#
+#   orion-bridge shape B — single local L2 that joins the existing
+#                AWS-hosted orion mesh (test-orion-eng-l2 as seed).
+#                Requires a tunnel (ngrok / cloudflared / Tailscale)
+#                so the AWS L2 can poll this local L2 back.
+#
+#   all          shape C — both above. Demonstrates substrate
+#                portability + Enterprise boundary in one bring-up.
+#
+# Bedrock embeddings are wired through your local AWS profile via a
+# read-only mount of ~/.aws — same `8th-layer-app` profile we use to
+# deploy the production stacks.
+#
+# Generate fresh peer keys + admin password into .env before first
+# bring-up:   bash bin/init-env.sh
+# Seed admin user after first bring-up:   bash bin/seed-admin.sh acme-engineering-l2
+
+services:
+
+  # === Shape A: acme Enterprise (two-peer local mesh) ===
+
+  acme-engineering-l2:
+    image: public.ecr.aws/w2i0e4m6/cq-server:phase3-aigrp-mesh
+    profiles: ["acme", "all"]
+    container_name: acme-engineering-l2
+    ports:
+      - "4001:3000"
+    environment:
+      CQ_JWT_SECRET: "${ACME_JWT_SECRET}"
+      CQ_API_KEY_PEPPER: "${ACME_API_KEY_PEPPER}"
+      CQ_DB_PATH: /data/cq.db
+      CQ_PORT: "3000"
+      CQ_ENTERPRISE: acme
+      CQ_GROUP: engineering
+      CQ_AIGRP_IS_FIRST_DEPLOY: "true"
+      CQ_AIGRP_SEED_PEER_URL: ""
+      CQ_AIGRP_PEER_KEY: "${ACME_PEER_KEY}"
+      CQ_AIGRP_SELF_URL: "http://acme-engineering-l2:3000"
+      CQ_AIGRP_POLL_INTERVAL_SEC: "30"
+      CQ_EMBED_REGION: us-east-1
+      AWS_PROFILE: "${AWS_PROFILE:-8th-layer-app}"
+      AWS_SHARED_CREDENTIALS_FILE: /aws-creds/credentials
+      AWS_CONFIG_FILE: /aws-creds/config
+    volumes:
+      - acme-eng-data:/data
+      - ~/.aws:/aws-creds:ro
+    networks:
+      - acme-mesh
+
+  acme-solutions-l2:
+    image: public.ecr.aws/w2i0e4m6/cq-server:phase3-aigrp-mesh
+    profiles: ["acme", "all"]
+    container_name: acme-solutions-l2
+    ports:
+      - "4002:3000"
+    environment:
+      CQ_JWT_SECRET: "${ACME_JWT_SECRET}"
+      CQ_API_KEY_PEPPER: "${ACME_API_KEY_PEPPER}"
+      CQ_DB_PATH: /data/cq.db
+      CQ_PORT: "3000"
+      CQ_ENTERPRISE: acme
+      CQ_GROUP: solutions
+      CQ_AIGRP_IS_FIRST_DEPLOY: "false"
+      CQ_AIGRP_SEED_PEER_URL: "http://acme-engineering-l2:3000"
+      CQ_AIGRP_PEER_KEY: "${ACME_PEER_KEY}"
+      CQ_AIGRP_SELF_URL: "http://acme-solutions-l2:3000"
+      CQ_AIGRP_POLL_INTERVAL_SEC: "30"
+      CQ_EMBED_REGION: us-east-1
+      AWS_PROFILE: "${AWS_PROFILE:-8th-layer-app}"
+      AWS_SHARED_CREDENTIALS_FILE: /aws-creds/credentials
+      AWS_CONFIG_FILE: /aws-creds/config
+    volumes:
+      - acme-sol-data:/data
+      - ~/.aws:/aws-creds:ro
+    networks:
+      - acme-mesh
+    depends_on:
+      acme-engineering-l2:
+        condition: service_healthy
+
+  # === Shape A continued: orion-local (different Enterprise, different network) ===
+  # Same laptop, different EnterprisePeerKey. Demonstrates the trust boundary —
+  # acme can't see this L2; this L2 can't see acme. Curl this L2's /aigrp/hello
+  # using ${ACME_PEER_KEY} → 401.
+
+  orion-local-l2:
+    image: public.ecr.aws/w2i0e4m6/cq-server:phase3-aigrp-mesh
+    profiles: ["acme", "all"]
+    container_name: orion-local-l2
+    ports:
+      - "4003:3000"
+    environment:
+      CQ_JWT_SECRET: "${ORION_LOCAL_JWT_SECRET}"
+      CQ_API_KEY_PEPPER: "${ORION_LOCAL_API_KEY_PEPPER}"
+      CQ_DB_PATH: /data/cq.db
+      CQ_PORT: "3000"
+      CQ_ENTERPRISE: orion-local
+      CQ_GROUP: engineering
+      CQ_AIGRP_IS_FIRST_DEPLOY: "true"
+      CQ_AIGRP_SEED_PEER_URL: ""
+      CQ_AIGRP_PEER_KEY: "${ORION_LOCAL_PEER_KEY}"
+      CQ_AIGRP_SELF_URL: "http://orion-local-l2:3000"
+      CQ_AIGRP_POLL_INTERVAL_SEC: "30"
+      CQ_EMBED_REGION: us-east-1
+      AWS_PROFILE: "${AWS_PROFILE:-8th-layer-app}"
+      AWS_SHARED_CREDENTIALS_FILE: /aws-creds/credentials
+      AWS_CONFIG_FILE: /aws-creds/config
+    volumes:
+      - orion-local-data:/data
+      - ~/.aws:/aws-creds:ro
+    networks:
+      - orion-local-mesh  # intentionally separate from acme-mesh
+
+  # === Shape B/C: local L2 that joins the AWS-hosted orion mesh ===
+  #
+  # Default mode is **stub L2** — joins the mesh as a consumer-only peer.
+  # The cq Remote handles this via empty CQ_AIGRP_SELF_URL: it sends
+  # endpoint_url="" in /aigrp/hello, peers record the row, and peers'
+  # poll loop skips entries with empty endpoint_url. The local L2 still
+  # polls AWS peers outbound; it just can't be polled back.
+  #
+  # To upgrade to full L2 (bidirectional reachability), set
+  # ORION_BRIDGE_SELF_URL=<your tunnel URL> in .env. Tunnels we tested:
+  # ngrok, Cloudflare Tunnel, Tailscale Funnel — all give a public
+  # https://*.example/ that AWS can reach.
+  #
+  # See README.md for the stub-mode trade-offs (consumes mesh knowledge,
+  # does not contribute to peers' forward-query routing).
+
+  orion-bridge-l2:
+    image: public.ecr.aws/w2i0e4m6/cq-server:phase3-aigrp-mesh
+    profiles: ["orion-bridge", "all"]
+    container_name: orion-bridge-l2
+    ports:
+      - "4004:3000"
+    environment:
+      CQ_JWT_SECRET: "${ORION_BRIDGE_JWT_SECRET}"
+      CQ_API_KEY_PEPPER: "${ORION_BRIDGE_API_KEY_PEPPER}"
+      CQ_DB_PATH: /data/cq.db
+      CQ_PORT: "3000"
+      CQ_ENTERPRISE: orion
+      CQ_GROUP: "${ORION_BRIDGE_GROUP:-laptop-demo}"
+      CQ_AIGRP_IS_FIRST_DEPLOY: "false"
+      CQ_AIGRP_SEED_PEER_URL: "${ORION_AWS_SEED_URL}"
+      CQ_AIGRP_PEER_KEY: "${ORION_AWS_PEER_KEY}"
+      # Empty default = stub L2 (the realistic laptop case behind NAT).
+      # Override in .env with a tunnel URL to upgrade to full L2.
+      CQ_AIGRP_SELF_URL: "${ORION_BRIDGE_SELF_URL:-}"
+      CQ_AIGRP_POLL_INTERVAL_SEC: "30"
+      CQ_EMBED_REGION: us-east-1
+      AWS_PROFILE: "${AWS_PROFILE:-8th-layer-app}"
+      AWS_SHARED_CREDENTIALS_FILE: /aws-creds/credentials
+      AWS_CONFIG_FILE: /aws-creds/config
+    volumes:
+      - orion-bridge-data:/data
+      - ~/.aws:/aws-creds:ro
+    # No isolated network — uses the default bridge so it can reach
+    # the public-internet AWS endpoint.
+
+volumes:
+  acme-eng-data:
+  acme-sol-data:
+  orion-local-data:
+  orion-bridge-data:
+
+networks:
+  acme-mesh:
+    driver: bridge
+  orion-local-mesh:
+    driver: bridge

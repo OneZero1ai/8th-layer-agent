@@ -81,9 +81,11 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
 
     log = logging.getLogger("aigrp")
     poll_interval = int(os.environ.get("CQ_AIGRP_POLL_INTERVAL_SEC", "300"))
+    needs_bootstrap = (not aigrp.is_first_deploy()) and bool(aigrp.seed_peer_url())
 
-    # 1. If not first deploy, hit the seed peer's /aigrp/hello once.
-    if not aigrp.is_first_deploy() and aigrp.seed_peer_url():
+    def _try_bootstrap() -> bool:
+        """Hit the seed's /aigrp/hello and absorb its peer table.
+        Returns True on success. Idempotent on the seed side."""
         try:
             hello_payload = json.dumps({
                 "l2_id": aigrp.self_l2_id(),
@@ -118,15 +120,25 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     signature_received=False,
                 )
             log.info("aigrp bootstrap: seed=%s peers=%d", aigrp.seed_peer_url(), len(body.get("peers", [])))
+            return True
         except Exception:
-            log.exception("aigrp bootstrap to seed=%s failed; will retry via poll loop", aigrp.seed_peer_url())
+            log.warning("aigrp bootstrap to seed=%s failed; will retry on next poll cycle", aigrp.seed_peer_url())
+            return False
+
+    # 1. First-attempt bootstrap on startup (best effort).
+    if needs_bootstrap and _try_bootstrap():
+        needs_bootstrap = False
 
     # 2. Periodic peer-poll loop — fetch each peer's /aigrp/signature.
+    #    Also re-attempts bootstrap on every cycle while it's still
+    #    pending; gives self-healing if the seed was down at start.
     import base64
 
     while True:
         try:
             await asyncio.sleep(poll_interval)
+            if needs_bootstrap and _try_bootstrap():
+                needs_bootstrap = False
             peers = store.list_aigrp_peers(aigrp.enterprise())
             for p in peers:
                 if p["l2_id"] == aigrp.self_l2_id():
@@ -322,12 +334,19 @@ def aigrp_lookup(
 
 
 class AigrpHelloRequest(BaseModel):
-    """A new L2 introducing itself to a seed peer."""
+    """A new L2 introducing itself to a seed peer.
+
+    Empty `endpoint_url` flags the joiner as a *stub L2* — it can poll
+    peers but cannot be polled back (typical for an L2 behind NAT, e.g.
+    a developer laptop or a customer-edge node without inbound exposure).
+    Stub peers are recorded in the table but skipped by the periodic
+    poll loop (since there's no address to poll).
+    """
 
     l2_id: str = Field(min_length=1, description="canonical Enterprise/Group identity")
     enterprise: str = Field(min_length=1)
     group: str = Field(min_length=1)
-    endpoint_url: str = Field(min_length=1, description="how peers should reach me")
+    endpoint_url: str = Field(default="", description="how peers should reach me; empty = stub L2 (consumer-only)")
 
 
 class AigrpAnnounceRequest(BaseModel):
@@ -336,7 +355,7 @@ class AigrpAnnounceRequest(BaseModel):
     l2_id: str = Field(min_length=1)
     enterprise: str = Field(min_length=1)
     group: str = Field(min_length=1)
-    endpoint_url: str = Field(min_length=1)
+    endpoint_url: str = Field(default="", description="empty = stub L2 (consumer-only)")
     announced_by: str = Field(default="", description="l2_id of the peer doing the flooding")
 
 
@@ -400,7 +419,7 @@ def _build_self_signature(store: RemoteStore) -> AigrpSignatureResponse:
 
 
 @api_router.post("/aigrp/hello", status_code=201)
-def aigrp_hello(
+async def aigrp_hello(
     body: AigrpHelloRequest,
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpPeersResponse:
@@ -410,6 +429,9 @@ def aigrp_hello(
     a different Enterprise. Records the new peer in our local table,
     then fans out /aigrp/announce to every other known peer (best-effort,
     background — does not block the hello response).
+
+    Async because we spawn the flood as an asyncio.Task. The SQLite
+    store calls are fast enough to run inline on the event loop.
     """
     if body.enterprise != aigrp.enterprise():
         raise HTTPException(
@@ -475,11 +497,29 @@ def aigrp_hello(
 
     asyncio.create_task(_flood())
 
+    # Include ourselves (the seed) in the peer list. New L2 needs to know
+    # we exist as a peer; otherwise it learns about every OTHER peer the
+    # seed knows but never records the seed itself. Real EIGRP neighbor
+    # adjacency advertisements include the speaker too.
+    self_entry = {
+        "l2_id": aigrp.self_l2_id(),
+        "enterprise": aigrp.enterprise(),
+        "group": aigrp.group(),
+        "endpoint_url": aigrp.self_url(),
+        "ku_count": 0,
+        "domain_count": 0,
+        "embedding_model": None,
+        "first_seen_at": aigrp.now_iso(),
+        "last_seen_at": aigrp.now_iso(),
+        "last_signature_at": None,
+    }
+    peers_plus_self = peers + [self_entry]
+
     return AigrpPeersResponse(
         enterprise=aigrp.enterprise(),
         self_l2_id=aigrp.self_l2_id(),
-        peer_count=len(peers),
-        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers],
+        peer_count=len(peers_plus_self),
+        peers=[AigrpPeer(**{k: v for k, v in p.items() if k in AigrpPeer.model_fields}) for p in peers_plus_self],
     )
 
 
