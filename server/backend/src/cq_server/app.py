@@ -27,6 +27,7 @@ from .auth import router as auth_router
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
+from .network import router as network_router
 from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
@@ -214,6 +215,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 api_router = APIRouter()
 api_router.include_router(auth_router)
 api_router.include_router(review_router)
+api_router.include_router(network_router)
 
 
 @api_router.get("/health")
