@@ -339,6 +339,11 @@ class DsnResolveRequest(BaseModel):
     # their actual scope to get accurate policy hints.
     caller_enterprise: str = ""
     caller_group: str = ""
+    # Optional domain tags carried by the query. When non-empty, the
+    # resolver consults each peer's Bloom filter (already exchanged via
+    # AIGRP) and drops peers whose Bloom doesn't claim any of these
+    # domains BEFORE cosine ranking. Issue #22.
+    query_domains: list[str] = Field(default_factory=list)
 
 
 class DsnCandidate(BaseModel):
@@ -369,6 +374,9 @@ class DsnPathStep(BaseModel):
     l2_count: int | None = None
     cache_hit: bool | None = None
     cache_age_ms: int | None = None
+    # Number of peers dropped by the Bloom prefilter (only set on the
+    # `bloom_prefilter` step when query_domains is non-empty).
+    bloom_dropped: int | None = None
 
 
 class DsnResolveResponse(BaseModel):
@@ -610,6 +618,16 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _decode_bloom(b64_str: str | None) -> bytes | None:
+    """Decode a base64-encoded Bloom filter blob to bytes, or None on miss."""
+    if not b64_str:
+        return None
+    try:
+        return base64.b64decode(b64_str)
+    except Exception:
+        return None
+
+
 def _decode_centroid(b64_str: str | None) -> list[float] | None:
     """Decode a base64-encoded packed-float32 centroid back into a Python list."""
     if not b64_str:
@@ -774,6 +792,42 @@ async def network_dsn_resolve(
             cache_age_ms=cache_age_ms,
         )
     )
+
+    # Bloom prefilter (issue #22). When the query carries domain tags,
+    # drop peers whose Bloom doesn't claim ANY of those domains BEFORE
+    # cosine ranking. False negatives are impossible by Bloom-filter
+    # construction; false positives are <1% at design size, so we err
+    # toward keeping peers and just rely on cosine to deprioritize.
+    # When query_domains is empty (the public marketing case), the
+    # prefilter is a no-op and behavior is unchanged.
+    t_bloom = time.monotonic()
+    bloom_dropped = 0
+    if request.query_domains:
+        from . import aigrp as _aigrp_mod
+        kept: list[_L2Snapshot] = []
+        for snap in snapshots:
+            sig = snap.signature or {}
+            bloom = _decode_bloom(sig.get("domain_bloom_b64"))
+            if bloom is None:
+                # Peer didn't ship a bloom (older signature shape) — keep
+                # it, let cosine decide. Bloom is only ever a tightener.
+                kept.append(snap)
+                continue
+            if _aigrp_mod.bloom_matches_any(bloom, request.query_domains):
+                kept.append(snap)
+            else:
+                bloom_dropped += 1
+        snapshots = kept
+    bloom_ms = int((time.monotonic() - t_bloom) * 1000)
+    if request.query_domains:
+        path.append(
+            DsnPathStep(
+                step="bloom_prefilter",
+                latency_ms=bloom_ms,
+                l2_count=len(snapshots),
+                bloom_dropped=bloom_dropped,
+            )
+        )
 
     t2 = time.monotonic()
     consents = store.list_cross_enterprise_consents(
