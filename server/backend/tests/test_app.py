@@ -326,6 +326,66 @@ class TestQueryTenantScope:
         assert blocked["id"] not in ids
 
 
+class TestStatsTenantScope:
+    """SEC-HIGH #39 — /stats requires auth and is Enterprise-scoped."""
+
+    def _set_ku_tenancy(self, unit_id: str, *, enterprise_id: str) -> None:
+        from cq_server.app import _get_store
+
+        store = _get_store()
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
+                (enterprise_id, unit_id),
+            )
+
+    def _set_user_tenancy(self, username: str, *, enterprise_id: str) -> None:
+        from cq_server.app import _get_store
+
+        store = _get_store()
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE users SET enterprise_id = ? WHERE username = ?",
+                (enterprise_id, username),
+            )
+
+    def test_stats_anonymous_rejected(self, enforced_client: TestClient) -> None:
+        resp = enforced_client.get("/stats")
+        assert resp.status_code == 401
+
+    def test_stats_returns_caller_enterprise_only(self, client: TestClient) -> None:
+        # Two KUs proposed; one stays in default tenant, the other is moved
+        # to a foreign Enterprise. Caller in default tenant should see 1.
+        own = client.post("/propose", json=_propose_payload(domains=["scope-stats"])).json()
+        foreign = client.post("/propose", json=_propose_payload(domains=["scope-stats"])).json()
+        _approve_unit(client, own["id"])
+        _approve_unit(client, foreign["id"])
+        self._set_ku_tenancy(foreign["id"], enterprise_id="rival")
+        # TEST_USERNAME is in default-enterprise (fixture seed).
+        resp = client.get("/stats")
+        assert resp.status_code == 200
+        # Tier counts are scoped — only the default-tenant KU is counted.
+        assert resp.json()["total_units"] == 1
+
+
+class TestDsnResolveCaps:
+    """SEC-HIGH #35 — /network/dsn/resolve has size caps to bound Bedrock spend."""
+
+    def test_intent_over_512_chars_rejected(self, client: TestClient) -> None:
+        resp = client.post(
+            "/network/dsn/resolve",
+            json={"intent": "x" * 513},
+        )
+        assert resp.status_code == 422
+
+    def test_query_domains_over_20_items_rejected(self, client: TestClient) -> None:
+        resp = client.post(
+            "/network/dsn/resolve",
+            json={"intent": "ok", "query_domains": [f"d{i}" for i in range(21)]},
+        )
+        assert resp.status_code == 422
+
+
 class TestConfirm:
     def test_confirm_boosts_confidence(self, client: TestClient) -> None:
         created = client.post("/propose", json=_propose_payload()).json()
@@ -572,9 +632,11 @@ class TestApiKeyEnforcement:
         resp = enforced_client.get("/query", params={"domains": ["anything"]})
         assert resp.status_code == 401
 
-    def test_stats_stays_open_under_enforcement(self, enforced_client: TestClient) -> None:
+    def test_stats_requires_auth_under_enforcement(self, enforced_client: TestClient) -> None:
+        # SEC-HIGH #39 — /stats now requires API key auth (was unauthenticated;
+        # leaked tenant cardinality + domain taxonomy).
         resp = enforced_client.get("/stats")
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_health_stays_open_under_enforcement(self, enforced_client: TestClient) -> None:
         resp = enforced_client.get("/health")

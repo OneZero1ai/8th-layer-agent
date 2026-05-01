@@ -1296,13 +1296,25 @@ def flag_unit(unit_id: str, request: FlagRequest, _username: str = Depends(requi
 
 
 @api_router.get("/stats")
-def stats() -> StatsResponse:
-    """Return store statistics."""
+def stats(
+    username: str = Depends(require_api_key),
+) -> StatsResponse:
+    """Return store statistics scoped to the caller's Enterprise.
+
+    SEC-HIGH #39 — pre-fix this was unauthenticated and returned global
+    counts (cardinality + domain taxonomy across all tenants). Now
+    requires API key auth and scopes aggregates to the caller's
+    Enterprise — same pattern as /query (CRIT #33).
+    """
     store = _get_store()
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    enterprise_id = user["enterprise_id"]
     return StatsResponse(
-        total_units=store.count(),
-        tiers=store.counts_by_tier(),
-        domains=store.domain_counts(),
+        total_units=store.count_in_enterprise(enterprise_id),
+        tiers=store.counts_by_tier(enterprise_id=enterprise_id),
+        domains=store.domain_counts(enterprise_id=enterprise_id),
     )
 
 

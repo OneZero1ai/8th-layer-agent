@@ -532,6 +532,20 @@ class RemoteStore:
             row = self._conn.execute("SELECT COUNT(*) FROM knowledge_units").fetchone()
         return row[0]
 
+    def count_in_enterprise(self, enterprise_id: str) -> int:
+        """Return total KU count scoped to one Enterprise.
+
+        Used by /api/v1/stats (SEC-HIGH #39) so global cardinality
+        stops leaking across tenants.
+        """
+        self._check_open()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM knowledge_units WHERE enterprise_id = ?",
+                (enterprise_id,),
+            ).fetchone()
+        return row[0]
+
     def domain_counts(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         """Return the count of approved knowledge units per domain tag.
 
@@ -612,13 +626,17 @@ class RemoteStore:
             rows = self._conn.execute(sql, params).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def counts_by_tier(self) -> dict[str, int]:
-        """Return approved KU counts grouped by tier."""
+    def counts_by_tier(self, *, enterprise_id: str | None = None) -> dict[str, int]:
+        """Return approved KU counts grouped by tier (optionally Enterprise-scoped)."""
         self._check_open()
+        sql = "SELECT tier, COUNT(*) FROM knowledge_units WHERE status = 'approved'"
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += " AND enterprise_id = ?"
+            params.append(enterprise_id)
+        sql += " GROUP BY tier"
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT tier, COUNT(*) FROM knowledge_units WHERE status = 'approved' GROUP BY tier"
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def list_units(

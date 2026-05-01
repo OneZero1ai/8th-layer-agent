@@ -340,20 +340,24 @@ class TopologyResponse(BaseModel):
 class DsnResolveRequest(BaseModel):
     """Request body for ``POST /network/dsn/resolve`` — the DSN search bar."""
 
-    intent: str = Field(min_length=1)
+    # SEC-HIGH #35 — caps protect Bedrock spend from public uncapped POSTs.
+    # 512 chars covers any realistic intent ("how do I avoid CloudFront 504s
+    # during origin failover?" is 47); larger payloads force the embedder to
+    # truncate anyway, so we reject early.
+    intent: str = Field(min_length=1, max_length=512)
     max_candidates: int = Field(default=5, gt=0, le=20)
     include_consented_cross_enterprise: bool = True
     # Optional caller scope for policy_if_queried decisions. Defaults
     # to ('marketing', 'public') when omitted — the public-viewer
     # scope used by 8thlayer.onezero1.ai. Internal callers can pass
     # their actual scope to get accurate policy hints.
-    caller_enterprise: str = ""
-    caller_group: str = ""
+    caller_enterprise: str = Field(default="", max_length=128)
+    caller_group: str = Field(default="", max_length=128)
     # Optional domain tags carried by the query. When non-empty, the
     # resolver consults each peer's Bloom filter (already exchanged via
     # AIGRP) and drops peers whose Bloom doesn't claim any of these
     # domains BEFORE cosine ranking. Issue #22.
-    query_domains: list[str] = Field(default_factory=list)
+    query_domains: list[str] = Field(default_factory=list, max_length=20)
 
 
 class DsnCandidate(BaseModel):
