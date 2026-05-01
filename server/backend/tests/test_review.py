@@ -28,8 +28,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     app.dependency_overrides.pop(require_api_key, None)
 
 
-def _login(client: TestClient, username: str = "reviewer", password: str = "pass123") -> str:
-    """Seed a user, log in, return the JWT token."""
+def _login(
+    client: TestClient,
+    username: str = "reviewer",
+    password: str = "pass123",
+    *,
+    role: str = "admin",
+    enterprise_id: str | None = None,
+) -> str:
+    """Seed a user (admin by default for /review tests), log in, return JWT.
+
+    /review/* requires admin role (SEC-CRIT #32). Tests that want to
+    exercise the 403-on-non-admin path pass role="user".
+    """
     import contextlib
 
     from cq_server.app import _get_store
@@ -38,6 +49,14 @@ def _login(client: TestClient, username: str = "reviewer", password: str = "pass
     store = _get_store()
     with contextlib.suppress(Exception):
         store.create_user(username, hash_password(password))
+    if role != "user":
+        store.set_user_role(username, role)
+    if enterprise_id is not None:
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE users SET enterprise_id = ? WHERE username = ?",
+                (enterprise_id, username),
+            )
     resp = client.post("/auth/login", json={"username": username, "password": password})
     return resp.json()["token"]
 
@@ -316,3 +335,107 @@ class TestReviewStatsDetail:
         unit_events = [e for e in events if e["unit_id"] == unit["id"]]
         assert len(unit_events) == 1
         assert unit_events[0]["type"] == "proposed"
+
+
+class TestReviewAdminGate:
+    """SEC-CRIT #32 — /review/* requires admin role."""
+
+    def test_non_admin_queue_403(self, client: TestClient) -> None:
+        token = _login(client, "regular-user", role="user")
+        resp = client.get("/review/queue", headers=_auth_header(token))
+        assert resp.status_code == 403
+
+    def test_non_admin_approve_403(self, client: TestClient) -> None:
+        admin_token = _login(client)
+        unit = _propose(client)
+        user_token = _login(client, "regular-user", role="user")
+        resp = client.post(f"/review/{unit['id']}/approve", headers=_auth_header(user_token))
+        assert resp.status_code == 403
+        # Admin can still approve.
+        resp = client.post(f"/review/{unit['id']}/approve", headers=_auth_header(admin_token))
+        assert resp.status_code == 200
+
+    def test_non_admin_delete_403(self, client: TestClient) -> None:
+        _login(client)  # seed admin so KU exists in default tenant
+        unit = _propose(client)
+        user_token = _login(client, "regular-user", role="user")
+        resp = client.delete(f"/review/{unit['id']}", headers=_auth_header(user_token))
+        assert resp.status_code == 403
+
+    def test_non_admin_stats_403(self, client: TestClient) -> None:
+        token = _login(client, "regular-user", role="user")
+        resp = client.get("/review/stats", headers=_auth_header(token))
+        assert resp.status_code == 403
+
+
+class TestReviewTenantScope:
+    """SEC-CRIT #32 — /review/* is scoped to the admin's Enterprise."""
+
+    def _set_ku_tenancy(self, unit_id: str, *, enterprise_id: str) -> None:
+        from cq_server.app import _get_store
+
+        store = _get_store()
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
+                (enterprise_id, unit_id),
+            )
+
+    def test_admin_a_cannot_see_admin_b_ku(self, client: TestClient) -> None:
+        token_a = _login(client, "admin-a", enterprise_id="acme")
+        token_b = _login(client, "admin-b", enterprise_id="globex")
+        # Both proposes land in default-enterprise; reassign the second one to globex.
+        _propose(client, domains=["acme-only"])
+        unit_b = _propose(client, domains=["globex-only"])
+        self._set_ku_tenancy(unit_b["id"], enterprise_id="globex")
+
+        # admin-a (acme) sees only acme's pending queue.
+        a_queue = client.get("/review/queue", headers=_auth_header(token_a)).json()
+        a_ids = {item["knowledge_unit"]["id"] for item in a_queue["items"]}
+        assert unit_b["id"] not in a_ids
+
+        # admin-b (globex) sees only globex's row.
+        b_queue = client.get("/review/queue", headers=_auth_header(token_b)).json()
+        b_ids = {item["knowledge_unit"]["id"] for item in b_queue["items"]}
+        assert b_ids == {unit_b["id"]}
+
+    def test_cross_tenant_get_returns_404(self, client: TestClient) -> None:
+        _login(client)  # seed default-tenant admin for the propose call
+        unit = _propose(client)
+        self._set_ku_tenancy(unit["id"], enterprise_id="globex")
+        token_a = _login(client, "admin-a", enterprise_id="acme")
+        resp = client.get(f"/review/{unit['id']}", headers=_auth_header(token_a))
+        assert resp.status_code == 404
+
+    def test_cross_tenant_approve_returns_404(self, client: TestClient) -> None:
+        _login(client)  # default-tenant admin to allow propose
+        unit = _propose(client)
+        self._set_ku_tenancy(unit["id"], enterprise_id="globex")
+        token_a = _login(client, "admin-a", enterprise_id="acme")
+        resp = client.post(f"/review/{unit['id']}/approve", headers=_auth_header(token_a))
+        assert resp.status_code == 404
+
+    def test_cross_tenant_delete_returns_404(self, client: TestClient) -> None:
+        _login(client)
+        unit = _propose(client)
+        self._set_ku_tenancy(unit["id"], enterprise_id="globex")
+        token_a = _login(client, "admin-a", enterprise_id="acme")
+        resp = client.delete(f"/review/{unit['id']}", headers=_auth_header(token_a))
+        assert resp.status_code == 404
+
+    def test_stats_scoped_to_admin_enterprise(self, client: TestClient) -> None:
+        _login(client)  # default-tenant admin
+        unit_default = _propose(client, domains=["scope-test"])
+        unit_globex = _propose(client, domains=["scope-test"])
+        self._set_ku_tenancy(unit_globex["id"], enterprise_id="globex")
+
+        token_a = _login(client, "admin-a", enterprise_id="acme")
+        # acme has zero KUs.
+        resp = client.get("/review/stats", headers=_auth_header(token_a))
+        assert resp.status_code == 200
+        assert sum(resp.json()["counts"].values()) == 0
+
+        token_b = _login(client, "admin-b", enterprise_id="globex")
+        resp = client.get("/review/stats", headers=_auth_header(token_b))
+        assert resp.status_code == 200
+        assert resp.json()["counts"]["pending"] == 1

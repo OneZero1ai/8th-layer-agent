@@ -272,19 +272,27 @@ class RemoteStore:
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
 
-    def delete(self, unit_id: str) -> bool:
+    def delete(self, unit_id: str, *, enterprise_id: str | None = None) -> bool:
         """Hard-delete a knowledge unit by ID.
 
-        Removes the row from knowledge_units and cascades to
-        knowledge_unit_domains. Does NOT touch review_records — the audit
-        trail of why each KU was approved/rejected/now-deleted should
-        survive the deletion of the underlying KU.
+        When ``enterprise_id`` is provided, the row is only deleted if it
+        belongs to that Enterprise — cross-tenant deletes return False
+        (same shape as missing-id, so probes can't fingerprint other
+        tenants' IDs).
 
-        Returns True if a row was deleted, False if no such ID existed.
+        Returns True if a row was deleted, False if no such ID existed
+        (or it was out of tenant scope).
         """
         self._check_open()
         with self._lock, self._conn:
-            cur = self._conn.execute(
+            if enterprise_id is not None:
+                row = self._conn.execute(
+                    "SELECT 1 FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
+                if row is None:
+                    return False
+            self._conn.execute(
                 "DELETE FROM knowledge_unit_domains WHERE unit_id = ?",
                 (unit_id,),
             )
@@ -316,65 +324,91 @@ class RemoteStore:
             return None
         return KnowledgeUnit.model_validate_json(row[0])
 
-    def get_any(self, unit_id: str) -> KnowledgeUnit | None:
+    def get_any(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+    ) -> KnowledgeUnit | None:
         """Retrieve a knowledge unit by ID regardless of review status.
 
-        Internal use only — review endpoints and activity feed.
-
-        Args:
-            unit_id: The knowledge unit identifier.
-
-        Returns:
-            The knowledge unit, or None if not found.
+        Internal use only — review endpoints and activity feed. When
+        ``enterprise_id`` is provided, returns None for KUs in other
+        tenants (same shape as missing-id, no fingerprinting).
         """
         self._check_open()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT data FROM knowledge_units WHERE id = ?",
-                (unit_id,),
-            ).fetchone()
+            if enterprise_id is None:
+                row = self._conn.execute(
+                    "SELECT data FROM knowledge_units WHERE id = ?",
+                    (unit_id,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT data FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
         if row is None:
             return None
         return KnowledgeUnit.model_validate_json(row[0])
 
-    def get_review_status(self, unit_id: str) -> dict[str, str | None] | None:
+    def get_review_status(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+    ) -> dict[str, str | None] | None:
         """Return review metadata for a knowledge unit.
 
-        Args:
-            unit_id: The knowledge unit identifier.
-
-        Returns:
-            A dict with status, reviewed_by, and reviewed_at keys, or None
-            if the unit does not exist.
+        When ``enterprise_id`` is provided, returns None for KUs in other
+        tenants.
         """
         self._check_open()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = ?",
-                (unit_id,),
-            ).fetchone()
+            if enterprise_id is None:
+                row = self._conn.execute(
+                    "SELECT status, reviewed_by, reviewed_at "
+                    "FROM knowledge_units WHERE id = ?",
+                    (unit_id,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT status, reviewed_by, reviewed_at "
+                    "FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
         if row is None:
             return None
         return {"status": row[0], "reviewed_by": row[1], "reviewed_at": row[2]}
 
-    def set_review_status(self, unit_id: str, status: str, reviewed_by: str) -> None:
+    def set_review_status(
+        self,
+        unit_id: str,
+        status: str,
+        reviewed_by: str,
+        *,
+        enterprise_id: str | None = None,
+    ) -> None:
         """Update the review status of a knowledge unit.
 
-        Args:
-            unit_id: The knowledge unit identifier.
-            status: The new review status (e.g. "approved", "rejected").
-            reviewed_by: Username of the reviewer.
-
-        Raises:
-            KeyError: If no unit with the given ID exists.
+        When ``enterprise_id`` is provided, the row is only updated if it
+        belongs to that Enterprise — cross-tenant updates raise KeyError.
         """
         self._check_open()
         now = datetime.now(UTC).isoformat()
         with self._lock, self._conn:
-            cursor = self._conn.execute(
-                "UPDATE knowledge_units SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-                (status, reviewed_by, now, unit_id),
-            )
+            if enterprise_id is None:
+                cursor = self._conn.execute(
+                    "UPDATE knowledge_units SET status = ?, reviewed_by = ?, "
+                    "reviewed_at = ? WHERE id = ?",
+                    (status, reviewed_by, now, unit_id),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE knowledge_units SET status = ?, reviewed_by = ?, "
+                    "reviewed_at = ? WHERE id = ? AND enterprise_id = ?",
+                    (status, reviewed_by, now, unit_id, enterprise_id),
+                )
             if cursor.rowcount == 0:
                 raise KeyError(f"Knowledge unit not found: {unit_id}")
 
@@ -498,38 +532,51 @@ class RemoteStore:
             row = self._conn.execute("SELECT COUNT(*) FROM knowledge_units").fetchone()
         return row[0]
 
-    def domain_counts(self) -> dict[str, int]:
-        """Return the count of approved knowledge units per domain tag."""
-        self._check_open()
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT d.domain, COUNT(*) "
-                "FROM knowledge_unit_domains d "
-                "JOIN knowledge_units ku ON ku.id = d.unit_id "
-                "WHERE ku.status = 'approved' "
-                "GROUP BY d.domain ORDER BY COUNT(*) DESC"
-            ).fetchall()
-        return {row[0]: row[1] for row in rows}
+    def domain_counts(self, *, enterprise_id: str | None = None) -> dict[str, int]:
+        """Return the count of approved knowledge units per domain tag.
 
-    def pending_queue(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
-        """Return pending KUs with review metadata, oldest first.
-
-        Args:
-            limit: Maximum number of results to return.
-            offset: Number of results to skip.
-
-        Returns:
-            List of dicts with knowledge_unit, status, reviewed_by,
-            and reviewed_at keys.
+        When ``enterprise_id`` is provided, restrict to that Enterprise.
         """
         self._check_open()
+        sql = (
+            "SELECT d.domain, COUNT(*) "
+            "FROM knowledge_unit_domains d "
+            "JOIN knowledge_units ku ON ku.id = d.unit_id "
+            "WHERE ku.status = 'approved' "
+        )
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += "AND ku.enterprise_id = ? "
+            params.append(enterprise_id)
+        sql += "GROUP BY d.domain ORDER BY COUNT(*) DESC"
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT data, status, reviewed_by, reviewed_at "
-                "FROM knowledge_units WHERE status = 'pending' "
-                "ORDER BY created_at ASC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def pending_queue(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        enterprise_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return pending KUs with review metadata, oldest first.
+
+        When ``enterprise_id`` is provided, restrict to that Enterprise.
+        """
+        self._check_open()
+        sql = (
+            "SELECT data, status, reviewed_by, reviewed_at "
+            "FROM knowledge_units WHERE status = 'pending' "
+        )
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += "AND enterprise_id = ? "
+            params.append(enterprise_id)
+        sql += "ORDER BY created_at ASC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
         return [
             {
                 "knowledge_unit": KnowledgeUnit.model_validate_json(row[0]),
@@ -540,18 +587,29 @@ class RemoteStore:
             for row in rows
         ]
 
-    def pending_count(self) -> int:
-        """Return the number of pending KUs."""
+    def pending_count(self, *, enterprise_id: str | None = None) -> int:
+        """Return the number of pending KUs (optionally Enterprise-scoped)."""
         self._check_open()
+        sql = "SELECT COUNT(*) FROM knowledge_units WHERE status = 'pending'"
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += " AND enterprise_id = ?"
+            params.append(enterprise_id)
         with self._lock:
-            row = self._conn.execute("SELECT COUNT(*) FROM knowledge_units WHERE status = 'pending'").fetchone()
+            row = self._conn.execute(sql, params).fetchone()
         return row[0]
 
-    def counts_by_status(self) -> dict[str, int]:
-        """Return KU counts grouped by review status."""
+    def counts_by_status(self, *, enterprise_id: str | None = None) -> dict[str, int]:
+        """Return KU counts grouped by review status (optionally Enterprise-scoped)."""
         self._check_open()
+        sql = "SELECT status, COUNT(*) FROM knowledge_units"
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += " WHERE enterprise_id = ?"
+            params.append(enterprise_id)
+        sql += " GROUP BY status"
         with self._lock:
-            rows = self._conn.execute("SELECT status, COUNT(*) FROM knowledge_units GROUP BY status").fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def counts_by_tier(self) -> dict[str, int]:
@@ -571,25 +629,16 @@ class RemoteStore:
         confidence_max: float | None = None,
         status: str | None = None,
         limit: int = 100,
+        enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return KUs with review metadata, filtered by domain, confidence, or status.
 
         Confidence filtering is applied in-memory after deserialization
-        since confidence lives in the JSON blob.
-
-        Args:
-            domain: Optional domain tag to filter by.
-            confidence_min: Optional minimum confidence (inclusive).
-            confidence_max: Optional maximum confidence (exclusive when < 1.0, inclusive at 1.0).
-            status: Optional review status to filter by (e.g. "approved", "rejected").
-            limit: Maximum number of results to return.
-
-        Returns:
-            List of dicts with knowledge_unit, status, reviewed_by,
-            and reviewed_at keys.
+        since confidence lives in the JSON blob. When ``enterprise_id``
+        is provided, restrict to that Enterprise.
         """
         self._check_open()
-        params: list[str] = []
+        params: list[Any] = []
         conditions: list[str] = []
 
         if status:
@@ -602,6 +651,10 @@ class RemoteStore:
                 return []
             conditions.append("ku.id IN (  SELECT DISTINCT unit_id FROM knowledge_unit_domains WHERE domain = ?)")
             params.append(normalized[0])
+
+        if enterprise_id is not None:
+            conditions.append("ku.enterprise_id = ?")
+            params.append(enterprise_id)
 
         has_confidence_filter = confidence_min is not None or confidence_max is not None
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -1285,11 +1338,19 @@ class RemoteStore:
             )
         return cur.rowcount > 0
 
-    def confidence_distribution(self) -> dict[str, int]:
-        """Return confidence distribution buckets for approved KUs."""
+    def confidence_distribution(self, *, enterprise_id: str | None = None) -> dict[str, int]:
+        """Return confidence distribution buckets for approved KUs.
+
+        When ``enterprise_id`` is provided, restrict to that Enterprise.
+        """
         self._check_open()
+        sql = "SELECT data FROM knowledge_units WHERE status = 'approved'"
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += " AND enterprise_id = ?"
+            params.append(enterprise_id)
         with self._lock:
-            rows = self._conn.execute("SELECT data FROM knowledge_units WHERE status = 'approved'").fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         for (data,) in rows:
             unit = KnowledgeUnit.model_validate_json(data)
@@ -1304,27 +1365,29 @@ class RemoteStore:
                 buckets["0.8-1.0"] += 1
         return buckets
 
-    def recent_activity(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recent_activity(
+        self,
+        limit: int = 20,
+        *,
+        enterprise_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return recent activity as one event per knowledge unit.
 
         Each KU appears once: reviewed KUs show as approved/rejected,
-        pending KUs show as proposed.  Ordered by the most recent
+        pending KUs show as proposed. Ordered by the most recent
         timestamp (reviewed_at for reviewed KUs, created_at otherwise).
-
-        Args:
-            limit: Maximum number of activity entries to return.
-
-        Returns:
-            List of activity event dicts, newest first.
+        When ``enterprise_id`` is provided, restrict to that Enterprise.
         """
         self._check_open()
+        sql = "SELECT id, data, status, reviewed_by, reviewed_at FROM knowledge_units"
+        params: list[Any] = []
+        if enterprise_id is not None:
+            sql += " WHERE enterprise_id = ?"
+            params.append(enterprise_id)
+        sql += " ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?"
+        params.append(limit * 2)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT id, data, status, reviewed_by, reviewed_at "
-                "FROM knowledge_units "
-                "ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?",
-                (limit * 2,),
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         activity = []
         for row in rows:
             unit = KnowledgeUnit.model_validate_json(row[1])
@@ -1353,19 +1416,15 @@ class RemoteStore:
         activity.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
         return activity[:limit]
 
-    def daily_counts(self, *, days: int = 30) -> list[dict[str, Any]]:
+    def daily_counts(
+        self,
+        *,
+        days: int = 30,
+        enterprise_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return daily proposal and approval counts with contiguous dates.
 
-        Returns one entry per day from the earliest activity (within the
-        lookback window) through today, filling gaps with zero counts.
-        Pre-migration rows with NULL created_at are excluded.
-
-        Args:
-            days: Number of days to look back.
-
-        Returns:
-            List of dicts with date, proposed, approved, and rejected
-            counts, ordered ascending.
+        When ``enterprise_id`` is provided, restrict to that Enterprise.
 
         Raises:
             ValueError: If days is not positive.
@@ -1374,29 +1433,31 @@ class RemoteStore:
             raise ValueError("days must be positive")
         self._check_open()
         cutoff = f"-{days} days"
+        ent_clause = " AND enterprise_id = ?" if enterprise_id is not None else ""
+        ent_params: tuple[Any, ...] = (enterprise_id,) if enterprise_id is not None else ()
         with self._lock:
             proposed_rows = self._conn.execute(
                 "SELECT date(created_at) as day, COUNT(*) as cnt "
                 "FROM knowledge_units "
-                "WHERE created_at >= date('now', ?) "
+                "WHERE created_at >= date('now', ?)" + ent_clause + " "
                 "GROUP BY day",
-                (cutoff,),
+                (cutoff, *ent_params),
             ).fetchall()
             approved_rows = self._conn.execute(
                 "SELECT date(reviewed_at) as day, COUNT(*) as cnt "
                 "FROM knowledge_units "
                 "WHERE status = 'approved' "
-                "AND reviewed_at >= date('now', ?) "
+                "AND reviewed_at >= date('now', ?)" + ent_clause + " "
                 "GROUP BY day",
-                (cutoff,),
+                (cutoff, *ent_params),
             ).fetchall()
             rejected_rows = self._conn.execute(
                 "SELECT date(reviewed_at) as day, COUNT(*) as cnt "
                 "FROM knowledge_units "
                 "WHERE status = 'rejected' "
-                "AND reviewed_at >= date('now', ?) "
+                "AND reviewed_at >= date('now', ?)" + ent_clause + " "
                 "GROUP BY day",
-                (cutoff,),
+                (cutoff, *ent_params),
             ).fetchall()
         proposed = {row[0]: row[1] for row in proposed_rows}
         approved = {row[0]: row[1] for row in approved_rows}

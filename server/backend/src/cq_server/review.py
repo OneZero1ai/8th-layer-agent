@@ -1,12 +1,29 @@
-"""Review queue endpoints for the review API."""
+"""Review queue endpoints for the review API.
+
+SEC-CRIT #32 — every route requires admin role and is scoped to the
+caller's Enterprise. Tenant scope is resolved from the user row, never
+the request, matching the pattern used by /peers/heartbeat.
+"""
 
 from cq.models import KnowledgeUnit
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .auth import get_current_user
+from .auth import require_admin
 from .deps import get_store
 from .store import RemoteStore
+
+
+def _admin_enterprise(username: str, store: RemoteStore) -> str:
+    """Resolve the admin caller's enterprise_id from the user row.
+
+    Raises 401 if the row vanished between auth and request handling
+    (revoked admin, race with delete, etc.).
+    """
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user["enterprise_id"]
 
 
 class ReviewItem(BaseModel):
@@ -88,22 +105,13 @@ router = APIRouter(prefix="/review", tags=["review"])
 def review_queue(
     limit: int = 20,
     offset: int = 0,
-    _user: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> ReviewQueueResponse:
-    """Return pending KUs for review.
-
-    Args:
-        limit: Maximum number of items to return.
-        offset: Number of items to skip.
-        _user: The authenticated user (unused, enforces auth).
-        store: The remote store dependency.
-
-    Returns:
-        A paginated list of pending knowledge units with review metadata.
-    """
-    items = store.pending_queue(limit=limit, offset=offset)
-    total = store.pending_count()
+    """Return pending KUs for review, scoped to the caller's Enterprise."""
+    enterprise_id = _admin_enterprise(username, store)
+    items = store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id)
+    total = store.pending_count(enterprise_id=enterprise_id)
     return ReviewQueueResponse(
         items=[
             ReviewItem(
@@ -123,30 +131,18 @@ def review_queue(
 @router.post("/{unit_id}/approve")
 def approve_unit(
     unit_id: str,
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
-    """Approve a pending KU.
-
-    Args:
-        unit_id: The knowledge unit identifier.
-        username: The authenticated reviewer's username.
-        store: The remote store dependency.
-
-    Returns:
-        The updated review decision with status and reviewer details.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
-        HTTPException: With status 409 if the unit has already been reviewed.
-    """
-    status = store.get_review_status(unit_id)
+    """Approve a pending KU in the admin's Enterprise."""
+    enterprise_id = _admin_enterprise(username, store)
+    status = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     if status["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
-    store.set_review_status(unit_id, "approved", username)
-    updated = store.get_review_status(unit_id)
+    store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
+    updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     return _build_decision(unit_id, updated)
 
@@ -154,30 +150,18 @@ def approve_unit(
 @router.post("/{unit_id}/reject")
 def reject_unit(
     unit_id: str,
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
-    """Reject a pending KU.
-
-    Args:
-        unit_id: The knowledge unit identifier.
-        username: The authenticated reviewer's username.
-        store: The remote store dependency.
-
-    Returns:
-        The updated review decision with status and reviewer details.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
-        HTTPException: With status 409 if the unit has already been reviewed.
-    """
-    status = store.get_review_status(unit_id)
+    """Reject a pending KU in the admin's Enterprise."""
+    enterprise_id = _admin_enterprise(username, store)
+    status = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     if status["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
-    store.set_review_status(unit_id, "rejected", username)
-    updated = store.get_review_status(unit_id)
+    store.set_review_status(unit_id, "rejected", username, enterprise_id=enterprise_id)
+    updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     return _build_decision(unit_id, updated)
 
@@ -185,63 +169,40 @@ def reject_unit(
 @router.delete("/{unit_id}", status_code=204)
 def delete_unit(
     unit_id: str,
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> None:
-    """Hard-delete a knowledge unit (admin-only — already enforced by JWT).
+    """Hard-delete a KU in the admin's Enterprise (irreversible).
 
-    Used to remove KUs that should never have been approved (smoke-test garbage,
-    pre-quality-guard pollution, etc.). Confidence-flagging via /flag is the
-    soft path; this is the irreversible nuclear option.
-
-    Args:
-        unit_id: The knowledge unit identifier.
-        username: The authenticated reviewer's username (audit only).
-        store: The remote store dependency.
-
-    Returns:
-        204 No Content on successful delete.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
+    Cross-tenant DELETEs return 404 — same shape as missing-id, so
+    enumeration probes can't fingerprint other tenants' KU IDs.
     """
-    deleted = store.delete(unit_id)
+    enterprise_id = _admin_enterprise(username, store)
+    deleted = store.delete(unit_id, enterprise_id=enterprise_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    # Audit context: username is captured implicitly via FastAPI logs;
-    # the review_records table (if populated) preserves prior approve/reject
-    # decisions. We deliberately do not insert a synthetic delete-record;
-    # the absence of the KU + the surviving review trail is the audit shape.
     return None
 
 
 @router.get("/stats")
 def review_stats(
-    _user: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> ReviewStatsResponse:
-    """Return dashboard metrics.
-
-    Args:
-        _user: The authenticated user (unused, enforces auth).
-        store: The remote store dependency.
-
-    Returns:
-        Aggregated counts by status, domain distribution, confidence
-        distribution, recent activity, and daily trend data.
-    """
-    counts = store.counts_by_status()
+    """Return dashboard metrics, scoped to the caller's Enterprise."""
+    enterprise_id = _admin_enterprise(username, store)
+    counts = store.counts_by_status(enterprise_id=enterprise_id)
     return ReviewStatsResponse(
         counts={
             "pending": counts.get("pending", 0),
             "approved": counts.get("approved", 0),
             "rejected": counts.get("rejected", 0),
         },
-        domains=store.domain_counts(),
-        confidence_distribution=store.confidence_distribution(),
-        recent_activity=store.recent_activity(),
+        domains=store.domain_counts(enterprise_id=enterprise_id),
+        confidence_distribution=store.confidence_distribution(enterprise_id=enterprise_id),
+        recent_activity=store.recent_activity(enterprise_id=enterprise_id),
         trends=TrendsResponse(
-            daily=[DailyCount(**d) for d in store.daily_counts()],
+            daily=[DailyCount(**d) for d in store.daily_counts(enterprise_id=enterprise_id)],
         ),
     )
 
@@ -253,30 +214,18 @@ def list_units(
     confidence_max: float | None = None,
     status: str | None = None,
     limit: int = 100,
-    _user: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> list[ReviewItem]:
-    """Return KUs filtered by domain, confidence range, or status.
-
-    Args:
-        domain: Optional domain tag to filter by.
-        confidence_min: Optional minimum confidence (inclusive).
-        confidence_max: Optional maximum confidence (exclusive when < 1.0,
-            inclusive at 1.0).
-        status: Optional review status (e.g. "approved", "rejected").
-        limit: Maximum number of results to return.
-        _user: The authenticated user (unused, enforces auth).
-        store: The remote store dependency.
-
-    Returns:
-        List of knowledge units with review metadata.
-    """
+    """List KUs in the admin's Enterprise, filtered by domain/confidence/status."""
+    enterprise_id = _admin_enterprise(username, store)
     items = store.list_units(
         domain=domain,
         confidence_min=confidence_min,
         confidence_max=confidence_max,
         status=status,
         limit=limit,
+        enterprise_id=enterprise_id,
     )
     return [
         ReviewItem(
@@ -292,26 +241,18 @@ def list_units(
 @router.get("/{unit_id}")
 def get_unit(
     unit_id: str,
-    _user: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
     store: RemoteStore = Depends(get_store),
 ) -> ReviewItem:
-    """Return a single knowledge unit with its review metadata.
+    """Return one KU's review row, scoped to the admin's Enterprise.
 
-    Args:
-        unit_id: The knowledge unit identifier.
-        _user: The authenticated user (unused, enforces auth).
-        store: The remote store dependency.
-
-    Returns:
-        The knowledge unit with review status, reviewer, and timestamp.
-
-    Raises:
-        HTTPException: With status 404 if the unit does not exist.
+    Cross-tenant GETs return 404 — same shape as missing-id.
     """
-    ku = store.get_any(unit_id)
+    enterprise_id = _admin_enterprise(username, store)
+    ku = store.get_any(unit_id, enterprise_id=enterprise_id)
     if ku is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    review = store.get_review_status(unit_id)
+    review = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert review is not None  # Unit exists; get_any just returned it.
     return ReviewItem(
         knowledge_unit=ku,

@@ -22,6 +22,12 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides[require_api_key] = lambda: TEST_USERNAME
     with TestClient(app) as c:
+        from cq_server.app import _get_store
+        from cq_server.auth import hash_password
+
+        store = _get_store()
+        if store.get_user(TEST_USERNAME) is None:
+            store.create_user(TEST_USERNAME, hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
 
@@ -48,6 +54,7 @@ def _admin_jwt(client: TestClient) -> str:
         store.create_user("admin", pw_hash)
     except Exception:
         pass  # already exists
+    store.set_user_role("admin", "admin")
     resp = client.post("/auth/login", json={"username": "admin", "password": "admin"})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
