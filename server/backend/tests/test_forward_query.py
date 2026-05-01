@@ -109,16 +109,28 @@ def _post_forward_query(
     *,
     requester_enterprise: str,
     requester_group: str,
-    requester_l2_id: str = "acme-engineering-l2",
+    requester_l2_id: str | None = None,
     requester_persona: str = "persona-cloudfront-asker",
     query_axis: int = 0,
     max_results: int = 5,
     peer_key: str = PEER_KEY,
+    forwarder_l2_id: str | None = None,
 ) -> Any:
-    """Issue a forward-query call with a unit-vector embedding."""
+    """Issue a forward-query call with a unit-vector embedding.
+
+    SEC-CRIT #34: ``X-8L-Forwarder-L2-Id`` is required and must match
+    ``requester_l2_id``; defaults derived from requester scope.
+    """
+    if requester_l2_id is None:
+        requester_l2_id = f"{requester_enterprise}/{requester_group}"
+    if forwarder_l2_id is None:
+        forwarder_l2_id = requester_l2_id
     return client.post(
         "/api/v1/aigrp/forward-query",
-        headers={"authorization": f"Bearer {peer_key}"},
+        headers={
+            "authorization": f"Bearer {peer_key}",
+            "x-8l-forwarder-l2-id": forwarder_l2_id,
+        },
         json={
             "query_vec": _unit_vec(axis=query_axis),
             "query_text": "cloudfront cache",
@@ -428,10 +440,13 @@ class TestRouteMounts:
         _seed_ku(enterprise_id="acme", group_id="solutions")
         resp = aigrp_client.post(
             "/aigrp/forward-query",
-            headers={"authorization": f"Bearer {PEER_KEY}"},
+            headers={
+                "authorization": f"Bearer {PEER_KEY}",
+                "x-8l-forwarder-l2-id": "acme/engineering",
+            },
             json={
                 "query_vec": _unit_vec(),
-                "requester_l2_id": "acme-engineering-l2",
+                "requester_l2_id": "acme/engineering",
                 "requester_enterprise": "acme",
                 "requester_group": "engineering",
                 "max_results": 5,

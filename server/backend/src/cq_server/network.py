@@ -978,7 +978,12 @@ async def _call_forward_query(
     # responder's key in this internal-fleet topology). For cross-Enterprise
     # the responder has its own key, which is why we resolve by target.
     peer_key = _peer_key_for(target["enterprise"])
-    headers = {"authorization": f"Bearer {peer_key}"} if peer_key else {}
+    headers: dict[str, str] = {}
+    if peer_key:
+        headers["authorization"] = f"Bearer {peer_key}"
+    # SEC-CRIT #34 — declare the forwarder identity so the receiver can pin
+    # the body's requester_l2_id to the same value.
+    headers[aigrp.FORWARDER_HEADER] = f"{requester['enterprise']}/{requester['group']}"
     t0 = time.monotonic()
     try:
         r = await client.post(
