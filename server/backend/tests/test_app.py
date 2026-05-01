@@ -408,6 +408,7 @@ class TestReviewLifecycleEndToEnd:
 
         store = _get_store()
         store.create_user("reviewer", hash_password("pass123"))
+        store.set_user_role("reviewer", "admin")  # /review/* requires admin
 
         # Log in.
         login_resp = client.post(
