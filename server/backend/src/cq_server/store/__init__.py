@@ -22,6 +22,7 @@ from ..tables import (
     DEFAULT_GROUP_ID,
     ensure_aigrp_peers_table,
     ensure_api_keys_table,
+    ensure_consults_schema,
     ensure_embedding_columns,
     ensure_peers_schema,
     ensure_review_columns,
@@ -102,6 +103,9 @@ class RemoteStore:
         ensure_users_table(self._conn)
         ensure_api_keys_table(self._conn)
         ensure_aigrp_peers_table(self._conn)
+        # Sprint 2 (issue #20) — L3 consult tables. Same idempotent
+        # shape; safe to call on every startup.
+        ensure_consults_schema(self._conn)
         # Phase 6 step 1 — additive tenancy columns. Idempotent; safe to
         # run on every startup. Backfills legacy rows so the columns can
         # be queried without NULL handling once enforcement lands.
@@ -1631,3 +1635,187 @@ class RemoteStore:
                 (revoked_at, consent_id),
             )
         return cur.rowcount > 0
+
+    # ---------------------------------------------------------------
+    # L3 consults (issue #20). Sprint 2 — same-L2 path. Cross-L2
+    # routing comes in a follow-up PR.
+    # ---------------------------------------------------------------
+
+    def create_consult(
+        self,
+        *,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        to_l2_id: str,
+        to_persona: str,
+        subject: str | None,
+        created_at: str,
+    ) -> None:
+        """Open a new consult thread. Status starts at 'open'."""
+        self._check_open()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO consults (
+                    thread_id, from_l2_id, from_persona,
+                    to_l2_id, to_persona, subject,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
+                """,
+                (
+                    thread_id, from_l2_id, from_persona,
+                    to_l2_id, to_persona, subject,
+                    created_at,
+                ),
+            )
+
+    def get_consult(self, thread_id: str) -> dict[str, Any] | None:
+        self._check_open()
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT thread_id, from_l2_id, from_persona,
+                       to_l2_id, to_persona, subject,
+                       status, claimed_by, created_at,
+                       closed_at, resolution_summary
+                FROM consults WHERE thread_id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "thread_id": row[0],
+            "from_l2_id": row[1],
+            "from_persona": row[2],
+            "to_l2_id": row[3],
+            "to_persona": row[4],
+            "subject": row[5],
+            "status": row[6],
+            "claimed_by": row[7],
+            "created_at": row[8],
+            "closed_at": row[9],
+            "resolution_summary": row[10],
+        }
+
+    def append_consult_message(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        content: str,
+        created_at: str,
+    ) -> None:
+        """Append a message to an existing thread.
+
+        Caller is responsible for verifying the thread exists and is
+        not closed (raise 404 / 409 at the API layer).
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO consult_messages (
+                    message_id, thread_id, from_l2_id,
+                    from_persona, content, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id, thread_id, from_l2_id,
+                    from_persona, content, created_at,
+                ),
+            )
+
+    def list_consult_messages(self, thread_id: str) -> list[dict[str, Any]]:
+        self._check_open()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT message_id, thread_id, from_l2_id,
+                       from_persona, content, created_at
+                FROM consult_messages
+                WHERE thread_id = ?
+                ORDER BY created_at ASC
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [
+            {
+                "message_id": r[0],
+                "thread_id": r[1],
+                "from_l2_id": r[2],
+                "from_persona": r[3],
+                "content": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    def close_consult(
+        self,
+        *,
+        thread_id: str,
+        closed_at: str,
+        resolution_summary: str | None,
+    ) -> bool:
+        """Mark a thread closed. Returns True if it was open before."""
+        self._check_open()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """
+                UPDATE consults
+                SET status = 'closed', closed_at = ?, resolution_summary = ?
+                WHERE thread_id = ? AND status != 'closed'
+                """,
+                (closed_at, resolution_summary, thread_id),
+            )
+        return cur.rowcount > 0
+
+    def list_inbox(
+        self,
+        *,
+        to_l2_id: str,
+        to_persona: str,
+        include_closed: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return threads addressed to (l2_id, persona).
+
+        Default excludes closed threads; pass include_closed=True for an
+        audit-style view.
+        """
+        self._check_open()
+        sql = """
+            SELECT thread_id, from_l2_id, from_persona,
+                   to_l2_id, to_persona, subject,
+                   status, claimed_by, created_at,
+                   closed_at, resolution_summary
+            FROM consults
+            WHERE to_l2_id = ? AND to_persona = ?
+        """
+        params: list[Any] = [to_l2_id, to_persona]
+        if not include_closed:
+            sql += " AND status != 'closed'"
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "thread_id": r[0],
+                "from_l2_id": r[1],
+                "from_persona": r[2],
+                "to_l2_id": r[3],
+                "to_persona": r[4],
+                "subject": r[5],
+                "status": r[6],
+                "claimed_by": r[7],
+                "created_at": r[8],
+                "closed_at": r[9],
+                "resolution_summary": r[10],
+            }
+            for r in rows
+        ]
