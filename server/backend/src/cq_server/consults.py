@@ -50,13 +50,15 @@ class ConsultRequest(BaseModel):
     to_l2_id: str = Field(min_length=1, description="Target L2 in {enterprise}/{group} form")
     to_persona: str = Field(min_length=1)
     subject: str | None = Field(default=None, max_length=200)
-    content: str = Field(min_length=1, description="The opening message of the thread")
+    # SEC-HIGH #37 — cap matches CloseRequest.resolution_summary (4000) to
+    # prevent EFS-fill DoS via repeated multi-MB content payloads.
+    content: str = Field(min_length=1, max_length=4096, description="The opening message of the thread")
 
 
 class ConsultMessage(BaseModel):
     """Body of POST /consults/{thread_id}/messages — append a reply."""
 
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=4096)
 
 
 class CloseRequest(BaseModel):
@@ -472,8 +474,8 @@ class ForwardRequestBody(BaseModel):
     from_persona: str
     to_l2_id: str
     to_persona: str
-    subject: str | None = None
-    content: str
+    subject: str | None = Field(default=None, max_length=512)
+    content: str = Field(min_length=1, max_length=4096)
     created_at: str
 
 
@@ -532,11 +534,11 @@ class ForwardMessageBody(BaseModel):
     message_id: str
     from_l2_id: str
     from_persona: str
-    content: str
+    content: str = Field(min_length=1, max_length=4096)
     created_at: str
     # Defensive: thread metadata so the receiver can lazily backfill if
     # the original /forward-request was lost.
-    thread_subject: str | None = None
+    thread_subject: str | None = Field(default=None, max_length=512)
     thread_to_l2_id: str | None = None
     thread_to_persona: str | None = None
     thread_from_l2_id: str | None = None

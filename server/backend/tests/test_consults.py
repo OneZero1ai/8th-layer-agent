@@ -288,3 +288,36 @@ def test_anonymous_request_rejected(client: TestClient) -> None:
 def test_anonymous_inbox_rejected(client: TestClient) -> None:
     r = client.get("/api/v1/consults/inbox")
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# SEC-HIGH #37 — content max_length=4096 to prevent EFS-fill DoS
+# ---------------------------------------------------------------------------
+
+
+def test_consult_request_oversize_content_rejected(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/consults/request",
+        headers=_headers(client, ALICE),
+        json={
+            "to_l2_id": "acme/engineering",
+            "to_persona": BOB,
+            "content": "x" * 4097,
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_consult_message_oversize_content_rejected(client: TestClient) -> None:
+    open_resp = client.post(
+        "/api/v1/consults/request",
+        headers=_headers(client, ALICE),
+        json={"to_l2_id": "acme/engineering", "to_persona": BOB, "content": "ok"},
+    )
+    thread_id = open_resp.json()["thread_id"]
+    r = client.post(
+        f"/api/v1/consults/{thread_id}/messages",
+        headers=_headers(client, ALICE),
+        json={"content": "x" * 4097},
+    )
+    assert r.status_code == 422
