@@ -162,14 +162,24 @@ async def _signature_cache_loop() -> None:
     `app.lifespan`. Self-healing — any iteration's exception is logged
     and the loop continues so a transient SSM/peer outage doesn't
     permanently freeze the cache.
+
+    Logs at INFO with explicit level boost so the line shows in
+    container stdout (default Python root level is WARNING — without
+    the boost, "refreshed" lines would be invisible in prod).
     """
     log = logging.getLogger("dsn-cache")
+    log.setLevel(logging.INFO)
+    if not log.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(levelname)s: dsn-cache: %(message)s"))
+        log.addHandler(h)
+        log.propagate = False
     while True:
         try:
             t0 = time.monotonic()
             filled, total = await _refill_signature_cache()
             log.info(
-                "dsn cache refreshed: %d/%d L2s in %dms",
+                "refreshed: %d/%d L2s in %dms",
                 filled,
                 total,
                 int((time.monotonic() - t0) * 1000),
@@ -177,7 +187,7 @@ async def _signature_cache_loop() -> None:
         except asyncio.CancelledError:
             return
         except Exception:
-            log.exception("dsn cache refresh failed; will retry next cycle")
+            log.exception("refresh failed; will retry next cycle")
         await asyncio.sleep(DSN_CACHE_REFRESH_SECS)
 
 
