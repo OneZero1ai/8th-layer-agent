@@ -249,12 +249,12 @@ def test_closed_thread_excluded_from_inbox_by_default(client: TestClient) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_cross_l2_target_returns_501(client: TestClient) -> None:
-    """Alice on acme/engineering tries to reach Carla on acme/solutions.
+def test_cross_l2_target_unknown_peer_returns_404(client: TestClient) -> None:
+    """Cross-L2 to a peer not in this L2's AIGRP table returns 404.
 
-    Today: 501 with a clear message about the next PR. After cross-L2
-    routing lands, this test should be updated to assert 201 + the
-    forwarded thread.
+    Same-Enterprise different-Group works once AIGRP has converged
+    (covered separately in test_cross_l2_routing.py with a stubbed
+    peer table). Cross-Enterprise still 501 — gated on AI-BGP (#19).
     """
     r = client.post(
         "/api/v1/consults/request",
@@ -265,8 +265,11 @@ def test_cross_l2_target_returns_501(client: TestClient) -> None:
             "content": "hi from engineering",
         },
     )
-    assert r.status_code == 501, r.text
-    assert "cross-L2" in r.json()["detail"]
+    # No peer in the AIGRP table for this test fixture's enterprise,
+    # so we get 404 not 201. The forward path itself is exercised in
+    # test_cross_l2_routing.py.
+    assert r.status_code == 404, r.text
+    assert "AIGRP peer table" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
