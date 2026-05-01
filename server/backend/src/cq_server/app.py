@@ -1196,15 +1196,28 @@ def query_units(
     frameworks: Annotated[list[str] | None, Query()] = None,
     pattern: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(gt=0)] = 5,
+    username: str = Depends(require_api_key),
 ) -> list[KnowledgeUnit]:
-    """Search knowledge units by domain tags with relevance ranking."""
+    """Search knowledge units by domain tags with relevance ranking.
+
+    Auth: API key required. Tenancy scope (``enterprise_id`` /
+    ``group_id``) is resolved from the authenticated user's row — the
+    request never carries scope. Results are restricted to the caller's
+    Enterprise (own Group plus cross-group-allowed KUs); cross-Enterprise
+    discovery flows through ``/aigrp/forward-query`` (consent + audit).
+    """
     store = _get_store()
+    user = store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
     return store.query(
         domains,
         languages=languages,
         frameworks=frameworks,
         pattern=pattern or "",
         limit=limit,
+        enterprise_id=user["enterprise_id"],
+        group_id=user["group_id"],
     )
 
 
