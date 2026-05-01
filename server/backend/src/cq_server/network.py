@@ -114,6 +114,11 @@ TOPOLOGY_CACHE_TTL_SECONDS = 3.0
 
 _PEER_KEY_CACHE: dict[str, str] = {}
 _PEER_KEY_OVERRIDES: dict[str, str] = {}
+# Negative cache: how long to back off after a failed lookup before retrying.
+# Prior bug: failures cached as empty string forever, so a transient
+# AccessDenied / throttle would silently dark-out the resolver until restart.
+_PEER_KEY_FAIL_AT: dict[str, float] = {}
+_PEER_KEY_RETRY_AFTER_SECS = 30.0
 
 
 def _peer_key_for(enterprise: str) -> str:
@@ -122,17 +127,25 @@ def _peer_key_for(enterprise: str) -> str:
     Returns an empty string when the key cannot be resolved — callers
     treat that as "skip this L2" rather than failing the whole fan-out
     so a one-Enterprise SSM outage doesn't dark-out the demo for the
-    other Enterprise.
+    other Enterprise. Failures are cached only for ``_PEER_KEY_RETRY_AFTER_SECS``
+    so a transient AccessDenied or throttle self-heals on the next request
+    without requiring a service restart.
     """
     if enterprise in _PEER_KEY_OVERRIDES:
         return _PEER_KEY_OVERRIDES[enterprise]
-    if enterprise in _PEER_KEY_CACHE:
-        return _PEER_KEY_CACHE[enterprise]
+    cached = _PEER_KEY_CACHE.get(enterprise)
+    if cached:
+        return cached
+    # Negative cache: only short-circuit if the recent failure is still warm.
+    failed_at = _PEER_KEY_FAIL_AT.get(enterprise)
+    if failed_at is not None and (time.time() - failed_at) < _PEER_KEY_RETRY_AFTER_SECS:
+        return ""
     # Local override via env (for one-shot dev, e.g. running both L2 keys
     # under the same value during smoke tests).
     env_key = os.environ.get(f"CQ_AIGRP_PEER_KEY_{enterprise.upper()}", "")
     if env_key:
         _PEER_KEY_CACHE[enterprise] = env_key
+        _PEER_KEY_FAIL_AT.pop(enterprise, None)
         return env_key
     try:
         import boto3
@@ -146,10 +159,11 @@ def _peer_key_for(enterprise: str) -> str:
         )
         value = resp["Parameter"]["Value"]
         _PEER_KEY_CACHE[enterprise] = value
+        _PEER_KEY_FAIL_AT.pop(enterprise, None)
         return value
     except Exception:
         logger.warning("failed to resolve peer key for enterprise=%s", enterprise)
-        _PEER_KEY_CACHE[enterprise] = ""
+        _PEER_KEY_FAIL_AT[enterprise] = time.time()
         return ""
 
 
