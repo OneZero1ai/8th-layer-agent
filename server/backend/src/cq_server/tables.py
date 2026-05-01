@@ -93,6 +93,38 @@ CREATE TABLE IF NOT EXISTS aigrp_peers (
 CREATE INDEX IF NOT EXISTS idx_aigrp_peers_enterprise ON aigrp_peers(enterprise);
 """
 
+CONSULTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS consults (
+    thread_id          TEXT PRIMARY KEY,
+    from_l2_id         TEXT NOT NULL,
+    from_persona       TEXT NOT NULL,
+    to_l2_id           TEXT NOT NULL,
+    to_persona         TEXT NOT NULL,
+    subject            TEXT,
+    status             TEXT NOT NULL DEFAULT 'open',
+    claimed_by         TEXT,
+    created_at         TEXT NOT NULL,
+    closed_at          TEXT,
+    resolution_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_consults_to_l2_persona ON consults(to_l2_id, to_persona, status);
+CREATE INDEX IF NOT EXISTS idx_consults_from_l2_persona ON consults(from_l2_id, from_persona);
+CREATE INDEX IF NOT EXISTS idx_consults_created ON consults(created_at);
+"""
+
+CONSULT_MESSAGES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS consult_messages (
+    message_id   TEXT PRIMARY KEY,
+    thread_id    TEXT NOT NULL,
+    from_l2_id   TEXT NOT NULL,
+    from_persona TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES consults(thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_consult_messages_thread ON consult_messages(thread_id, created_at);
+"""
+
 USERS_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,6 +219,24 @@ def ensure_aigrp_peers_table(conn: sqlite3.Connection) -> None:
 def ensure_users_table(conn: sqlite3.Connection) -> None:
     """Create the users table if it does not exist."""
     conn.executescript(USERS_TABLE_SQL)
+
+
+def ensure_consults_schema(conn: sqlite3.Connection) -> None:
+    """Create the L3 consult tables if they do not exist.
+
+    Sprint 2 (issue #20). Two tables:
+      - consults: one row per agent-to-agent thread (subject, status,
+        from/to addressing, timestamps).
+      - consult_messages: append-only message log per thread.
+
+    Same shape as claude-mux's existing crosstalk MCP schema — L3 IS
+    crosstalk evolved across the substrate (`docs/decisions/10`).
+    Routing through the L2 is the corporate-IP audit point: every
+    consult lives durably on at least one L2 (same-team) or two L2s
+    (cross-team / cross-enterprise).
+    """
+    conn.executescript(CONSULTS_TABLE_SQL)
+    conn.executescript(CONSULT_MESSAGES_TABLE_SQL)
 
 
 def ensure_tenancy_columns(conn: sqlite3.Connection) -> None:
