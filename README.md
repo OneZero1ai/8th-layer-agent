@@ -1,3 +1,23 @@
+# 8th-Layer.ai agent
+
+This repository is the [**8th-Layer.ai**](https://8thlayer.onezero1.ai) agent platform — a fork of [`mozilla-ai/cq`](https://github.com/mozilla-ai/cq) maintained by [OneZero1.ai](https://github.com/OneZero1ai). 8th-Layer is the Semantic Knowledge Layer for agent fleets — Layer 8 of the OSI model.
+
+The fork adopts upstream cq's open standard (Knowledge Unit schema, REST contract, DID identity model, SDKs) **unchanged**, and adds the enterprise execution layer on top: AIGRP intra-Enterprise routing, DSN intent resolution, L3 live consults, multi-tenant scope, and the cross-Enterprise directory + reputation log primitives.
+
+**Where each piece lives:**
+
+| Surface | Repo | What's there |
+|---|---|---|
+| Agent platform (this repo) | `OneZero1ai/8th-layer-agent` | Forked cq-server with AIGRP/DSN/L3 + multi-tenant tenancy. Production code. |
+| Design + decisions | `OneZero1ai/8th-layer` (private) | Architecture decisions, specs, marketing site, AWS deploy templates |
+| Plugin marketplace | [`OneZero1ai/8th-layer-marketplace`](https://github.com/OneZero1ai/8th-layer-marketplace) | Claude Code plugin catalog for the 8th-Layer enterprise connector |
+
+**See:** [`FORK_DELTA.md`](FORK_DELTA.md) for the complete upstream-vs-fork delta — what we add, what we keep unchanged, and our upstream-sync discipline.
+
+The remainder of this README is upstream cq's documentation, which we adopt as-is. The two are interoperable: a vanilla cq Remote can talk to an 8th-Layer L2, and an 8th-Layer agent can talk to a vanilla cq Remote. The 8th-Layer-specific endpoints (`/aigrp/*`, `/network/dsn/*`, `/consults/*`) are additive.
+
+---
+
 # cq
 
 **cq** is derived from *colloquy* (/ˈkɒl.ə.kwi/), a structured exchange of ideas where understanding emerges through dialogue rather than one-way output. It reflects a focus on reciprocal knowledge sharing; systems that improve through participation, not passive use. In radio, **CQ** is a general call ("any station, respond"), capturing the same model: open invitation, response, and collective signal built through interaction.
