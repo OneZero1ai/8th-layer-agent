@@ -118,6 +118,41 @@ def compute_domain_bloom(domains: Iterable[str]) -> bytes:
     return bytes(bitmap)
 
 
+def bloom_contains(bloom: bytes, domain: str) -> bool:
+    """Test whether ``domain`` is plausibly present in ``bloom``.
+
+    Returns True when every BLOOM_HASHES bit position for ``domain`` is
+    set — meaning either the domain was added or this is a false
+    positive (target rate <1% at design size). False negatives are
+    impossible by Bloom-filter construction.
+
+    Used by the DSN resolver's prefilter step (issue #22): peers whose
+    Bloom doesn't claim ANY of the query's domain tags are dropped
+    before cosine ranking, since their corpus can't have a relevant
+    KU.
+    """
+    if not bloom or not domain:
+        return False
+    if len(bloom) * 8 < BLOOM_BITS:
+        # Defensive: caller passed a truncated buffer. Treat as miss
+        # rather than IndexError.
+        return False
+    for h in _bloom_hashes(domain.strip().lower()):
+        byte_idx = h // 8
+        bit_idx = h % 8
+        if not (bloom[byte_idx] & (1 << bit_idx)):
+            return False
+    return True
+
+
+def bloom_matches_any(bloom: bytes, domains: Iterable[str]) -> bool:
+    """True iff at least one of ``domains`` is plausibly in the Bloom."""
+    for d in domains:
+        if bloom_contains(bloom, d):
+            return True
+    return False
+
+
 def compute_centroid(embeddings_iter: Iterable[bytes]) -> bytes | None:
     """Compute the L2-normalized centroid of an iterable of packed-float32 LE
     embedding blobs. Returns packed-float32 LE bytes, or None if no embeddings.
