@@ -418,6 +418,8 @@ class RemoteStore:
         frameworks: list[str] | None = None,
         pattern: str = "",
         limit: int = 5,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[KnowledgeUnit]:
         """Search for knowledge units by domain tags with relevance ranking.
 
@@ -430,6 +432,12 @@ class RemoteStore:
             pattern: Optional pattern ranking signal. KUs whose context.pattern
                 matches rank higher but non-matching KUs are still returned.
             limit: Maximum number of results to return. Must be positive.
+            enterprise_id: When provided, restrict results to KUs in this Enterprise.
+                Cross-Enterprise discovery flows through /aigrp/forward-query
+                (consent + audit), not the local /query.
+            group_id: When ``enterprise_id`` is also provided, restrict results
+                to KUs in this Group OR KUs flagged ``cross_group_allowed=1``.
+                Cross-Group access without the flag flows through forward-query.
 
         Returns:
             Knowledge units ranked by relevance * confidence, descending.
@@ -448,18 +456,22 @@ class RemoteStore:
             return []
         # Safe: placeholders is only '?' characters, never user input.
         placeholders = ",".join("?" for _ in normalized)
-        sql = f"""
-            SELECT ku.data
-            FROM knowledge_units ku
-            WHERE ku.status = 'approved'
-            AND ku.id IN (
-                SELECT DISTINCT unit_id
-                FROM knowledge_unit_domains
-                WHERE domain IN ({placeholders})
-            )
-        """
+        where_clauses = [
+            "ku.status = 'approved'",
+            f"ku.id IN ("
+            f"SELECT DISTINCT unit_id FROM knowledge_unit_domains "
+            f"WHERE domain IN ({placeholders}))",
+        ]
+        params: list[Any] = list(normalized)
+        if enterprise_id is not None:
+            where_clauses.append("ku.enterprise_id = ?")
+            params.append(enterprise_id)
+            if group_id is not None:
+                where_clauses.append("(ku.group_id = ? OR ku.cross_group_allowed = 1)")
+                params.append(group_id)
+        sql = f"SELECT ku.data FROM knowledge_units ku WHERE {' AND '.join(where_clauses)}"
         with self._lock:
-            rows = self._conn.execute(sql, normalized).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
 
         # PoC: all filtering and scoring is in-memory after deserialization.
         # For larger stores, push coarse filters into SQL.

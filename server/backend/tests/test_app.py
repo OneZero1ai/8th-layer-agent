@@ -20,6 +20,15 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides[require_api_key] = lambda: TEST_USERNAME
     with TestClient(app) as c:
+        # Endpoints that resolve tenancy from the user row (e.g. /query,
+        # /peers/heartbeat) need the test user to exist. Seeded in the
+        # default tenancy scope so existing tests see their own KUs.
+        from cq_server.app import _get_store
+        from cq_server.auth import hash_password
+
+        store = _get_store()
+        if store.get_user(TEST_USERNAME) is None:
+            store.create_user(TEST_USERNAME, hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
 
@@ -242,6 +251,79 @@ class TestQuery:
         results = resp.json()
         assert len(results) == 2
         assert results[0]["context"]["pattern"] == "api-client"
+
+
+class TestQueryTenantScope:
+    """SEC-CRIT #33 — /query is auth-gated and scoped to caller's tenancy."""
+
+    def _set_ku_tenancy(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str,
+        group_id: str,
+        cross_group_allowed: bool = False,
+    ) -> None:
+        from cq_server.app import _get_store
+
+        store = _get_store()
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
+                "cross_group_allowed = ? WHERE id = ?",
+                (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit_id),
+            )
+
+    def _set_user_tenancy(self, username: str, *, enterprise_id: str, group_id: str) -> None:
+        from cq_server.app import _get_store
+
+        store = _get_store()
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
+                (enterprise_id, group_id, username),
+            )
+
+    def _seed_unit(self, client: TestClient, **overrides: Any) -> dict[str, Any]:
+        resp = client.post("/propose", json=_propose_payload(**overrides))
+        assert resp.status_code == 201
+        body = resp.json()
+        _approve_unit(client, body["id"])
+        return body
+
+    def test_anonymous_query_rejected(self, enforced_client: TestClient) -> None:
+        resp = enforced_client.get("/query", params={"domains": ["anything"]})
+        assert resp.status_code == 401
+
+    def test_caller_sees_own_tenant_kus(self, client: TestClient) -> None:
+        unit = self._seed_unit(client, domains=["scoped"])
+        self._set_ku_tenancy(unit["id"], enterprise_id="acme", group_id="engineering")
+        self._set_user_tenancy(TEST_USERNAME, enterprise_id="acme", group_id="engineering")
+        resp = client.get("/query", params={"domains": ["scoped"]})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+    def test_cross_tenant_kus_filtered_out(self, client: TestClient) -> None:
+        unit = self._seed_unit(client, domains=["secret"])
+        self._set_ku_tenancy(unit["id"], enterprise_id="rival", group_id="engineering")
+        self._set_user_tenancy(TEST_USERNAME, enterprise_id="acme", group_id="engineering")
+        resp = client.get("/query", params={"domains": ["secret"]})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_cross_group_blocked_unless_flag_set(self, client: TestClient) -> None:
+        blocked = self._seed_unit(client, domains=["xgroup-test"])
+        allowed = self._seed_unit(client, domains=["xgroup-test"])
+        self._set_ku_tenancy(blocked["id"], enterprise_id="acme", group_id="finance")
+        self._set_ku_tenancy(
+            allowed["id"], enterprise_id="acme", group_id="finance", cross_group_allowed=True
+        )
+        self._set_user_tenancy(TEST_USERNAME, enterprise_id="acme", group_id="engineering")
+        resp = client.get("/query", params={"domains": ["xgroup-test"]})
+        assert resp.status_code == 200
+        ids = [u["id"] for u in resp.json()]
+        assert allowed["id"] in ids
+        assert blocked["id"] not in ids
 
 
 class TestConfirm:
@@ -485,9 +567,9 @@ class TestApiKeyEnforcement:
         )
         assert resp.status_code == 401
 
-    def test_query_stays_open_under_enforcement(self, enforced_client: TestClient) -> None:
+    def test_query_requires_auth_under_enforcement(self, enforced_client: TestClient) -> None:
         resp = enforced_client.get("/query", params={"domains": ["anything"]})
-        assert resp.status_code == 200
+        assert resp.status_code == 401
 
     def test_stats_stays_open_under_enforcement(self, enforced_client: TestClient) -> None:
         resp = enforced_client.get("/stats")
