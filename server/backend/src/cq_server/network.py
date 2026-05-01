@@ -105,6 +105,83 @@ TOPOLOGY_CACHE_TTL_SECONDS = 3.0
 
 
 # ---------------------------------------------------------------------------
+# DSN signature cache (issue #23 — "routed hop" refactor).
+#
+# The marketing-aggregator's public DSN resolver used to fan out to every
+# fleet L2 on every visitor query. The marketing copy says we do "a routed
+# hop, not a fan-out" — turning that into truth means the resolver reads
+# from a locally-maintained signature table that a background task fills
+# on a polling cadence. That's the routing-table model the AIGRP thesis
+# describes.
+#
+# Populated by `_signature_cache_loop` (started in `app.lifespan`) every
+# DSN_CACHE_REFRESH_SECS. DSN resolve reads from here. If the cache is
+# empty (cold boot) or stale (>STALE secs), the resolver falls back to
+# one live `_fan_out_all` and warms the cache for the next request.
+# ---------------------------------------------------------------------------
+
+_signature_cache: dict[str, "_L2Snapshot"] = {}
+_signature_cache_filled_at: float = 0.0  # monotonic; 0.0 means never
+_SIGNATURE_CACHE_LOCK: asyncio.Lock | None = None  # lazily created in async context
+
+DSN_CACHE_REFRESH_SECS = int(os.environ.get("DSN_CACHE_REFRESH_SECS", "60"))
+DSN_CACHE_STALE_SECS = int(os.environ.get("DSN_CACHE_STALE_SECS", "180"))
+
+
+def _signature_cache_lock() -> asyncio.Lock:
+    """Create the cache lock lazily so module import doesn't require an event loop."""
+    global _SIGNATURE_CACHE_LOCK  # noqa: PLW0603
+    if _SIGNATURE_CACHE_LOCK is None:
+        _SIGNATURE_CACHE_LOCK = asyncio.Lock()
+    return _SIGNATURE_CACHE_LOCK
+
+
+async def _refill_signature_cache() -> tuple[int, int]:
+    """One refill pass: fan out to every fleet L2, write snapshots into cache.
+
+    Returns ``(filled, total)`` so callers can log refresh quality.
+    Failures on individual L2s are tolerated (they're omitted from the
+    cache and re-tried next cycle); only the overall fan-out exception
+    is logged at WARNING level.
+    """
+    global _signature_cache_filled_at  # noqa: PLW0603
+    snapshots = await _fan_out_all(FLEET_L2S)
+    async with _signature_cache_lock():
+        _signature_cache.clear()
+        for snap in snapshots:
+            if snap.signature is not None:
+                _signature_cache[snap.slug] = snap
+        _signature_cache_filled_at = time.monotonic()
+    return len(_signature_cache), len(FLEET_L2S)
+
+
+async def _signature_cache_loop() -> None:
+    """Background task: refill _signature_cache on a polling cadence.
+
+    Lives for the lifetime of the FastAPI process, started from
+    `app.lifespan`. Self-healing — any iteration's exception is logged
+    and the loop continues so a transient SSM/peer outage doesn't
+    permanently freeze the cache.
+    """
+    log = logging.getLogger("dsn-cache")
+    while True:
+        try:
+            t0 = time.monotonic()
+            filled, total = await _refill_signature_cache()
+            log.info(
+                "dsn cache refreshed: %d/%d L2s in %dms",
+                filled,
+                total,
+                int((time.monotonic() - t0) * 1000),
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("dsn cache refresh failed; will retry next cycle")
+        await asyncio.sleep(DSN_CACHE_REFRESH_SECS)
+
+
+# ---------------------------------------------------------------------------
 # SSM peer-key resolution.
 #
 # Per-Enterprise shared secrets live at /8l-aigrp/<enterprise>/peer-key as
@@ -279,11 +356,19 @@ class DsnCandidate(BaseModel):
 
 
 class DsnPathStep(BaseModel):
-    """One step in the DSN resolution timing breakdown."""
+    """One step in the DSN resolution timing breakdown.
+
+    `cache_hit` and `cache_age_ms` are populated for the `cache_lookup`
+    step so the frontend can show "served from cache · 7s old · 6 L2s"
+    vs "cache miss · live fetch" honestly. -1 cache_age_ms means the
+    cache has never been filled yet (first request after process boot).
+    """
 
     step: str
     latency_ms: int
     l2_count: int | None = None
+    cache_hit: bool | None = None
+    cache_age_ms: int | None = None
 
 
 class DsnResolveResponse(BaseModel):
@@ -653,11 +738,41 @@ async def network_dsn_resolve(
     intent_vec = unpack(payload[0])
     path.append(DsnPathStep(step="embed", latency_ms=embed_ms))
 
+    # Routed-hop read (issue #23): consult the locally-maintained signature
+    # cache instead of fanning out to every fleet L2 per request. The cache
+    # is filled by `_signature_cache_loop` every DSN_CACHE_REFRESH_SECS
+    # (default 60s). On cold boot or stale cache we fall back to one live
+    # fan-out and warm — that's marked cache_hit=False in the trace so
+    # the frontend can show "cache miss · live fetch" honestly.
     t1 = time.monotonic()
-    snapshots = await _fan_out_all(FLEET_L2S)
-    fan_ms = int((time.monotonic() - t1) * 1000)
+    async with _signature_cache_lock():
+        cached_snapshots = list(_signature_cache.values())
+        cache_age_ms = (
+            int((time.monotonic() - _signature_cache_filled_at) * 1000)
+            if _signature_cache_filled_at
+            else -1
+        )
+    cache_hit = (
+        len(cached_snapshots) > 0
+        and 0 <= cache_age_ms <= DSN_CACHE_STALE_SECS * 1000
+    )
+    if cache_hit:
+        snapshots = cached_snapshots
+    else:
+        # Cold start or stale: warm the cache via one live fan-out.
+        await _refill_signature_cache()
+        async with _signature_cache_lock():
+            snapshots = list(_signature_cache.values())
+            cache_age_ms = int((time.monotonic() - _signature_cache_filled_at) * 1000)
+    lookup_ms = int((time.monotonic() - t1) * 1000)
     path.append(
-        DsnPathStep(step="fan_out_signatures", latency_ms=fan_ms, l2_count=len(FLEET_L2S))
+        DsnPathStep(
+            step="cache_lookup",
+            latency_ms=lookup_ms,
+            l2_count=len(snapshots),
+            cache_hit=cache_hit,
+            cache_age_ms=cache_age_ms,
+        )
     )
 
     t2 = time.monotonic()

@@ -150,10 +150,15 @@ class TestDsnResolveHappyPath:
         assert candidates[0]["l2_id"] == "acme/solutions"
         # resolution_path has three steps.
         steps = [s["step"] for s in body["resolution_path"]]
-        assert steps == ["embed", "fan_out_signatures", "rank"]
-        # fan_out step exposes the L2 count.
-        fan_step = next(s for s in body["resolution_path"] if s["step"] == "fan_out_signatures")
-        assert fan_step["l2_count"] == 6
+        # Post-issue-#23: the resolver reads from the in-memory signature
+        # cache instead of fanning out per request. First request after
+        # process boot is a cache-miss → live fetch → warm; subsequent
+        # requests hit the cache. The step name reflects that.
+        assert steps == ["embed", "cache_lookup", "rank"]
+        cache_step = next(s for s in body["resolution_path"] if s["step"] == "cache_lookup")
+        assert cache_step["l2_count"] == 6
+        assert "cache_hit" in cache_step
+        assert "cache_age_ms" in cache_step
 
 
 class TestDsnPolicyDecisions:

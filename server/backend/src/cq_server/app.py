@@ -199,14 +199,25 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     if aigrp.aigrp_enabled():
         aigrp_task = asyncio.create_task(_aigrp_bootstrap_and_poll(_store))
 
+    # DSN signature cache loop (issue #23). Runs on every cq-server
+    # process — for the marketing aggregator it keeps the public DSN
+    # resolver fast (cache reads, not fan-outs); for fleet L2s it's a
+    # no-op because the resolver isn't hit from outside the aggregator.
+    # We start it unconditionally because the marketing aggregator runs
+    # the same image as fleet L2s.
+    from .network import _signature_cache_loop
+
+    dsn_cache_task = asyncio.create_task(_signature_cache_loop())
+
     yield
 
-    if aigrp_task is not None:
-        aigrp_task.cancel()
-        try:
-            await aigrp_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task in (aigrp_task, dsn_cache_task):
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     _store.close()
 
 
