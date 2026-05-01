@@ -94,6 +94,79 @@ def require_peer_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid peer key")
 
 
+# SEC-CRIT #34 — forward-endpoint identity binding.
+#
+# The shared EnterprisePeerKey gates *transport* (only Enterprise L2s can call
+# each other). It does NOT bind a request to a specific *sender* L2 — every L2
+# in the Enterprise has the same key, so any L2 with the key can forge any
+# sibling's identity in the body.
+#
+# Until per-L2 Ed25519 keys land (sprint 4 — same primitive the directory and
+# reputation log need), the receiver explicitly enforces:
+#   1. The forwarder declares its identity in ``X-8L-Forwarder-L2-Id`` (header,
+#      not buried in body)
+#   2. The body's ``from_l2_id`` / ``requester_l2_id`` matches the header
+#   3. The header's Enterprise component equals the receiver's Enterprise —
+#      the peer-key gate is supposed to enforce this implicitly, but the body
+#      previously didn't have to honour it
+#
+# This raises the bar from "any body" to "any body matching declared header"
+# and closes cross-Enterprise impersonation outright. Sibling-L2 impersonation
+# inside an Enterprise is the residual gap closed by Ed25519.
+FORWARDER_HEADER = "x-8l-forwarder-l2-id"
+
+
+def require_forwarder_identity(
+    request: Request,
+    claimed_l2_id: str,
+    *,
+    same_enterprise_only: bool = True,
+) -> str:
+    """Validate the forwarder's declared identity on a /forward-* endpoint.
+
+    Args:
+        request: incoming FastAPI request (must contain the forwarder header).
+        claimed_l2_id: the L2 id claimed in the request body (e.g.
+            body.from_l2_id for consults, body.requester_l2_id for AIGRP).
+        same_enterprise_only: when True (intra-Enterprise forwards like
+            /consults/forward-*), the forwarder's Enterprise component must
+            match the receiver's Enterprise. When False (AIGRP cross-Enterprise
+            consent path), the header still must match the body but the
+            forwarder may belong to a peered foreign Enterprise — that
+            authorisation comes from cross_enterprise_consents downstream.
+
+    Returns:
+        The header-declared forwarder L2 id (post-validation).
+
+    Raises:
+        HTTPException 400 on missing/empty header.
+        HTTPException 403 on header/body mismatch or cross-Enterprise spoof.
+    """
+    declared = request.headers.get(FORWARDER_HEADER, "").strip()
+    if not declared:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing {FORWARDER_HEADER} header on cross-L2 forward",
+        )
+    if declared != claimed_l2_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"forwarder identity mismatch: header={declared!r} body={claimed_l2_id!r}",
+        )
+    declared_enterprise, sep, _ = declared.partition("/")
+    if not declared_enterprise or not sep:
+        raise HTTPException(
+            status_code=400,
+            detail=f"forwarder l2 id must be enterprise/group, got {declared!r}",
+        )
+    if same_enterprise_only and declared_enterprise != enterprise():
+        raise HTTPException(
+            status_code=403,
+            detail=f"cross-Enterprise forward rejected: forwarder={declared!r} receiver_enterprise={enterprise()!r}",
+        )
+    return declared
+
+
 def _bloom_hashes(domain: str) -> list[int]:
     """Return BLOOM_HASHES bit indices for a domain string."""
     digest = hashlib.sha256(domain.encode()).digest()

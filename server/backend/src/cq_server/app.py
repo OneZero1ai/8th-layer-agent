@@ -16,7 +16,7 @@ from cq.models import (
     Tier,
     create_knowledge_unit,
 )
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.responses import FileResponse
@@ -685,6 +685,7 @@ def _decide_policy_for_ku(
 @api_router.post("/aigrp/forward-query")
 def aigrp_forward_query(
     body: AigrpForwardQueryRequest,
+    request: Request,
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpForwardQueryResponse:
     """Cross-L2 forward-query — Phase 6 step 2.
@@ -700,9 +701,19 @@ def aigrp_forward_query(
     ``cross_enterprise_consents`` row — without that the call returns
     zero results silently rather than 401, so probes can't fingerprint
     consent state.
+
+    SEC-CRIT #34 — caller declares its identity in ``X-8L-Forwarder-L2-Id``;
+    receiver pins it to ``body.requester_l2_id`` and to its own Enterprise.
+    Closes cross-Enterprise impersonation; sibling-L2 spoof inside an
+    Enterprise is the residual gap (sprint 4 / Ed25519).
     """
     import uuid
 
+    # AIGRP forward-query supports cross-Enterprise via consent table — the
+    # foreign forwarder's Enterprise legitimately differs from the receiver's.
+    aigrp.require_forwarder_identity(
+        request, body.requester_l2_id, same_enterprise_only=False
+    )
     store = _get_store()
 
     responder_enterprise = aigrp.enterprise()

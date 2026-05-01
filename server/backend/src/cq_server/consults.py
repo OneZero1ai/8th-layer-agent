@@ -26,7 +26,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import aigrp as aigrp_mod
@@ -169,7 +169,10 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
                 f"{base}/api/v1/consults/forward-request",
-                headers={"authorization": f"Bearer {peer_key}"},
+                headers={
+                    "authorization": f"Bearer {peer_key}",
+                    aigrp_mod.FORWARDER_HEADER: _self_l2_id(),
+                },
                 json=payload,
             )
         if r.status_code >= 400:
@@ -194,7 +197,10 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
                 f"{base}/api/v1/consults/forward-message",
-                headers={"authorization": f"Bearer {peer_key}"},
+                headers={
+                    "authorization": f"Bearer {peer_key}",
+                    aigrp_mod.FORWARDER_HEADER: _self_l2_id(),
+                },
                 json=payload,
             )
         if r.status_code >= 400:
@@ -474,6 +480,7 @@ class ForwardRequestBody(BaseModel):
 @router.post("/forward-request", status_code=201)
 def forward_consult_request(
     body: ForwardRequestBody,
+    request: Request,
     store: RemoteStore = Depends(get_store),
     _peer: None = Depends(aigrp_mod.require_peer_key),
 ) -> dict[str, str]:
@@ -483,10 +490,15 @@ def forward_consult_request(
     side did its local mirror-write. We re-do the same writes here so
     BOTH L2s have the durable corporate-IP record per decisions/10.
 
+    SEC-CRIT #34 — receiver pins ``X-8L-Forwarder-L2-Id`` to ``body.from_l2_id``
+    and to its own Enterprise; closes cross-Enterprise impersonation outright
+    and surfaces the residual sibling-L2 gap (sprint 4 / Ed25519).
+
     Idempotent on thread_id collision: if the thread already exists
     (re-delivery, retry), we skip the create and just append the message
     if it's new. Same for message_id.
     """
+    aigrp_mod.require_forwarder_identity(request, body.from_l2_id)
     if store.get_consult(body.thread_id) is None:
         store.create_consult(
             thread_id=body.thread_id,
@@ -535,6 +547,7 @@ class ForwardMessageBody(BaseModel):
 @router.post("/forward-message", status_code=201)
 def forward_consult_message(
     body: ForwardMessageBody,
+    request: Request,
     store: RemoteStore = Depends(get_store),
     _peer: None = Depends(aigrp_mod.require_peer_key),
 ) -> dict[str, str]:
@@ -544,7 +557,10 @@ def forward_consult_message(
     create it from the embedded thread metadata before appending. This
     prevents a single dropped forward from permanently breaking the
     audit trail on this side.
+
+    SEC-CRIT #34 — same forwarder-identity binding as /forward-request.
     """
+    aigrp_mod.require_forwarder_identity(request, body.from_l2_id)
     existing = store.get_consult(body.thread_id)
     if existing is None:
         if not (

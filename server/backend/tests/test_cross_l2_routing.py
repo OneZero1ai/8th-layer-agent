@@ -269,7 +269,10 @@ def test_forward_request_mirrors_thread_and_message(client: TestClient) -> None:
     }
     r = client.post(
         "/api/v1/consults/forward-request",
-        headers={"Authorization": f"Bearer {ACME_PEER_KEY}"},
+        headers={
+            "Authorization": f"Bearer {ACME_PEER_KEY}",
+            "x-8l-forwarder-l2-id": "acme/solutions",
+        },
         json=payload,
     )
     assert r.status_code == 201, r.text
@@ -292,7 +295,7 @@ def test_forward_request_idempotent_on_redelivery(client: TestClient) -> None:
         "content": "first",
         "created_at": "2026-05-01T17:00:00+00:00",
     }
-    h = {"Authorization": f"Bearer {ACME_PEER_KEY}"}
+    h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
     r1 = client.post("/api/v1/consults/forward-request", headers=h, json=payload)
     r2 = client.post("/api/v1/consults/forward-request", headers=h, json=payload)
     assert r1.status_code == 201
@@ -302,13 +305,16 @@ def test_forward_request_idempotent_on_redelivery(client: TestClient) -> None:
 def test_forward_request_rejects_wrong_peer_key(client: TestClient) -> None:
     r = client.post(
         "/api/v1/consults/forward-request",
-        headers={"Authorization": "Bearer wrong-key"},
+        headers={
+            "Authorization": "Bearer wrong-key",
+            "x-8l-forwarder-l2-id": "acme/solutions",
+        },
         json={
             "thread_id": "x",
             "message_id": "x",
-            "from_l2_id": "a",
+            "from_l2_id": "acme/solutions",
             "from_persona": "x",
-            "to_l2_id": "b",
+            "to_l2_id": "acme/engineering",
             "to_persona": "x",
             "content": "x",
             "created_at": "x",
@@ -323,9 +329,9 @@ def test_forward_request_rejects_anonymous(client: TestClient) -> None:
         json={
             "thread_id": "x",
             "message_id": "x",
-            "from_l2_id": "a",
+            "from_l2_id": "acme/solutions",
             "from_persona": "x",
-            "to_l2_id": "b",
+            "to_l2_id": "acme/engineering",
             "to_persona": "x",
             "content": "x",
             "created_at": "x",
@@ -340,7 +346,7 @@ def test_forward_request_rejects_anonymous(client: TestClient) -> None:
 
 
 def test_forward_message_appends_to_existing_thread(client: TestClient) -> None:
-    h = {"Authorization": f"Bearer {ACME_PEER_KEY}"}
+    h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
     # First, mirror the thread via /forward-request
     client.post("/api/v1/consults/forward-request", headers=h, json={
         "thread_id": "th_msg_a",
@@ -352,8 +358,10 @@ def test_forward_message_appends_to_existing_thread(client: TestClient) -> None:
         "content": "open",
         "created_at": "2026-05-01T18:00:00+00:00",
     })
-    # Append a reply via /forward-message
-    r = client.post("/api/v1/consults/forward-message", headers=h, json={
+    # Append a reply via /forward-message — note the reply is from
+    # acme/engineering (forwarder identity must match body.from_l2_id).
+    h_reply = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/engineering"}
+    r = client.post("/api/v1/consults/forward-message", headers=h_reply, json={
         "thread_id": "th_msg_a",
         "message_id": "msg_msg_a_2",
         "from_l2_id": "acme/engineering",
@@ -373,7 +381,7 @@ def test_forward_message_appends_to_existing_thread(client: TestClient) -> None:
 
 def test_forward_message_lazily_creates_missing_thread(client: TestClient) -> None:
     """If /forward-request was lost, /forward-message backfills the thread row."""
-    h = {"Authorization": f"Bearer {ACME_PEER_KEY}"}
+    h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
     r = client.post("/api/v1/consults/forward-message", headers=h, json={
         "thread_id": "th_lazy_a",
         "message_id": "msg_lazy_a",
@@ -396,7 +404,7 @@ def test_forward_message_lazily_creates_missing_thread(client: TestClient) -> No
 
 
 def test_forward_message_missing_thread_no_metadata_400(client: TestClient) -> None:
-    h = {"Authorization": f"Bearer {ACME_PEER_KEY}"}
+    h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
     r = client.post("/api/v1/consults/forward-message", headers=h, json={
         "thread_id": "th_missing",
         "message_id": "msg_x",
@@ -405,6 +413,96 @@ def test_forward_message_missing_thread_no_metadata_400(client: TestClient) -> N
         "content": "no thread no metadata",
         "created_at": "2026-05-01T20:00:00+00:00",
     })
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# SEC-CRIT #34 — forwarder identity binding on /forward-* endpoints
+# ---------------------------------------------------------------------------
+
+
+_VALID_FWD_PAYLOAD = {
+    "thread_id": "th_sec",
+    "message_id": "msg_sec",
+    "from_l2_id": "acme/solutions",
+    "from_persona": "carla",
+    "to_l2_id": "acme/engineering",
+    "to_persona": "alice",
+    "content": "hello",
+    "created_at": "2026-05-01T21:00:00+00:00",
+}
+
+
+def test_forward_request_missing_forwarder_header_400(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/consults/forward-request",
+        headers={"Authorization": f"Bearer {ACME_PEER_KEY}"},
+        json=dict(_VALID_FWD_PAYLOAD),
+    )
+    assert r.status_code == 400
+    assert "x-8l-forwarder-l2-id" in r.json()["detail"].lower()
+
+
+def test_forward_request_header_body_mismatch_403(client: TestClient) -> None:
+    """Compromised L2 forges body identity but forgets to match the header."""
+    r = client.post(
+        "/api/v1/consults/forward-request",
+        headers={
+            "Authorization": f"Bearer {ACME_PEER_KEY}",
+            "x-8l-forwarder-l2-id": "acme/finance",  # claims to be finance
+        },
+        json={**_VALID_FWD_PAYLOAD, "from_l2_id": "acme/solutions"},  # body says solutions
+    )
+    assert r.status_code == 403
+    assert "mismatch" in r.json()["detail"].lower()
+
+
+def test_forward_request_cross_enterprise_forwarder_rejected(client: TestClient) -> None:
+    """A forwarder claiming to belong to a foreign Enterprise is rejected.
+
+    consults.forward-* is intra-Enterprise only (decision 10's mutual
+    logging within an Enterprise); cross-Enterprise consults flow through
+    /aigrp/forward-query with consent.
+    """
+    r = client.post(
+        "/api/v1/consults/forward-request",
+        headers={
+            "Authorization": f"Bearer {ACME_PEER_KEY}",
+            "x-8l-forwarder-l2-id": "rival/eng",
+        },
+        json={**_VALID_FWD_PAYLOAD, "from_l2_id": "rival/eng"},
+    )
+    assert r.status_code == 403
+    assert "cross-enterprise" in r.json()["detail"].lower()
+
+
+def test_forward_request_malformed_forwarder_header_400(client: TestClient) -> None:
+    """Forwarder header without enterprise/group separator is invalid."""
+    r = client.post(
+        "/api/v1/consults/forward-request",
+        headers={
+            "Authorization": f"Bearer {ACME_PEER_KEY}",
+            "x-8l-forwarder-l2-id": "no-slash-here",
+        },
+        json={**_VALID_FWD_PAYLOAD, "from_l2_id": "no-slash-here"},
+    )
+    assert r.status_code == 400
+    assert "enterprise/group" in r.json()["detail"].lower()
+
+
+def test_forward_message_missing_forwarder_header_400(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/consults/forward-message",
+        headers={"Authorization": f"Bearer {ACME_PEER_KEY}"},
+        json={
+            "thread_id": "x",
+            "message_id": "y",
+            "from_l2_id": "acme/solutions",
+            "from_persona": "carla",
+            "content": "x",
+            "created_at": "x",
+        },
+    )
     assert r.status_code == 400
 
 
