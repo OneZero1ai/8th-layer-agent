@@ -35,8 +35,6 @@ Design choices:
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import os
@@ -45,14 +43,42 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import rfc8785
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from .crypto import (
+    b64u as _b64u,
+)
+from .crypto import (
+    b64u_decode as _b64u_decode,
+)
+from .crypto import (
+    canonicalize,
+    fingerprint_sha256,
+    load_private_key,
+    public_key_b64u,
+    sign_envelope,
+    verify_envelope_signature,
+)
 from .store import RemoteStore
+
+# Re-export for callers and tests that still import these from
+# ``cq_server.directory_client`` (sprint-3 surface). The canonical
+# definitions now live in ``cq_server.crypto``.
+__all__ = [
+    "_b64u",
+    "_b64u_decode",
+    "canonicalize",
+    "directory_bootstrap_and_loop",
+    "directory_enabled",
+    "directory_url",
+    "fingerprint_sha256",
+    "load_private_key",
+    "now_iso",
+    "public_key_b64u",
+    "pull_interval_sec",
+    "sign_envelope",
+    "verify_envelope_signature",
+]
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -89,75 +115,9 @@ def pull_interval_sec() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Crypto helpers (signing + envelope construction)
+# Crypto helpers — moved to ``cq_server.crypto`` in sprint 4. Imported above
+# and re-exported via ``__all__`` so existing callers keep working.
 # ---------------------------------------------------------------------------
-
-
-def _b64u(b: bytes) -> str:
-    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-
-
-def _b64u_decode(s: str) -> bytes:
-    pad = (-len(s)) % 4
-    return base64.urlsafe_b64decode(s + ("=" * pad))
-
-
-def load_private_key(path: Path) -> Ed25519PrivateKey:
-    """Load an Ed25519 private key from a 32-byte raw file."""
-    raw = path.read_bytes()
-    if len(raw) != 32:
-        raise ValueError(f"Ed25519 private key must be 32 raw bytes, got {len(raw)}")
-    return Ed25519PrivateKey.from_private_bytes(raw)
-
-
-def public_key_b64u(privkey: Ed25519PrivateKey) -> str:
-    pub = privkey.public_key().public_bytes_raw()
-    return _b64u(pub)
-
-
-def fingerprint_sha256(pubkey_b64u: str) -> str:
-    """Match the directory's fingerprint format (`sha256:<hex>`)."""
-    raw = _b64u_decode(pubkey_b64u)
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
-
-
-def canonicalize(payload: dict[str, Any]) -> bytes:
-    """RFC 8785 JCS canonical JSON bytes for ``payload``."""
-    return rfc8785.dumps(payload)
-
-
-def sign_envelope(privkey: Ed25519PrivateKey, payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a signed envelope per directory-v1 spec.
-
-    Returns the dict the server expects on the wire:
-    ``{payload, payload_canonical, signature, signing_key_id}``.
-    """
-    canonical = canonicalize(payload)
-    signature = privkey.sign(canonical)
-    return {
-        "payload": payload,
-        "payload_canonical": canonical.decode(),
-        "signature": _b64u(signature),
-        "signing_key_id": public_key_b64u(privkey),
-    }
-
-
-def verify_envelope_signature(
-    pubkey_b64u: str,
-    payload_canonical: str,
-    signature_b64u: str,
-) -> bool:
-    """Constant-time Ed25519 verify of a signed-envelope payload.
-
-    Returns True on success, False on any cryptographic failure (we
-    never raise on verify; callers decide policy).
-    """
-    try:
-        pub = Ed25519PublicKey.from_public_bytes(_b64u_decode(pubkey_b64u))
-        pub.verify(_b64u_decode(signature_b64u), payload_canonical.encode())
-        return True
-    except (InvalidSignature, ValueError):
-        return False
 
 
 def now_iso() -> str:
@@ -308,22 +268,19 @@ async def _post_peerings_pull(
     privkey: Ed25519PrivateKey,
     enterprise_id: str,
 ) -> list[dict[str, Any]] | None:
-    """Pull /peerings/{enterprise_id}. Server requires a signed identity proof.
+    """Pull /peerings/{enterprise_id}. No auth in V1.
 
-    Per directory-v1 spec, the proof is a signed envelope over a small
-    payload {enterprise_id, ts}. The server verifies the signature
-    against the enterprise's registered root key.
+    Peering records are bilateral-signed by the two enterprises' root
+    keys; the records ARE publicly verifiable offline by anyone with
+    the enterprise public keys. Privacy of the peering graph is
+    deferred to V2. The privkey parameter is retained for backward
+    compatibility (and future-proofing if V2 adds per-pair bearers);
+    silently unused on the wire today.
     """
-    proof = {"enterprise_id": enterprise_id, "ts": now_iso()}
-    envelope = sign_envelope(privkey, proof)
+    del privkey  # V1: no auth on this endpoint; CloudFront-strip-body forced this.
     url = f"{directory_url()}/api/v1/directory/peerings/{enterprise_id}"
     try:
-        r = await client.request(
-            "GET",
-            url,
-            json=envelope,
-            timeout=15.0,
-        )
+        r = await client.get(url, timeout=15.0)
     except httpx.RequestError as e:
         log.warning("directory: peerings pull failed enterprise=%s err=%s", enterprise_id, e)
         return None
