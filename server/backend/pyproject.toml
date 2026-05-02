@@ -18,6 +18,12 @@ dependencies = [
     "alembic>=1.18.4,<2",
     "boto3>=1.34",
     "numpy>=1.26",
+    # 8th-Layer directory client (sprint 3) — Ed25519 signing of /announce
+    # envelopes and verification of peering records pulled from the
+    # directory. Same primitives as `OneZero1ai/8th-layer-directory`.
+    "cryptography>=42",
+    "rfc8785>=0.1.4",
+    "httpx",
 ]
 
 [project.scripts]

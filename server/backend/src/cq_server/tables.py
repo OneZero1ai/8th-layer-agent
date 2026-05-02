@@ -221,6 +221,42 @@ def ensure_users_table(conn: sqlite3.Connection) -> None:
     conn.executescript(USERS_TABLE_SQL)
 
 
+DIRECTORY_PEERINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS aigrp_directory_peerings (
+    offer_id                  TEXT PRIMARY KEY,
+    from_enterprise           TEXT NOT NULL,
+    to_enterprise             TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    content_policy            TEXT NOT NULL,
+    consult_logging_policy    TEXT NOT NULL,
+    topic_filters_json        TEXT NOT NULL DEFAULT '[]',
+    active_from               TEXT,
+    expires_at                TEXT NOT NULL,
+    offer_payload_canonical   TEXT NOT NULL,
+    offer_signature_b64u      TEXT NOT NULL,
+    offer_signing_key_id      TEXT NOT NULL,
+    accept_payload_canonical  TEXT NOT NULL,
+    accept_signature_b64u     TEXT NOT NULL,
+    accept_signing_key_id     TEXT NOT NULL,
+    last_synced_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_directory_peerings_from
+    ON aigrp_directory_peerings(from_enterprise, status);
+CREATE INDEX IF NOT EXISTS idx_directory_peerings_to
+    ON aigrp_directory_peerings(to_enterprise, status);
+"""
+
+
+def ensure_directory_peerings_schema(conn: sqlite3.Connection) -> None:
+    """Create aigrp_directory_peerings table.
+
+    Sprint 3 — local mirror of peering records pulled from the public
+    8th-Layer Directory. Each row carries BOTH signed envelopes (offer
+    + accept) so any local consumer can re-verify offline. Idempotent.
+    """
+    conn.executescript(DIRECTORY_PEERINGS_TABLE_SQL)
+
+
 def ensure_consults_schema(conn: sqlite3.Connection) -> None:
     """Create the L3 consult tables if they do not exist.
 
