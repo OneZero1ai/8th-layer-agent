@@ -1,0 +1,444 @@
+"""Sprint 4 Track A — cross-Enterprise consult forward (sender side).
+
+Phase 1 covers:
+- bearer derivation from a peering's bilateral signatures (HKDF)
+- find_active_directory_peering store method
+- consults.py /request routes cross-Enterprise via the directory peering
+  mirror when target enterprise differs from ours
+- 403 'no active peering' when no peering covers the target's enterprise
+- 403 when the peering exists but the target L2 isn't in the roster
+- consult_logging_policy from the peering applies to the asker-side
+  mirror-write (mutual_log_required full body, summary_only_log redacted,
+  no_log_consults skip-write)
+- forward call goes to the new x-enterprise-forward-request path with
+  per-pair bearer + Ed25519 sig
+
+Phase 2 (receiver side) is a separate test file landing with that PR.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import bcrypt
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from cq_server import consults, forward_sign
+from cq_server.app import _get_store, app
+
+ALICE = "alice"  # acme/engineering — this L2
+
+ACME_PEER_KEY = "test-acme-peer-key-thirty-two-chars"
+
+# A pre-built peering record from acme to globex (test enterprises). The
+# offer / accept signatures are arbitrary 64-byte b64u strings — the
+# sender side only derives the bearer from them, never re-verifies.
+_FAKE_OFFER_SIG = "iuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiuiu"
+_FAKE_ACCEPT_SIG = "abababababababababababababababababababababababababababababababababababababababababababab"
+
+
+@pytest.fixture()
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "xent.db"))
+    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
+    monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
+    monkeypatch.setenv("CQ_AIGRP_PEER_KEY", ACME_PEER_KEY)
+    monkeypatch.setenv("CQ_ENTERPRISE", "acme")
+    monkeypatch.setenv("CQ_GROUP", "engineering")
+    monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(tmp_path / "l2.key"))
+
+    # Reset cached privkey across tests
+    forward_sign._cached_privkey = None
+    forward_sign._cached_loaded = False
+
+    with TestClient(app) as c:
+        store = _get_store()
+        # Seed alice as a real user
+        pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
+        store.create_user(ALICE, pw)
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
+                ("acme", "engineering", ALICE),
+            )
+        yield c
+
+
+def _login(client: TestClient, who: str = ALICE) -> str:
+    r = client.post("/api/v1/auth/login", json={"username": who, "password": "pw"})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def _seed_peering(
+    *,
+    offer_id: str,
+    from_ent: str = "acme",
+    to_ent: str = "globex",
+    status: str = "active",
+    expires_at: str = "2099-01-01T00:00:00Z",
+    consult_logging_policy: str = "mutual_log_required",
+    to_l2_endpoints: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if to_l2_endpoints is None:
+        to_l2_endpoints = [
+            {
+                "l2_id": f"{to_ent}/eng",
+                "endpoint_url": f"https://{to_ent}-eng.example.com",
+                "groups": ["eng"],
+            }
+        ]
+    store = _get_store()
+    store.upsert_directory_peering(
+        offer_id=offer_id,
+        from_enterprise=from_ent,
+        to_enterprise=to_ent,
+        status=status,
+        content_policy="summary_only",
+        consult_logging_policy=consult_logging_policy,
+        topic_filters_json="[]",
+        active_from="2026-01-01T00:00:00Z",
+        expires_at=expires_at,
+        offer_payload_canonical='{"offer_id":"' + offer_id + '"}',
+        offer_signature_b64u=_FAKE_OFFER_SIG,
+        offer_signing_key_id="from-key",
+        accept_payload_canonical='{"accepted":true}',
+        accept_signature_b64u=_FAKE_ACCEPT_SIG,
+        accept_signing_key_id="to-key",
+        last_synced_at="2026-05-02T00:00:00Z",
+        to_l2_endpoints_json=json.dumps(to_l2_endpoints),
+    )
+    return {
+        "offer_id": offer_id,
+        "from_enterprise": from_ent,
+        "to_enterprise": to_ent,
+        "to_l2_endpoints": to_l2_endpoints,
+    }
+
+
+def _capture_x_enterprise_forwards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    """Patch consults._x_enterprise_forward_request to record the call rather than POST."""
+    captured: list[dict[str, Any]] = []
+
+    def _fake_x_enterprise_forward(
+        peering: dict[str, Any],
+        target_endpoint: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        captured.append({
+            "peering": peering,
+            "target_endpoint": target_endpoint,
+            "payload": payload,
+        })
+
+    monkeypatch.setattr(consults, "_x_enterprise_forward_request", _fake_x_enterprise_forward)
+    return captured
+
+
+# ---------------------------------------------------------------------------
+# Bearer derivation
+# ---------------------------------------------------------------------------
+
+
+def test_bearer_derivation_is_deterministic() -> None:
+    """Both sides of a peering compute the same bearer."""
+    b1 = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    b2 = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    assert b1 == b2
+    assert len(b1) >= 40  # base64url of 32 bytes
+
+
+def test_bearer_derivation_changes_with_signature_change() -> None:
+    """A renewed peering (different sigs) yields a different bearer."""
+    b1 = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    new_offer = _FAKE_OFFER_SIG.replace("i", "j")  # different valid b64u
+    b2 = forward_sign.derive_peering_bearer(new_offer, _FAKE_ACCEPT_SIG)
+    assert b1 != b2
+
+
+def test_bearer_swap_yields_different_bearer() -> None:
+    """Argument order matters — sigs are concatenated, not symmetric."""
+    a = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    b = forward_sign.derive_peering_bearer(_FAKE_ACCEPT_SIG, _FAKE_OFFER_SIG)
+    assert a != b
+
+
+# ---------------------------------------------------------------------------
+# Store: find_active_directory_peering
+# ---------------------------------------------------------------------------
+
+
+def test_find_active_peering_returns_match(client: TestClient) -> None:
+    _seed_peering(offer_id="off_a")
+    p = _get_store().find_active_directory_peering(
+        from_enterprise="acme", to_enterprise="globex"
+    )
+    assert p is not None
+    assert p["offer_id"] == "off_a"
+
+
+def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
+    """Peering from A→B is also queryable as B→A."""
+    _seed_peering(offer_id="off_b", from_ent="acme", to_ent="globex")
+    p = _get_store().find_active_directory_peering(
+        from_enterprise="globex", to_enterprise="acme"
+    )
+    assert p is not None
+    assert p["offer_id"] == "off_b"
+
+
+def test_find_active_peering_skips_expired(client: TestClient) -> None:
+    """Past expires_at = no row."""
+    _seed_peering(offer_id="off_old", expires_at="2020-01-01T00:00:00Z")
+    p = _get_store().find_active_directory_peering(
+        from_enterprise="acme", to_enterprise="globex"
+    )
+    assert p is None
+
+
+def test_find_active_peering_skips_non_active(client: TestClient) -> None:
+    _seed_peering(offer_id="off_pending", status="pending")
+    p = _get_store().find_active_directory_peering(
+        from_enterprise="acme", to_enterprise="globex"
+    )
+    assert p is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-Enterprise consult routing on /api/v1/consults/request
+# ---------------------------------------------------------------------------
+
+
+def test_cross_enterprise_routes_via_directory_peering(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_peering(offer_id="off_e2e")
+    captured = _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "globex/eng",
+            "to_persona": "their_alice",
+            "content": "cross-enterprise hello",
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert len(captured) == 1
+    forward = captured[0]
+    assert forward["peering"]["offer_id"] == "off_e2e"
+    assert forward["target_endpoint"]["l2_id"] == "globex/eng"
+    assert forward["payload"]["to_l2_id"] == "globex/eng"
+    assert forward["payload"]["content"] == "cross-enterprise hello"
+
+
+def test_cross_enterprise_no_peering_returns_403(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured = _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "rival/somewhere",
+            "to_persona": "they",
+            "content": "x",
+        },
+    )
+    assert r.status_code == 403, r.text
+    assert "no active peering" in r.json()["detail"].lower()
+    assert captured == []
+
+
+def test_cross_enterprise_target_l2_not_in_roster_returns_403(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Peering covers globex/eng but client asks for globex/marketing."""
+    _seed_peering(
+        offer_id="off_partial",
+        to_l2_endpoints=[
+            {"l2_id": "globex/eng", "endpoint_url": "https://globex-eng.example.com", "groups": ["eng"]},
+        ],
+    )
+    captured = _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "globex/marketing",
+            "to_persona": "they",
+            "content": "x",
+        },
+    )
+    assert r.status_code == 403, r.text
+    assert captured == []
+
+
+def test_cross_enterprise_logging_policy_summary_only_redacts_local_mirror(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_peering(offer_id="off_summary", consult_logging_policy="summary_only_log")
+    _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "globex/eng",
+            "to_persona": "they",
+            "content": "secret content here",
+        },
+    )
+    assert r.status_code == 201, r.text
+    thread_id = r.json()["thread_id"]
+
+    # Local mirror should be redacted per the peering's logging policy.
+    msgs = client.get(
+        f"/api/v1/consults/{thread_id}/messages",
+        headers={"authorization": f"Bearer {token}"},
+    )
+    body = msgs.json()
+    assert body["messages"][0]["content"] == "<redacted: summary_only_log>"
+
+
+def test_cross_enterprise_logging_policy_no_log_skips_message_row(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_peering(offer_id="off_nolog", consult_logging_policy="no_log_consults")
+    _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "globex/eng",
+            "to_persona": "they",
+            "content": "ephemeral",
+        },
+    )
+    assert r.status_code == 201, r.text
+    thread_id = r.json()["thread_id"]
+
+    # Thread row exists (audit point: who tried to consult whom)
+    # but no message row was written.
+    msgs = client.get(
+        f"/api/v1/consults/{thread_id}/messages",
+        headers={"authorization": f"Bearer {token}"},
+    )
+    body = msgs.json()
+    assert body["messages"] == []
+
+
+def test_cross_enterprise_mutual_log_writes_full_body(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default policy mutual_log_required → asker side sees full content."""
+    _seed_peering(offer_id="off_mutual")
+    _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "globex/eng",
+            "to_persona": "they",
+            "content": "full content visible",
+        },
+    )
+    assert r.status_code == 201, r.text
+    thread_id = r.json()["thread_id"]
+
+    msgs = client.get(
+        f"/api/v1/consults/{thread_id}/messages",
+        headers={"authorization": f"Bearer {token}"},
+    )
+    assert msgs.json()["messages"][0]["content"] == "full content visible"
+
+
+def test_malformed_to_l2_id_returns_400(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_l2_id without enterprise/group separator is rejected before lookup."""
+    _capture_x_enterprise_forwards(monkeypatch)
+    token = _login(client)
+    r = client.post(
+        "/api/v1/consults/request",
+        headers={"authorization": f"Bearer {token}"},
+        json={
+            "to_l2_id": "no-slash-here",
+            "to_persona": "they",
+            "content": "x",
+        },
+    )
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# _x_enterprise_forward_request — wire-shape unit test (no real httpx)
+# ---------------------------------------------------------------------------
+
+
+def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forward call uses peering-derived bearer + per-L2 Ed25519 sig + offer-id header."""
+    _seed_peering(offer_id="off_wire")
+    captured: list[dict[str, Any]] = []
+
+    class _FakeClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> "_FakeClient":
+            return self
+
+        def __exit__(self, *_a: Any) -> None:
+            pass
+
+        def post(
+            self, url: str, *, headers: dict[str, str], json: dict[str, Any]
+        ) -> httpx.Response:
+            captured.append({"url": url, "headers": headers, "json": json})
+            return httpx.Response(201)
+
+    monkeypatch.setattr(consults.httpx, "Client", _FakeClient)
+
+    peering = _get_store().find_active_directory_peering(
+        from_enterprise="acme", to_enterprise="globex"
+    )
+    assert peering is not None
+    target_endpoint = json.loads(peering["to_l2_endpoints_json"])[0]
+
+    payload = {
+        "thread_id": "th_x",
+        "from_l2_id": "acme/engineering",
+        "to_l2_id": "globex/eng",
+        "content": "hi",
+    }
+    consults._x_enterprise_forward_request(peering, target_endpoint, payload)
+
+    assert len(captured) == 1
+    sent = captured[0]
+    assert sent["url"].endswith("/api/v1/consults/x-enterprise-forward-request")
+    expected_bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    assert sent["headers"]["authorization"] == f"Bearer {expected_bearer}"
+    assert sent["headers"]["x-8l-peering-offer-id"] == "off_wire"
+    assert sent["headers"]["x-8l-forwarder-l2-id"] == "acme/engineering"
+    # Ed25519 sig is generated lazily on first call (key file in tmp_path)
+    assert "x-8l-forwarder-sig" in sent["headers"]
+    assert sent["json"] == payload

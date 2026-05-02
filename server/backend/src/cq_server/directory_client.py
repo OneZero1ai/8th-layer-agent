@@ -346,6 +346,11 @@ async def _pull_and_persist_once(
                 accept_signature_b64u=rec["accept_signature"],
                 accept_signing_key_id=rec["accept_signing_key_id"],
                 last_synced_at=now_iso(),
+                # Sprint-4 Track A — persist the directory's roster snapshot
+                # of the OTHER enterprise's L2s so cross-Enterprise consult
+                # forwards can resolve the target endpoint locally without
+                # per-request directory round-trips.
+                to_l2_endpoints_json=json.dumps(rec.get("to_l2_endpoints") or []),
             )
             persisted += 1
     return persisted

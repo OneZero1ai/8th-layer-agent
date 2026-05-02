@@ -49,10 +49,13 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .crypto import (
     b64u,
+    b64u_decode,
     canonicalize,
     public_key_b64u,
     sign_raw,
@@ -232,12 +235,57 @@ def verify_forward_signature(
     )
 
 
+# ---------------------------------------------------------------------------
+# Cross-Enterprise peering bearer derivation (sprint 4 Track A phase 1)
+# ---------------------------------------------------------------------------
+
+
+X_ENTERPRISE_BEARER_INFO = b"8l-x-enterprise-bearer-v1"
+X_ENTERPRISE_BEARER_HEADER = "x-8l-peering-bearer"
+
+
+def derive_peering_bearer(offer_signature_b64u: str, accept_signature_b64u: str) -> str:
+    """Derive a 32-byte symmetric bearer from a peering's bilateral sigs.
+
+    Both sides of an active peering can compute this independently with
+    no out-of-band exchange — the input material is the publicly-served
+    offer + accept signatures (both are on the peering record returned
+    by ``GET /peerings/{enterprise_id}``). HKDF-SHA256 with a versioned
+    info string gives us cheap rotation by changing the info-string
+    version when the wire format evolves.
+
+    The bearer is **NOT a secret** in the cryptographic sense. Anyone
+    who can read the public peering record can compute it. It serves
+    as a *peering identifier* — a sender presenting it asserts "I am
+    a party to a peering between us." Identity (which specific L2
+    forwarded) is provided by the per-L2 Ed25519 sig (sprint-4 forward
+    signing); auth (the peering itself is real) is provided by the
+    bilateral signatures the receiver re-verifies locally against
+    published enterprise root keys.
+
+    Compromise of one peering's bearer does not reveal others (per-pair
+    derivation; HKDF input differs). Bearer rotates whenever a peering
+    is renewed (new offer/accept sigs => new bearer).
+    """
+    ikm = b64u_decode(offer_signature_b64u) + b64u_decode(accept_signature_b64u)
+    derived = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=X_ENTERPRISE_BEARER_INFO,
+    ).derive(ikm)
+    return b64u(derived)
+
+
 # Convenience: expose the b64u helper on this module so callers can
 # encode peer pubkeys for the wire without reaching into ``crypto``.
 __all__ = [
     "DEFAULT_PRIVKEY_PATH",
     "SIGNATURE_HEADER",
+    "X_ENTERPRISE_BEARER_HEADER",
+    "X_ENTERPRISE_BEARER_INFO",
     "b64u",
+    "derive_peering_bearer",
     "get_l2_privkey",
     "load_or_create_l2_privkey",
     "privkey_path",

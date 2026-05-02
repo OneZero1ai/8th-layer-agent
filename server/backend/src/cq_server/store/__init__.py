@@ -1022,12 +1022,17 @@ class RemoteStore:
         accept_signature_b64u: str,
         accept_signing_key_id: str,
         last_synced_at: str,
+        to_l2_endpoints_json: str = "[]",
     ) -> None:
         """Mirror one verified peering record from the directory pull loop.
 
         Both signatures (offer + accept) are persisted alongside the
         canonical payloads so any later code can re-verify offline
-        without going back to the directory.
+        without going back to the directory. ``to_l2_endpoints_json`` is
+        the directory's roster snapshot of the *other* enterprise's L2s
+        at peering time — used by the cross-Enterprise consult forward
+        path to resolve the target endpoint without per-request
+        directory round-trips (sprint 4 Track A).
         """
         self._check_open()
         with self._lock, self._conn:
@@ -1039,8 +1044,8 @@ class RemoteStore:
                     active_from, expires_at,
                     offer_payload_canonical, offer_signature_b64u, offer_signing_key_id,
                     accept_payload_canonical, accept_signature_b64u, accept_signing_key_id,
-                    last_synced_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_synced_at, to_l2_endpoints_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(offer_id) DO UPDATE SET
                     status = excluded.status,
                     content_policy = excluded.content_policy,
@@ -1054,7 +1059,8 @@ class RemoteStore:
                     accept_payload_canonical = excluded.accept_payload_canonical,
                     accept_signature_b64u = excluded.accept_signature_b64u,
                     accept_signing_key_id = excluded.accept_signing_key_id,
-                    last_synced_at = excluded.last_synced_at
+                    last_synced_at = excluded.last_synced_at,
+                    to_l2_endpoints_json = excluded.to_l2_endpoints_json
                 """,
                 (
                     offer_id, from_enterprise, to_enterprise, status,
@@ -1062,9 +1068,47 @@ class RemoteStore:
                     active_from, expires_at,
                     offer_payload_canonical, offer_signature_b64u, offer_signing_key_id,
                     accept_payload_canonical, accept_signature_b64u, accept_signing_key_id,
-                    last_synced_at,
+                    last_synced_at, to_l2_endpoints_json,
                 ),
             )
+
+    def find_active_directory_peering(
+        self,
+        *,
+        from_enterprise: str,
+        to_enterprise: str,
+        now_iso: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find an active, unexpired peering between two specific enterprises.
+
+        Peerings are bidirectional — a peering from A → B is the same as
+        one from B → A. Returns the row when ``status = 'active'`` AND
+        ``expires_at > now``, otherwise None. ``now_iso`` is injectable for
+        deterministic tests; defaults to current UTC time.
+        """
+        self._check_open()
+        if now_iso is None:
+            now_iso = datetime.now(UTC).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM aigrp_directory_peerings "
+                "WHERE status = 'active' "
+                "AND ((from_enterprise = ? AND to_enterprise = ?) "
+                "  OR (from_enterprise = ? AND to_enterprise = ?)) "
+                "AND expires_at > ? "
+                "ORDER BY active_from DESC LIMIT 1",
+                (
+                    from_enterprise, to_enterprise,
+                    to_enterprise, from_enterprise,
+                    now_iso,
+                ),
+            ).fetchone()
+            if row is None:
+                return None
+            cols = [c[0] for c in self._conn.execute(
+                "SELECT * FROM aigrp_directory_peerings LIMIT 0"
+            ).description]
+        return dict(zip(cols, row, strict=True))
 
     def list_directory_peerings(
         self,
