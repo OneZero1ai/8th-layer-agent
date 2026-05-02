@@ -153,6 +153,46 @@ class TestFeatureFlag:
         await dc.directory_bootstrap_and_loop(store)  # should not raise
         store.close()
 
+    @pytest.mark.asyncio
+    async def test_skip_announce_mode_runs_pull_loop_without_privkey(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Pull-only mode: no privkey needed; goes straight to the pull loop.
+
+        Operator manages the announce out-of-band via 8l-directory CLI from
+        their workstation. The L2 just pulls peerings to authorize cross-
+        Enterprise forwards.
+        """
+        monkeypatch.setenv("CQ_DIRECTORY_ENABLED", "true")
+        monkeypatch.setenv("CQ_DIRECTORY_SKIP_ANNOUNCE", "true")
+        monkeypatch.setenv("CQ_ENTERPRISE", "8th-layer")
+        # NB: no privkey path, no contact email — pull-only doesn't need them.
+
+        announce_called: list[str] = []
+        monkeypatch.setattr(
+            dc, "_announce_with_retries", lambda *a, **kw: announce_called.append("nope")
+        )
+        # Stub the pull loop to record-and-return immediately so the test
+        # doesn't actually loop forever.
+        pull_called: list[tuple] = []
+
+        async def _stub_pull_loop(privkey, enterprise_id, store):  # noqa: ANN001
+            pull_called.append((privkey, enterprise_id))
+
+        monkeypatch.setattr(dc, "_pull_loop", _stub_pull_loop)
+
+        from cq_server.store import RemoteStore
+
+        store = RemoteStore(db_path=tmp_path / "skip.db")
+        await dc.directory_bootstrap_and_loop(store)
+        store.close()
+
+        assert announce_called == [], "skip-announce mode must NOT announce"
+        assert len(pull_called) == 1, "skip-announce mode must run the pull loop"
+        privkey_arg, enterprise_arg = pull_called[0]
+        assert privkey_arg is None, "skip-announce mode passes privkey=None"
+        assert enterprise_arg == "8th-layer"
+
 
 # ---------------------------------------------------------------------------
 # Announce flow (mocked httpx)

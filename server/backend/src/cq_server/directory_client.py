@@ -103,6 +103,22 @@ def directory_enabled() -> bool:
     return os.environ.get("CQ_DIRECTORY_ENABLED", "false").lower() == "true"
 
 
+def skip_announce() -> bool:
+    """Pull-only mode: skip announce-on-startup, only run the pull loop.
+
+    Used when an enterprise's roster is managed out-of-band by an admin
+    via the ``8l-directory announce`` CLI (run from the operator's
+    workstation with the enterprise root key, never on the L2 itself).
+    The L2 still needs to pull peerings so it can authorize incoming
+    cross-Enterprise forwards — that's all this mode does.
+
+    When ``true``, the L2 doesn't need ``CQ_ENTERPRISE_ROOT_PRIVKEY_PATH``
+    or ``CQ_DIRECTORY_CONTACT_EMAIL`` set, since neither is read by the
+    pull loop (peerings GET is public-read since 8th-layer-directory#1).
+    """
+    return os.environ.get("CQ_DIRECTORY_SKIP_ANNOUNCE", "false").lower() == "true"
+
+
 def directory_url() -> str:
     return os.environ.get("CQ_DIRECTORY_URL", DEFAULT_DIRECTORY_URL).rstrip("/")
 
@@ -265,7 +281,7 @@ def _verify_peering_record(
 
 async def _post_peerings_pull(
     client: httpx.AsyncClient,
-    privkey: Ed25519PrivateKey,
+    privkey: Ed25519PrivateKey | None,
     enterprise_id: str,
 ) -> list[dict[str, Any]] | None:
     """Pull /peerings/{enterprise_id}. No auth in V1.
@@ -275,7 +291,8 @@ async def _post_peerings_pull(
     the enterprise public keys. Privacy of the peering graph is
     deferred to V2. The privkey parameter is retained for backward
     compatibility (and future-proofing if V2 adds per-pair bearers);
-    silently unused on the wire today.
+    silently unused on the wire today. ``privkey=None`` is valid when
+    the L2 is in skip-announce / pull-only mode.
     """
     del privkey  # V1: no auth on this endpoint; CloudFront-strip-body forced this.
     url = f"{directory_url()}/api/v1/directory/peerings/{enterprise_id}"
@@ -295,7 +312,7 @@ async def _post_peerings_pull(
 
 
 async def _pull_and_persist_once(
-    privkey: Ed25519PrivateKey,
+    privkey: Ed25519PrivateKey | None,
     enterprise_id: str,
     store: RemoteStore,
 ) -> int:
@@ -356,7 +373,7 @@ async def _pull_and_persist_once(
     return persisted
 
 
-async def _pull_loop(privkey: Ed25519PrivateKey, enterprise_id: str, store: RemoteStore) -> None:
+async def _pull_loop(privkey: Ed25519PrivateKey | None, enterprise_id: str, store: RemoteStore) -> None:
     """Long-running peering pull cron."""
     interval = pull_interval_sec()
     log.info("directory: pull loop started enterprise=%s interval=%ds", enterprise_id, interval)
@@ -403,21 +420,39 @@ def _load_endpoints_config() -> list[dict[str, Any]]:
 async def directory_bootstrap_and_loop(store: RemoteStore) -> None:
     """Top-level lifespan task: announce, then start the pull loop.
 
-    Skipped entirely when ``CQ_DIRECTORY_ENABLED`` is unset/false (the
-    rollout default — directory is opt-in per L2 until the public
-    instance is deployed).
+    Three modes via env:
+    - ``CQ_DIRECTORY_ENABLED`` unset/false (default) — entirely skipped
+    - ``CQ_DIRECTORY_ENABLED=true`` + ``CQ_DIRECTORY_SKIP_ANNOUNCE=false`` —
+      L2 announces itself + runs the pull loop. Requires the enterprise
+      root privkey on disk; appropriate for single-L2 enterprises.
+    - ``CQ_DIRECTORY_ENABLED=true`` + ``CQ_DIRECTORY_SKIP_ANNOUNCE=true`` —
+      pull-only. L2 doesn't announce; an operator manages the roster
+      out-of-band via the 8l-directory CLI from a separate workstation.
+      The L2 still pulls peerings so it can authorize cross-Enterprise
+      forwards. No privkey on disk needed.
     """
     if not directory_enabled():
         log.info("directory: disabled (CQ_DIRECTORY_ENABLED!=true) — skipping bootstrap")
         return
 
-    privkey_path = os.environ.get("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", "")
-    if not privkey_path:
-        log.error("directory: enabled but CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset — skipping")
-        return
     enterprise_id = os.environ.get("CQ_ENTERPRISE", "")
     if not enterprise_id:
         log.error("directory: enabled but CQ_ENTERPRISE unset — skipping")
+        return
+
+    if skip_announce():
+        # Pull-only mode. No privkey, no announce; just pull peerings.
+        log.info(
+            "directory: skip-announce mode (CQ_DIRECTORY_SKIP_ANNOUNCE=true) — "
+            "starting pull loop only for enterprise=%s",
+            enterprise_id,
+        )
+        await _pull_loop(privkey=None, enterprise_id=enterprise_id, store=store)
+        return
+
+    privkey_path = os.environ.get("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", "")
+    if not privkey_path:
+        log.error("directory: enabled but CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset — skipping")
         return
     contact_email = os.environ.get("CQ_DIRECTORY_CONTACT_EMAIL", "")
     if not contact_email:
