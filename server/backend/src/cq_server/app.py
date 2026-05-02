@@ -210,9 +210,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     dsn_cache_task = asyncio.create_task(_signature_cache_loop())
 
+    # Sprint 3 — 8th-Layer Directory client (announce + 1h pull loop).
+    # Opt-in via CQ_DIRECTORY_ENABLED — defaults off until the public
+    # directory is deployed. The bootstrap function self-skips with a
+    # log line when disabled or under-configured.
+    from .directory_client import directory_bootstrap_and_loop
+
+    directory_task = asyncio.create_task(directory_bootstrap_and_loop(_store))
+
     yield
 
-    for task in (aigrp_task, dsn_cache_task):
+    for task in (aigrp_task, dsn_cache_task, directory_task):
         if task is not None:
             task.cancel()
             try:

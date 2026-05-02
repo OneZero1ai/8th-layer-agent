@@ -21,6 +21,7 @@ from ..tables import (
     DEFAULT_ENTERPRISE_ID,
     DEFAULT_GROUP_ID,
     ensure_aigrp_peers_table,
+    ensure_directory_peerings_schema,
     ensure_api_keys_table,
     ensure_consults_schema,
     ensure_embedding_columns,
@@ -106,6 +107,8 @@ class RemoteStore:
         # Sprint 2 (issue #20) — L3 consult tables. Same idempotent
         # shape; safe to call on every startup.
         ensure_consults_schema(self._conn)
+        # Sprint 3 — directory peering mirror. Idempotent.
+        ensure_directory_peerings_schema(self._conn)
         # Phase 6 step 1 — additive tenancy columns. Idempotent; safe to
         # run on every startup. Backfills legacy rows so the columns can
         # be queried without NULL handling once enforcement lands.
@@ -997,6 +1000,102 @@ class RemoteStore:
                 )
         except sqlite3.Error:
             _logger.exception("Failed to update last_used_at for api key %s", key_id)
+
+    # -- Directory peerings (sprint 3) -----------------------------------
+
+    def upsert_directory_peering(
+        self,
+        *,
+        offer_id: str,
+        from_enterprise: str,
+        to_enterprise: str,
+        status: str,
+        content_policy: str,
+        consult_logging_policy: str,
+        topic_filters_json: str,
+        active_from: str | None,
+        expires_at: str,
+        offer_payload_canonical: str,
+        offer_signature_b64u: str,
+        offer_signing_key_id: str,
+        accept_payload_canonical: str,
+        accept_signature_b64u: str,
+        accept_signing_key_id: str,
+        last_synced_at: str,
+    ) -> None:
+        """Mirror one verified peering record from the directory pull loop.
+
+        Both signatures (offer + accept) are persisted alongside the
+        canonical payloads so any later code can re-verify offline
+        without going back to the directory.
+        """
+        self._check_open()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO aigrp_directory_peerings (
+                    offer_id, from_enterprise, to_enterprise, status,
+                    content_policy, consult_logging_policy, topic_filters_json,
+                    active_from, expires_at,
+                    offer_payload_canonical, offer_signature_b64u, offer_signing_key_id,
+                    accept_payload_canonical, accept_signature_b64u, accept_signing_key_id,
+                    last_synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(offer_id) DO UPDATE SET
+                    status = excluded.status,
+                    content_policy = excluded.content_policy,
+                    consult_logging_policy = excluded.consult_logging_policy,
+                    topic_filters_json = excluded.topic_filters_json,
+                    active_from = excluded.active_from,
+                    expires_at = excluded.expires_at,
+                    offer_payload_canonical = excluded.offer_payload_canonical,
+                    offer_signature_b64u = excluded.offer_signature_b64u,
+                    offer_signing_key_id = excluded.offer_signing_key_id,
+                    accept_payload_canonical = excluded.accept_payload_canonical,
+                    accept_signature_b64u = excluded.accept_signature_b64u,
+                    accept_signing_key_id = excluded.accept_signing_key_id,
+                    last_synced_at = excluded.last_synced_at
+                """,
+                (
+                    offer_id, from_enterprise, to_enterprise, status,
+                    content_policy, consult_logging_policy, topic_filters_json,
+                    active_from, expires_at,
+                    offer_payload_canonical, offer_signature_b64u, offer_signing_key_id,
+                    accept_payload_canonical, accept_signature_b64u, accept_signing_key_id,
+                    last_synced_at,
+                ),
+            )
+
+    def list_directory_peerings(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return mirrored directory peering rows.
+
+        ``enterprise_id`` matches either side of the peering (from or to);
+        callers that need one-sided filtering can post-filter.
+        """
+        self._check_open()
+        sql = "SELECT * FROM aigrp_directory_peerings"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if enterprise_id is not None:
+            clauses.append("(from_enterprise = ? OR to_enterprise = ?)")
+            params.extend([enterprise_id, enterprise_id])
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY active_from DESC NULLS LAST, last_synced_at DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+            cols = [c[0] for c in self._conn.execute(
+                "SELECT * FROM aigrp_directory_peerings LIMIT 0"
+            ).description]
+        return [dict(zip(cols, row, strict=True)) for row in rows]
 
     # -- AIGRP peer mesh -------------------------------------------------
 
