@@ -794,6 +794,175 @@ def forward_consult_message(
     return {"status": "mirrored", "thread_id": body.thread_id}
 
 
+# ---------------------------------------------------------------------------
+# Cross-Enterprise forward — receiver side (sprint 4 Track A phase 2)
+# ---------------------------------------------------------------------------
+
+
+def _hmac_eq(a: str, b: str) -> bool:
+    """Constant-time equality for two strings of arbitrary length."""
+    import hmac
+
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _require_x_enterprise_auth(
+    request: Request,
+    body: ForwardRequestBody,
+    store: RemoteStore,
+) -> dict[str, Any]:
+    """Validate a cross-Enterprise forward.
+
+    Returns the active peering row that authorised this forward — caller
+    uses ``consult_logging_policy`` from it.
+
+    Raises:
+        HTTPException 400 — missing/malformed required headers.
+        HTTPException 401 — bearer doesn't match the peering's derived bearer.
+        HTTPException 403 — body identity doesn't match headers, or the peering
+                            is unknown / inactive on this L2.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer auth")
+    presented_bearer = auth[7:]
+
+    forwarder_l2_id = request.headers.get(aigrp_mod.FORWARDER_HEADER, "").strip()
+    if not forwarder_l2_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing {aigrp_mod.FORWARDER_HEADER} header",
+        )
+    offer_id = request.headers.get("x-8l-peering-offer-id", "").strip()
+    if not offer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="missing x-8l-peering-offer-id header",
+        )
+
+    # Identity binding — the body's from_l2_id must match the header.
+    if body.from_l2_id != forwarder_l2_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"forwarder identity mismatch: header={forwarder_l2_id!r} "
+                f"body.from_l2_id={body.from_l2_id!r}"
+            ),
+        )
+
+    # Peering lookup — by offer_id directly.
+    peerings = [
+        p for p in store.list_directory_peerings(status="active")
+        if p["offer_id"] == offer_id
+    ]
+    if not peerings:
+        raise HTTPException(
+            status_code=403,
+            detail=f"no active peering with offer_id={offer_id!r} on this L2",
+        )
+    peering = peerings[0]
+
+    # Per-spec: at expires_at, peering rolls off. Belt + braces (also
+    # filtered server-side via find_active_directory_peering, but this
+    # path uses list which doesn't expire-filter).
+    if peering.get("expires_at") and peering["expires_at"] < datetime.now(UTC).isoformat():
+        raise HTTPException(status_code=403, detail="peering expired")
+
+    # Forwarder enterprise must match the OTHER side of the peering.
+    forwarder_enterprise, _, _ = forwarder_l2_id.partition("/")
+    self_enterprise = aigrp_mod.enterprise()
+    other_enterprise = (
+        peering["from_enterprise"]
+        if peering["to_enterprise"] == self_enterprise
+        else peering["to_enterprise"]
+    )
+    if forwarder_enterprise != other_enterprise:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"forwarder enterprise {forwarder_enterprise!r} is not the "
+                f"other side of peering {offer_id!r} (other_side={other_enterprise!r})"
+            ),
+        )
+
+    # Bearer derivation — both sides compute the same value from the
+    # bilateral signatures. Constant-time compare.
+    expected_bearer = forward_sign.derive_peering_bearer(
+        peering["offer_signature_b64u"],
+        peering["accept_signature_b64u"],
+    )
+    if not _hmac_eq(presented_bearer, expected_bearer):
+        raise HTTPException(status_code=401, detail="invalid peering bearer")
+
+    # Sprint-4 V1: Ed25519 forwarder-sig verification is deferred —
+    # roster doesn't yet carry per-L2 pubkeys. The signature, when
+    # present, is recorded but not enforced. V2 adds pubkeys to the
+    # roster + flips this to enforced.
+    return peering
+
+
+@router.post("/x-enterprise-forward-request", status_code=201)
+def x_enterprise_forward_consult_request(
+    body: ForwardRequestBody,
+    request: Request,
+    store: RemoteStore = Depends(get_store),
+) -> dict[str, str]:
+    """Mirror a cross-Enterprise consult request onto this L2.
+
+    Auth is two-layer (sprint 4 Track A — see ``_require_x_enterprise_auth``):
+    bearer derived from the peering's bilateral signatures + body/header
+    identity binding. The shared EnterprisePeerKey is intentionally NOT
+    used here — it's intra-Enterprise only.
+
+    Logging is governed by ``consult_logging_policy`` from the peering:
+
+    - ``mutual_log_required`` (default) — full body persisted both sides
+    - ``summary_only_log`` — thread row + redacted message body
+    - ``no_log_consults`` — thread row only (audit point: who asked whom),
+      message body discarded after the receiver agent reads it in real time
+
+    Idempotent on ``(thread_id, message_id)`` like the same-Enterprise
+    forward path. Body shape matches ForwardRequestBody for consistency.
+    """
+    peering = _require_x_enterprise_auth(request, body, store)
+    policy = peering["consult_logging_policy"]
+
+    # Thread row: always created (audit point: cross-Enterprise consult
+    # was attempted, regardless of policy).
+    if store.get_consult(body.thread_id) is None:
+        store.create_consult(
+            thread_id=body.thread_id,
+            from_l2_id=body.from_l2_id,
+            from_persona=body.from_persona,
+            to_l2_id=body.to_l2_id,
+            to_persona=body.to_persona,
+            subject=body.subject,
+            created_at=body.created_at,
+        )
+
+    # Message body: only persisted under mutual_log_required (full) or
+    # summary_only_log (redacted). no_log_consults skips the row.
+    if policy != "no_log_consults":
+        try:
+            store.append_consult_message(
+                message_id=body.message_id,
+                thread_id=body.thread_id,
+                from_l2_id=body.from_l2_id,
+                from_persona=body.from_persona,
+                content=_redact_for_policy(body.content, policy),
+                created_at=body.created_at,
+            )
+        except Exception as e:
+            if "UNIQUE constraint failed" not in str(e):
+                raise
+
+    return {
+        "status": "mirrored",
+        "thread_id": body.thread_id,
+        "logging_policy_applied": policy,
+    }
+
+
 @router.get("/inbox", response_model=InboxResponse)
 def get_inbox(
     include_closed: bool = False,

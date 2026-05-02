@@ -442,3 +442,244 @@ def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
     # Ed25519 sig is generated lazily on first call (key file in tmp_path)
     assert "x-8l-forwarder-sig" in sent["headers"]
     assert sent["json"] == payload
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — receiver side: /api/v1/consults/x-enterprise-forward-request
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the receiver. The fixture's L2 is acme/engineering;
+# we simulate forwards arriving from globex (the OTHER side of the peering).
+# We seed peerings with from_ent="globex", to_ent="acme" so this L2 is the
+# receiver and globex is the sender.
+
+
+def _x_enterprise_headers(
+    *,
+    bearer: str,
+    forwarder_l2_id: str = "globex/eng",
+    offer_id: str = "off_recv",
+) -> dict[str, str]:
+    return {
+        "authorization": f"Bearer {bearer}",
+        "x-8l-forwarder-l2-id": forwarder_l2_id,
+        "x-8l-peering-offer-id": offer_id,
+    }
+
+
+def _x_enterprise_payload(
+    thread_id: str = "th_recv_1",
+    message_id: str = "msg_recv_1",
+    content: str = "incoming from globex",
+) -> dict[str, Any]:
+    return {
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "from_l2_id": "globex/eng",
+        "from_persona": "their_alice",
+        "to_l2_id": "acme/engineering",
+        "to_persona": ALICE,
+        "subject": "x-ent test",
+        "content": content,
+        "created_at": "2026-05-02T10:00:00Z",
+    }
+
+
+def test_x_enterprise_receiver_happy_path(client: TestClient) -> None:
+    """Bearer matches, body identity matches, forwarder enterprise is the peer."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["status"] == "mirrored"
+    assert body["logging_policy_applied"] == "mutual_log_required"
+
+
+def test_x_enterprise_receiver_bad_bearer_401(client: TestClient) -> None:
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer="not-the-real-bearer"),
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 401, r.text
+    assert "bearer" in r.json()["detail"].lower()
+
+
+def test_x_enterprise_receiver_missing_bearer_401(client: TestClient) -> None:
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    headers = _x_enterprise_headers(bearer="x")
+    del headers["authorization"]  # remove the bearer
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=headers,
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 401, r.text
+
+
+def test_x_enterprise_receiver_missing_offer_id_400(client: TestClient) -> None:
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    headers = _x_enterprise_headers(bearer=bearer)
+    del headers["x-8l-peering-offer-id"]
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=headers,
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 400, r.text
+    assert "offer-id" in r.json()["detail"].lower()
+
+
+def test_x_enterprise_receiver_unknown_offer_id_403(client: TestClient) -> None:
+    """The sender claims a peering offer_id we don't have on file."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer, offer_id="off_unknown"),
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 403, r.text
+    assert "no active peering" in r.json()["detail"].lower()
+
+
+def test_x_enterprise_receiver_body_header_mismatch_403(client: TestClient) -> None:
+    """X-8L-Forwarder-L2-Id and body.from_l2_id must agree."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    payload = _x_enterprise_payload()
+    payload["from_l2_id"] = "globex/marketing"  # different from header
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),  # header says globex/eng
+        json=payload,
+    )
+    assert r.status_code == 403, r.text
+    assert "mismatch" in r.json()["detail"].lower()
+
+
+def test_x_enterprise_receiver_wrong_enterprise_403(client: TestClient) -> None:
+    """Forwarder claims to be from an enterprise that's not the peer."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    payload = _x_enterprise_payload()
+    payload["from_l2_id"] = "rival/eng"
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer, forwarder_l2_id="rival/eng"),
+        json=payload,
+    )
+    assert r.status_code == 403, r.text
+    detail = r.json()["detail"].lower()
+    assert "rival" in detail and "other side" in detail
+
+
+def test_x_enterprise_receiver_logging_policy_summary_only_redacts(
+    client: TestClient,
+) -> None:
+    _seed_peering(
+        offer_id="off_recv",
+        from_ent="globex",
+        to_ent="acme",
+        consult_logging_policy="summary_only_log",
+    )
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=_x_enterprise_payload(content="confidential"),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["logging_policy_applied"] == "summary_only_log"
+
+    # Verify the receiver-side message row is redacted.
+    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    assert len(msg_rows) == 1
+    assert msg_rows[0]["content"] == "<redacted: summary_only_log>"
+
+
+def test_x_enterprise_receiver_logging_policy_no_log_skips_message(
+    client: TestClient,
+) -> None:
+    _seed_peering(
+        offer_id="off_recv",
+        from_ent="globex",
+        to_ent="acme",
+        consult_logging_policy="no_log_consults",
+    )
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=_x_enterprise_payload(content="ephemeral"),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["logging_policy_applied"] == "no_log_consults"
+
+    # Thread row exists (audit point) but no message row.
+    thread = _get_store().get_consult("th_recv_1")
+    assert thread is not None
+    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    assert msg_rows == []
+
+
+def test_x_enterprise_receiver_idempotent_on_redelivery(client: TestClient) -> None:
+    """Same offer_id + thread_id + message_id replayed → 201, no dup row."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    payload = _x_enterprise_payload()
+    h = _x_enterprise_headers(bearer=bearer)
+
+    r1 = client.post("/api/v1/consults/x-enterprise-forward-request", headers=h, json=payload)
+    r2 = client.post("/api/v1/consults/x-enterprise-forward-request", headers=h, json=payload)
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+
+    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    assert len(msg_rows) == 1
+
+
+def test_x_enterprise_receiver_does_not_use_enterprise_peer_key(
+    client: TestClient,
+) -> None:
+    """Even with a valid EnterprisePeerKey, no peering means 403.
+
+    Defensive — the cross-Enterprise endpoint must NOT fall back to
+    the intra-Enterprise auth shape.
+    """
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers={
+            "authorization": f"Bearer {bearer}",  # arbitrary bearer, no peering registered
+            "x-8l-forwarder-l2-id": "globex/eng",
+            "x-8l-peering-offer-id": "off_does_not_exist",
+        },
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_x_enterprise_receiver_inbox_visibility(client: TestClient) -> None:
+    """After the receiver mirrors, alice's inbox shows the cross-Enterprise thread."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 201
+
+    token = _login(client)
+    inbox = client.get("/api/v1/consults/inbox", headers={"authorization": f"Bearer {token}"})
+    assert inbox.status_code == 200
+    threads = inbox.json()["threads"]
+    assert any(t["thread_id"] == "th_recv_1" for t in threads)
