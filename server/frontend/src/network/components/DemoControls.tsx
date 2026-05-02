@@ -1,11 +1,11 @@
-import { Search, ShieldX, FileSignature } from "lucide-react";
-import type { DemoScenario } from "../fixtures/demoTrace.fixture";
+import { FileSignature, Search, ShieldX } from "lucide-react"
+import type { DemoScenario } from "../fixtures/demoTrace.fixture"
 
 interface Props {
-  onRun: (scenario: DemoScenario) => void;
-  onSignConsent: () => void;
-  hasConsent: boolean;
-  busy: boolean;
+  onRun: (scenario: DemoScenario) => void
+  onSignConsent: () => void
+  hasConsent: boolean
+  busy: boolean
 }
 
 const BUTTONS = [
@@ -33,30 +33,39 @@ const BUTTONS = [
     tone: "amber" as const,
     scenario: null,
   },
-];
+]
 
-export function DemoControls({ onRun, onSignConsent, hasConsent, busy }: Props) {
+export function DemoControls({
+  onRun,
+  onSignConsent,
+  hasConsent,
+  busy,
+}: Props) {
   return (
     <div data-testid="demo-controls" className="flex items-center gap-2">
       {BUTTONS.map((b) => {
-        const isCrossEntButton = b.id === "try-cross-enterprise";
-        const isSignButton = b.id === "sign-consent";
+        const isCrossEntButton = b.id === "try-cross-enterprise"
+        const isSignButton = b.id === "sign-consent"
 
         const onClick = () => {
-          if (busy) return;
+          if (busy) return
           if (isSignButton) {
-            onSignConsent();
-            return;
+            onSignConsent()
+            return
           }
           if (isCrossEntButton) {
-            onRun(hasConsent ? "cross-enterprise-consented" : "cross-enterprise-blocked");
-            return;
+            onRun(
+              hasConsent
+                ? "cross-enterprise-consented"
+                : "cross-enterprise-blocked",
+            )
+            return
           }
-          if (b.scenario) onRun(b.scenario);
-        };
+          if (b.scenario) onRun(b.scenario)
+        }
 
-        const palette = TONE_PALETTE[b.tone];
-        const isDimmedSign = isSignButton && hasConsent;
+        const palette = TONE_PALETTE[b.tone]
+        const isDimmedSign = isSignButton && hasConsent
 
         return (
           <button
@@ -87,15 +96,17 @@ export function DemoControls({ onRun, onSignConsent, hasConsent, busy }: Props) 
             </div>
             <span
               className="text-[9px] tracking-[0.05em] text-white/45"
-              style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+              style={{
+                fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+              }}
             >
               {b.sub}
             </span>
           </button>
-        );
+        )
       })}
     </div>
-  );
+  )
 }
 
 const TONE_PALETTE = {
@@ -117,4 +128,4 @@ const TONE_PALETTE = {
     shadow: "0 0 28px rgba(255,179,71,0.18)",
     text: "#FFB347",
   },
-};
+}

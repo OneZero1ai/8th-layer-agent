@@ -1,33 +1,41 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import type { TopologyResponse, CrossEnterpriseConsent } from "../types";
+import { AnimatePresence, motion } from "framer-motion"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  layoutTopology,
-  nodeRadius,
-  findNode,
-  CANVAS_WIDTH,
   CANVAS_HEIGHT,
+  CANVAS_WIDTH,
+  findNode,
+  layoutTopology,
   type NodePosition,
-} from "../layout";
+  nodeRadius,
+} from "../layout"
+import type { CrossEnterpriseConsent, TopologyResponse } from "../types"
 
 interface Props {
-  topology: TopologyResponse;
-  selectedL2Id: string | null;
-  onSelectL2: (id: string | null) => void;
-  hoveredL2Id: string | null;
-  onHoverL2: (id: string | null) => void;
-  highlightedNodeIds?: string[];
-  highlightedEdgeIds?: string[];
-  packetTrail?: Array<{ from: string; to: string; tone: "info" | "blocked" | "success"; label?: string }>;
-  zoomTo?: { cx: number; cy: number; scale: number } | null;
-  layerFilter: "L1" | "L2" | "L3";
-  flashCenter?: { x: number; y: number } | null;
+  topology: TopologyResponse
+  selectedL2Id: string | null
+  onSelectL2: (id: string | null) => void
+  hoveredL2Id: string | null
+  onHoverL2: (id: string | null) => void
+  highlightedNodeIds?: string[]
+  highlightedEdgeIds?: string[]
+  packetTrail?: Array<{
+    from: string
+    to: string
+    tone: "info" | "blocked" | "success"
+    label?: string
+  }>
+  zoomTo?: { cx: number; cy: number; scale: number } | null
+  layerFilter: "L1" | "L2" | "L3"
+  flashCenter?: { x: number; y: number } | null
 }
 
-const ENTERPRISE_TINT: Record<string, { halo: string; rim: string; chip: string }> = {
+const ENTERPRISE_TINT: Record<
+  string,
+  { halo: string; rim: string; chip: string }
+> = {
   orion: { halo: "#7C5CFF", rim: "#A38BFF", chip: "#3D2D8F" },
   acme: { halo: "#5BD0FF", rim: "#7FE4FF", chip: "#1E5C7E" },
-};
+}
 
 function isConsented(
   consents: CrossEnterpriseConsent[],
@@ -41,21 +49,21 @@ function isConsented(
       c.requester_enterprise === fromEnt &&
       c.responder_enterprise === toEnt &&
       (c.requester_group === null || c.requester_group === fromGroup) &&
-      (c.responder_group === null || c.responder_group === toGroup);
+      (c.responder_group === null || c.responder_group === toGroup)
     const matchOther =
       c.requester_enterprise === toEnt &&
       c.responder_enterprise === fromEnt &&
       (c.requester_group === null || c.requester_group === toGroup) &&
-      (c.responder_group === null || c.responder_group === fromGroup);
-    return matchOne || matchOther;
-  });
+      (c.responder_group === null || c.responder_group === fromGroup)
+    return matchOne || matchOther
+  })
 }
 
 // Hash a string into a stable [0, 1) — used to vary particle phases per edge.
 function hash01(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return ((h >>> 0) % 1000) / 1000;
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return ((h >>> 0) % 1000) / 1000
 }
 
 export function NocCanvas({
@@ -71,104 +79,114 @@ export function NocCanvas({
   layerFilter,
   flashCenter = null,
 }: Props) {
-  const layout = useMemo(() => layoutTopology(topology), [topology]);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [tNow, setTNow] = useState(0);
-  const tickerRef = useRef<number | null>(null);
+  const layout = useMemo(() => layoutTopology(topology), [topology])
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [tNow, setTNow] = useState(0)
+  const tickerRef = useRef<number | null>(null)
 
   // Single shared rAF loop for orbit + particle phase.
   useEffect(() => {
-    let frame = 0;
-    const start = performance.now();
+    let frame = 0
+    const start = performance.now()
     const loop = () => {
-      const t = (performance.now() - start) / 1000;
-      setTNow(t);
-      frame = requestAnimationFrame(loop);
-      tickerRef.current = frame;
-    };
-    frame = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(frame);
-  }, []);
+      const t = (performance.now() - start) / 1000
+      setTNow(t)
+      frame = requestAnimationFrame(loop)
+      tickerRef.current = frame
+    }
+    frame = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(frame)
+  }, [])
 
   // Edge list (peer + cross), built once per topology change.
   const edges = useMemo(() => {
     const list: Array<{
-      id: string;
-      kind: "peer" | "cross";
-      consented: boolean;
-      from: NodePosition;
-      to: NodePosition;
-    }> = [];
-    const seen = new Set<string>();
+      id: string
+      kind: "peer" | "cross"
+      consented: boolean
+      from: NodePosition
+      to: NodePosition
+    }> = []
+    const seen = new Set<string>()
     // peer edges
     for (const ent of topology.enterprises) {
       for (const l2 of ent.l2s) {
         for (const peer of l2.peers) {
-          const [a, b] = [l2.l2_id, peer.l2_id].sort();
-          const id = `peer:${a}--${b}`;
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const from = findNode(layout, a);
-          const to = findNode(layout, b);
-          if (from && to) list.push({ id, kind: "peer", consented: true, from, to });
+          const [a, b] = [l2.l2_id, peer.l2_id].sort()
+          const id = `peer:${a}--${b}`
+          if (seen.has(id)) continue
+          seen.add(id)
+          const from = findNode(layout, a)
+          const to = findNode(layout, b)
+          if (from && to)
+            list.push({ id, kind: "peer", consented: true, from, to })
         }
       }
     }
     // cross edges
     if (topology.enterprises.length >= 2) {
-      const ents = topology.enterprises;
+      const ents = topology.enterprises
       for (let i = 0; i < ents.length; i++) {
         for (let j = i + 1; j < ents.length; j++) {
           for (const aL2 of ents[i].l2s) {
             for (const bL2 of ents[j].l2s) {
-              const [src, tgt] = [aL2.l2_id, bL2.l2_id].sort();
-              const id = `cross:${src}--${tgt}`;
+              const [src, tgt] = [aL2.l2_id, bL2.l2_id].sort()
+              const id = `cross:${src}--${tgt}`
               const consented = isConsented(
                 topology.cross_enterprise_consents,
                 ents[i].enterprise,
                 aL2.group,
                 ents[j].enterprise,
                 bL2.group,
-              );
-              const from = findNode(layout, src);
-              const to = findNode(layout, tgt);
-              if (from && to) list.push({ id, kind: "cross", consented, from, to });
+              )
+              const from = findNode(layout, src)
+              const to = findNode(layout, tgt)
+              if (from && to)
+                list.push({ id, kind: "cross", consented, from, to })
             }
           }
         }
       }
     }
-    return list;
-  }, [topology, layout]);
+    return list
+  }, [topology, layout])
 
   // Active packet trails (lookup by from->to edge).
   const trailLookup = useMemo(() => {
-    const m = new Map<string, { tone: "info" | "blocked" | "success"; label?: string; from: string; to: string }>();
+    const m = new Map<
+      string,
+      {
+        tone: "info" | "blocked" | "success"
+        label?: string
+        from: string
+        to: string
+      }
+    >()
     for (const t of packetTrail) {
-      const [a, b] = [t.from, t.to].sort();
-      const peerKey = `peer:${a}--${b}`;
-      const crossKey = `cross:${a}--${b}`;
-      m.set(peerKey, t);
-      m.set(crossKey, t);
+      const [a, b] = [t.from, t.to].sort()
+      const peerKey = `peer:${a}--${b}`
+      const crossKey = `cross:${a}--${b}`
+      m.set(peerKey, t)
+      m.set(crossKey, t)
     }
-    return m;
-  }, [packetTrail]);
+    return m
+  }, [packetTrail])
 
-  const dimNonL2 = layerFilter !== "L2";
+  const dimNonL2 = layerFilter !== "L2"
   // L3 is "coming Q3" — dims everything (acts as preview / placeholder).
-  const dimAll = layerFilter === "L3";
+  const dimAll = layerFilter === "L3"
 
   // Camera transform for zoom-to-cluster scenes.
   const cameraStyle = useMemo(() => {
-    if (!zoomTo) return { transform: "translate3d(0,0,0) scale(1)" };
+    if (!zoomTo) return { transform: "translate3d(0,0,0) scale(1)" }
     // We translate the canvas so (cx, cy) → center, then scale.
-    const tx = (CANVAS_WIDTH / 2 - zoomTo.cx) * zoomTo.scale;
-    const ty = (CANVAS_HEIGHT / 2 - zoomTo.cy) * zoomTo.scale;
+    const tx = (CANVAS_WIDTH / 2 - zoomTo.cx) * zoomTo.scale
+    const ty = (CANVAS_HEIGHT / 2 - zoomTo.cy) * zoomTo.scale
     return {
       transform: `translate3d(${tx}px, ${ty}px, 0) scale(${zoomTo.scale})`,
       transformOrigin: "0 0",
-    };
-  }, [zoomTo]);
+    }
+  }, [zoomTo])
 
   return (
     <div
@@ -212,7 +230,7 @@ export function NocCanvas({
         animate={cameraStyle}
         transition={{ type: "tween", duration: 1.2, ease: [0.22, 1, 0.36, 1] }}
         onClick={(e) => {
-          if (e.target === e.currentTarget) onSelectL2(null);
+          if (e.target === e.currentTarget) onSelectL2(null)
         }}
       >
         <defs>
@@ -268,7 +286,13 @@ export function NocCanvas({
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
-          <filter id="glow-strong" x="-100%" y="-100%" width="300%" height="300%">
+          <filter
+            id="glow-strong"
+            x="-100%"
+            y="-100%"
+            width="300%"
+            height="300%"
+          >
             <feGaussianBlur stdDeviation="10" result="blur" />
             <feMerge>
               <feMergeNode in="blur" />
@@ -280,7 +304,7 @@ export function NocCanvas({
 
         {/* Cluster halos */}
         {layout.clusters.map((c) => {
-          const tint = ENTERPRISE_TINT[c.enterprise] ?? ENTERPRISE_TINT.orion;
+          const tint = ENTERPRISE_TINT[c.enterprise] ?? ENTERPRISE_TINT.orion
           return (
             <g key={`cluster-${c.enterprise}`} opacity={dimAll ? 0.25 : 1}>
               <ellipse
@@ -328,42 +352,41 @@ export function NocCanvas({
                 fill="#5A5A7E"
                 letterSpacing="0.18em"
               >
-                aigrp.peer-mesh · {topology.enterprises.find((e) => e.enterprise === c.enterprise)?.l2s.length ?? 0} L2
+                aigrp.peer-mesh ·{" "}
+                {topology.enterprises.find((e) => e.enterprise === c.enterprise)
+                  ?.l2s.length ?? 0}{" "}
+                L2
               </text>
             </g>
-          );
+          )
         })}
 
         {/* Edges layer */}
         <g opacity={dimAll ? 0.2 : 1}>
           {edges.map((e) => {
-            const isCross = e.kind === "cross";
-            const isHighlighted = highlightedEdgeIds.includes(e.id);
+            const isCross = e.kind === "cross"
+            const isHighlighted = highlightedEdgeIds.includes(e.id)
             const dim =
               dimNonL2 ||
               (highlightedEdgeIds.length > 0 && !isHighlighted) ||
               (selectedL2Id !== null &&
-                !(e.from.l2_id === selectedL2Id || e.to.l2_id === selectedL2Id));
-            const opacityBase = isCross
-              ? e.consented
-                ? 0.85
-                : 0.32
-              : 0.7;
+                !(e.from.l2_id === selectedL2Id || e.to.l2_id === selectedL2Id))
+            const opacityBase = isCross ? (e.consented ? 0.85 : 0.32) : 0.7
             const stroke =
               isCross && e.consented
                 ? "url(#grad-cross-consented)"
                 : isCross
-                ? "#384067"
-                : e.from.enterprise === "orion"
-                ? "url(#grad-peer-orion)"
-                : "url(#grad-peer-acme)";
-            const strokeWidth = isHighlighted ? 3.5 : isCross ? 1.5 : 2;
-            const dash = isCross && !e.consented ? "5 9" : undefined;
-            const dx = e.to.x - e.from.x;
-            const dy = e.to.y - e.from.y;
-            const len = Math.hypot(dx, dy);
+                  ? "#384067"
+                  : e.from.enterprise === "orion"
+                    ? "url(#grad-peer-orion)"
+                    : "url(#grad-peer-acme)"
+            const strokeWidth = isHighlighted ? 3.5 : isCross ? 1.5 : 2
+            const dash = isCross && !e.consented ? "5 9" : undefined
+            const dx = e.to.x - e.from.x
+            const dy = e.to.y - e.from.y
+            const len = Math.hypot(dx, dy)
 
-            const trail = trailLookup.get(e.id);
+            const trail = trailLookup.get(e.id)
 
             return (
               <g key={e.id} opacity={dim ? 0.18 : 1}>
@@ -390,8 +413,8 @@ export function NocCanvas({
                       isCross
                         ? "#FFD89B"
                         : e.from.enterprise === "orion"
-                        ? "#B6A0FF"
-                        : "#A4E8FF"
+                          ? "#B6A0FF"
+                          : "#A4E8FF"
                     }
                     speed={isCross ? 0.32 : 0.45}
                     count={isCross ? 4 : 5}
@@ -408,36 +431,35 @@ export function NocCanvas({
                   />
                 )}
               </g>
-            );
+            )
           })}
         </g>
 
         {/* Nodes layer */}
         <g>
           {layout.nodes.map((n) => {
-            const isSelected = n.l2_id === selectedL2Id;
-            const isHovered = n.l2_id === hoveredL2Id;
-            const isHighlighted = highlightedNodeIds.includes(n.l2_id);
-            const r = nodeRadius(n.ku_count);
-            const tint = ENTERPRISE_TINT[n.enterprise] ?? ENTERPRISE_TINT.orion;
+            const isSelected = n.l2_id === selectedL2Id
+            const isHovered = n.l2_id === hoveredL2Id
+            const isHighlighted = highlightedNodeIds.includes(n.l2_id)
+            const r = nodeRadius(n.ku_count)
+            const tint = ENTERPRISE_TINT[n.enterprise] ?? ENTERPRISE_TINT.orion
             const dim =
-              (highlightedNodeIds.length > 0 && !isHighlighted) ||
-              dimAll;
+              (highlightedNodeIds.length > 0 && !isHighlighted) || dimAll
             const personas =
               topology.enterprises
                 .find((e) => e.enterprise === n.enterprise)
-                ?.l2s.find((l) => l.l2_id === n.l2_id)?.active_personas ?? [];
+                ?.l2s.find((l) => l.l2_id === n.l2_id)?.active_personas ?? []
             const domains = Array.from(
               new Set(personas.flatMap((p) => p.expertise_domains)),
-            ).slice(0, 5);
+            ).slice(0, 5)
 
             return (
               <g
                 key={n.l2_id}
                 style={{ cursor: "pointer" }}
                 onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectL2(n.l2_id === selectedL2Id ? null : n.l2_id);
+                  e.stopPropagation()
+                  onSelectL2(n.l2_id === selectedL2Id ? null : n.l2_id)
                 }}
                 onMouseEnter={() => onHoverL2(n.l2_id)}
                 onMouseLeave={() => onHoverL2(null)}
@@ -466,18 +488,30 @@ export function NocCanvas({
                 )}
 
                 {/* KU-count gauge ring */}
-                <KuGauge cx={n.x} cy={n.y} r={r + 6} ku_count={n.ku_count} color={tint.halo} />
+                <KuGauge
+                  cx={n.x}
+                  cy={n.y}
+                  r={r + 6}
+                  ku_count={n.ku_count}
+                  color={tint.halo}
+                />
 
                 {/* Node body */}
                 <circle
                   cx={n.x}
                   cy={n.y}
                   r={r}
-                  fill={n.enterprise === "orion" ? "url(#node-fill-orion)" : "url(#node-fill-acme)"}
+                  fill={
+                    n.enterprise === "orion"
+                      ? "url(#node-fill-orion)"
+                      : "url(#node-fill-acme)"
+                  }
                   stroke={tint.rim}
                   strokeOpacity={isSelected ? 0.95 : 0.6}
                   strokeWidth={isSelected ? 2.5 : 1.5}
-                  filter={isSelected || isHovered ? "url(#glow-soft)" : undefined}
+                  filter={
+                    isSelected || isHovered ? "url(#glow-soft)" : undefined
+                  }
                 />
                 {/* Inner ring */}
                 <circle
@@ -528,7 +562,7 @@ export function NocCanvas({
                   seed={hash01(n.l2_id)}
                 />
               </g>
-            );
+            )
           })}
         </g>
 
@@ -536,7 +570,7 @@ export function NocCanvas({
         {flashCenter && <ConsentFlash x={flashCenter.x} y={flashCenter.y} />}
       </motion.svg>
     </div>
-  );
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -551,28 +585,33 @@ function ParticleStream({
   speed,
   count,
 }: {
-  edgeId: string;
-  from: NodePosition;
-  to: NodePosition;
-  tNow: number;
-  color: string;
-  speed: number;
-  count: number;
+  edgeId: string
+  from: NodePosition
+  to: NodePosition
+  tNow: number
+  color: string
+  speed: number
+  count: number
 }) {
   // Particles travel in both directions; stagger phase per particle.
-  const seed = hash01(edgeId);
-  const dots: Array<{ x: number; y: number; opacity: number; r: number }> = [];
+  const seed = hash01(edgeId)
+  const dots: Array<{ x: number; y: number; opacity: number; r: number }> = []
   for (let i = 0; i < count; i++) {
-    const phase = (tNow * speed + seed + i / count) % 1;
-    const a = phase;
-    const b = 1 - phase;
-    [a, b].forEach((t, k) => {
-      const x = from.x + (to.x - from.x) * t;
-      const y = from.y + (to.y - from.y) * t;
+    const phase = (tNow * speed + seed + i / count) % 1
+    const a = phase
+    const b = 1 - phase
+    ;[a, b].forEach((t, k) => {
+      const x = from.x + (to.x - from.x) * t
+      const y = from.y + (to.y - from.y) * t
       // Bright at midpoint, fade at endpoints
-      const fade = Math.sin(t * Math.PI);
-      dots.push({ x, y, opacity: 0.4 + 0.6 * fade, r: 1.6 + 1.2 * fade + (k === 0 ? 0.2 : 0) });
-    });
+      const fade = Math.sin(t * Math.PI)
+      dots.push({
+        x,
+        y,
+        opacity: 0.4 + 0.6 * fade,
+        r: 1.6 + 1.2 * fade + (k === 0 ? 0.2 : 0),
+      })
+    })
   }
   return (
     <g>
@@ -587,7 +626,7 @@ function ParticleStream({
         />
       ))}
     </g>
-  );
+  )
 }
 
 function PacketComet({
@@ -597,18 +636,18 @@ function PacketComet({
   label,
   duration,
 }: {
-  from: NodePosition;
-  to: NodePosition;
-  tone: "info" | "blocked" | "success";
-  label?: string;
-  duration: number;
+  from: NodePosition
+  to: NodePosition
+  tone: "info" | "blocked" | "success"
+  label?: string
+  duration: number
 }) {
   const colorMap = {
     info: "#5BD0FF",
     success: "#FFD89B",
     blocked: "#FF5C7C",
-  };
-  const color = colorMap[tone];
+  }
+  const color = colorMap[tone]
   return (
     <motion.g
       initial={{ opacity: 0 }}
@@ -637,7 +676,7 @@ function PacketComet({
         )}
       </motion.g>
     </motion.g>
-  );
+  )
 }
 
 function DomainOrbit({
@@ -650,28 +689,28 @@ function DomainOrbit({
   color,
   seed,
 }: {
-  cx: number;
-  cy: number;
-  r: number;
-  domains: string[];
-  tNow: number;
-  frozen: boolean;
-  color: string;
-  seed: number;
+  cx: number
+  cy: number
+  r: number
+  domains: string[]
+  tNow: number
+  frozen: boolean
+  color: string
+  seed: number
 }) {
-  if (domains.length === 0) return null;
+  if (domains.length === 0) return null
   // Slow rotation, ~3s per cycle.
-  const rotation = frozen ? seed * 360 : (tNow * 60 + seed * 360) % 360;
+  const rotation = frozen ? seed * 360 : (tNow * 60 + seed * 360) % 360
   return (
     <g
       transform={`rotate(${rotation} ${cx} ${cy})`}
       opacity={frozen ? 1 : 0.85}
     >
       {domains.map((d, i) => {
-        const a = (i / domains.length) * Math.PI * 2;
-        const x = cx + Math.cos(a) * r;
-        const y = cy + Math.sin(a) * r;
-        const w = d.length * 6.5 + 14;
+        const a = (i / domains.length) * Math.PI * 2
+        const x = cx + Math.cos(a) * r
+        const y = cy + Math.sin(a) * r
+        const w = d.length * 6.5 + 14
         return (
           <g key={d} transform={`rotate(${-rotation} ${x} ${y})`}>
             <rect
@@ -697,10 +736,10 @@ function DomainOrbit({
               {d}
             </text>
           </g>
-        );
+        )
       })}
     </g>
-  );
+  )
 }
 
 function KuGauge({
@@ -710,33 +749,48 @@ function KuGauge({
   ku_count,
   color,
 }: {
-  cx: number;
-  cy: number;
-  r: number;
-  ku_count: number;
-  color: string;
+  cx: number
+  cy: number
+  r: number
+  ku_count: number
+  color: string
 }) {
   // Gauge runs from 7 o'clock to 5 o'clock (270° arc).
-  const total = 300; // assume max 300 KU for arc fill
-  const t = Math.min(1, ku_count / total);
-  const arcDeg = 270 * t;
-  const startAngle = 135;
-  const endAngle = startAngle + arcDeg;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const sx = cx + Math.cos(toRad(startAngle)) * r;
-  const sy = cy + Math.sin(toRad(startAngle)) * r;
-  const ex = cx + Math.cos(toRad(endAngle)) * r;
-  const ey = cy + Math.sin(toRad(endAngle)) * r;
-  const largeArc = arcDeg > 180 ? 1 : 0;
+  const total = 300 // assume max 300 KU for arc fill
+  const t = Math.min(1, ku_count / total)
+  const arcDeg = 270 * t
+  const startAngle = 135
+  const endAngle = startAngle + arcDeg
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const sx = cx + Math.cos(toRad(startAngle)) * r
+  const sy = cy + Math.sin(toRad(startAngle)) * r
+  const ex = cx + Math.cos(toRad(endAngle)) * r
+  const ey = cy + Math.sin(toRad(endAngle)) * r
+  const largeArc = arcDeg > 180 ? 1 : 0
   const arc =
-    arcDeg < 1 ? "" : `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`;
-  const trackArc = `M ${cx + Math.cos(toRad(135)) * r} ${cy + Math.sin(toRad(135)) * r} A ${r} ${r} 0 1 1 ${cx + Math.cos(toRad(135 + 270)) * r} ${cy + Math.sin(toRad(135 + 270)) * r}`;
+    arcDeg < 1 ? "" : `M ${sx} ${sy} A ${r} ${r} 0 ${largeArc} 1 ${ex} ${ey}`
+  const trackArc = `M ${cx + Math.cos(toRad(135)) * r} ${cy + Math.sin(toRad(135)) * r} A ${r} ${r} 0 1 1 ${cx + Math.cos(toRad(135 + 270)) * r} ${cy + Math.sin(toRad(135 + 270)) * r}`
   return (
     <g>
-      <path d={trackArc} fill="none" stroke={color} strokeOpacity={0.15} strokeWidth={2} />
-      {arc && <path d={arc} fill="none" stroke={color} strokeOpacity={0.85} strokeWidth={2.5} strokeLinecap="round" />}
+      <path
+        d={trackArc}
+        fill="none"
+        stroke={color}
+        strokeOpacity={0.15}
+        strokeWidth={2}
+      />
+      {arc && (
+        <path
+          d={arc}
+          fill="none"
+          stroke={color}
+          strokeOpacity={0.85}
+          strokeWidth={2.5}
+          strokeLinecap="round"
+        />
+      )}
     </g>
-  );
+  )
 }
 
 function ConsentFlash({ x, y }: { x: number; y: number }) {
@@ -748,32 +802,38 @@ function ConsentFlash({ x, y }: { x: number; y: number }) {
         exit={{ opacity: 0 }}
         transition={{ duration: 1.4, ease: "easeOut" }}
       >
-        <circle cx={x} cy={y} r={40} fill="#FFD89B" filter="url(#glow-strong)" />
+        <circle
+          cx={x}
+          cy={y}
+          r={40}
+          fill="#FFD89B"
+          filter="url(#glow-strong)"
+        />
         <circle cx={x} cy={y} r={20} fill="#FFFFFF" />
       </motion.g>
     </AnimatePresence>
-  );
+  )
 }
 
 function StarField() {
   // Static SVG of ~80 small stars — generated once.
   const stars = useMemo(() => {
-    const arr: Array<{ x: number; y: number; r: number; o: number }> = [];
-    let s = 1234567;
+    const arr: Array<{ x: number; y: number; r: number; o: number }> = []
+    let s = 1234567
     const rnd = () => {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    };
+      s = (s * 9301 + 49297) % 233280
+      return s / 233280
+    }
     for (let i = 0; i < 90; i++) {
       arr.push({
         x: rnd() * 100,
         y: rnd() * 100,
         r: 0.4 + rnd() * 1.2,
         o: 0.2 + rnd() * 0.6,
-      });
+      })
     }
-    return arr;
-  }, []);
+    return arr
+  }, [])
   return (
     <svg
       aria-hidden
@@ -792,5 +852,5 @@ function StarField() {
         />
       ))}
     </svg>
-  );
+  )
 }

@@ -1,18 +1,18 @@
-import type { TopologyResponse } from "../types";
+import type { TopologyResponse } from "../types"
 
 // Static fixture mirroring the live test-fleet shape (6 L2s across 2 Enterprises).
 // Used in dev/tests until Lane F's server-side proxy ships at /api/v1/network/topology.
 
-const NOW = "2026-04-30T12:00:00Z";
-const RECENT = "2026-04-30T11:59:30Z";
+const NOW = "2026-04-30T12:00:00Z"
+const RECENT = "2026-04-30T11:59:30Z"
 
-const ORION_L2_IDS = ["orion/engineering", "orion/solutions", "orion/gtm"];
-const ACME_L2_IDS = ["acme/engineering", "acme/solutions", "acme/finance"];
+const ORION_L2_IDS = ["orion/engineering", "orion/solutions", "orion/gtm"]
+const ACME_L2_IDS = ["acme/engineering", "acme/solutions", "acme/finance"]
 
 function peersExcluding(allIds: string[], selfId: string) {
   return allIds
     .filter((id) => id !== selfId)
-    .map((id) => ({ l2_id: id, last_signature_at: RECENT }));
+    .map((id) => ({ l2_id: id, last_signature_at: RECENT }))
 }
 
 export const topologyFixture: TopologyResponse = {
@@ -146,4 +146,4 @@ export const topologyFixture: TopologyResponse = {
   // No active cross-Enterprise consents in the default fixture — Lane F demo
   // toggles "Sign cross-Enterprise consent" to populate this list at runtime.
   cross_enterprise_consents: [],
-};
+}

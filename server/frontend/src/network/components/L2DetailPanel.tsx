@@ -1,17 +1,20 @@
-import { motion, AnimatePresence } from "framer-motion";
-import { X, Server, Users, Database, Network as NetIcon } from "lucide-react";
-import type { TopologyL2 } from "../types";
-import { timeAgo } from "../../utils";
+import { AnimatePresence, motion } from "framer-motion"
+import { Database, Network as NetIcon, Server, Users, X } from "lucide-react"
+import { timeAgo } from "../../utils"
+import type { TopologyL2 } from "../types"
 
 interface Props {
-  l2: TopologyL2 | null;
-  onClose: () => void;
+  l2: TopologyL2 | null
+  onClose: () => void
 }
 
-const ENTERPRISE_HUE: Record<string, { from: string; to: string; text: string }> = {
+const ENTERPRISE_HUE: Record<
+  string,
+  { from: string; to: string; text: string }
+> = {
   orion: { from: "#7C5CFF", to: "#3D2D8F", text: "#B6A0FF" },
   acme: { from: "#5BD0FF", to: "#1E5C7E", text: "#A4E8FF" },
-};
+}
 
 export function L2DetailPanel({ l2, onClose }: Props) {
   return (
@@ -22,22 +25,33 @@ export function L2DetailPanel({ l2, onClose }: Props) {
           initial={{ x: 380, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: 380, opacity: 0 }}
-          transition={{ type: "tween", duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+          transition={{
+            type: "tween",
+            duration: 0.32,
+            ease: [0.22, 1, 0.36, 1],
+          }}
           className="absolute right-0 top-0 z-20 flex h-full w-[360px] flex-col border-l border-white/10 bg-[#08081a]/95 backdrop-blur"
           style={{
-            boxShadow: "-30px 0 60px rgba(0,0,0,0.6), inset 1px 0 0 rgba(124,92,255,0.18)",
+            boxShadow:
+              "-30px 0 60px rgba(0,0,0,0.6), inset 1px 0 0 rgba(124,92,255,0.18)",
           }}
         >
           <DetailContent l2={l2} onClose={onClose} />
         </motion.aside>
       )}
     </AnimatePresence>
-  );
+  )
 }
 
-function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void }) {
-  const ent = l2.l2_id.split("/")[0];
-  const hue = ENTERPRISE_HUE[ent] ?? ENTERPRISE_HUE.orion;
+function DetailContent({
+  l2,
+  onClose,
+}: {
+  l2: TopologyL2
+  onClose: () => void
+}) {
+  const ent = l2.l2_id.split("/")[0]
+  const hue = ENTERPRISE_HUE[ent] ?? ENTERPRISE_HUE.orion
 
   return (
     <>
@@ -79,13 +93,20 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
           style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
         >
           <Server className="h-3 w-3 text-white/40" />
-          <code className="truncate text-[10px] text-white/65">{l2.endpoint_url}</code>
+          <code className="truncate text-[10px] text-white/65">
+            {l2.endpoint_url}
+          </code>
         </div>
       </div>
 
       <div className="grid grid-cols-3 gap-px bg-white/5">
         <Stat icon={Database} label="KUs" value={l2.ku_count} hue={hue.text} />
-        <Stat icon={NetIcon} label="Domains" value={l2.domain_count} hue={hue.text} />
+        <Stat
+          icon={NetIcon}
+          label="Domains"
+          value={l2.domain_count}
+          hue={hue.text}
+        />
         <Stat icon={Users} label="Peers" value={l2.peer_count} hue={hue.text} />
       </div>
 
@@ -102,12 +123,16 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
                 >
                   <span
                     className="text-[11px] text-white/80"
-                    style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                    style={{
+                      fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                    }}
                   >
                     {p.l2_id}
                   </span>
                   <span className="text-[10px] text-white/40">
-                    {p.last_signature_at ? `↑ ${timeAgo(p.last_signature_at)}` : "—"}
+                    {p.last_signature_at
+                      ? `↑ ${timeAgo(p.last_signature_at)}`
+                      : "—"}
                   </span>
                 </li>
               ))}
@@ -128,7 +153,9 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
                   <div className="flex items-center justify-between gap-2">
                     <span
                       className="truncate text-[12px] font-semibold text-white"
-                      style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                      style={{
+                        fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                      }}
                     >
                       {p.persona}
                     </span>
@@ -140,7 +167,9 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
                   {p.working_dir_hint && (
                     <code
                       className="mt-1 block truncate text-[10px] text-white/45"
-                      style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                      style={{
+                        fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                      }}
                     >
                       {p.working_dir_hint}
                     </code>
@@ -151,7 +180,10 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
                         <span
                           key={d}
                           className="rounded-sm border border-white/10 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.14em] text-white/65"
-                          style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                          style={{
+                            fontFamily:
+                              "'JetBrains Mono', ui-monospace, monospace",
+                          }}
                         >
                           #{d}
                         </span>
@@ -173,7 +205,7 @@ function DetailContent({ l2, onClose }: { l2: TopologyL2; onClose: () => void })
         </Section>
       </div>
     </>
-  );
+  )
 }
 
 function Stat({
@@ -182,10 +214,10 @@ function Stat({
   value,
   hue,
 }: {
-  icon: typeof Server;
-  label: string;
-  value: number;
-  hue: string;
+  icon: typeof Server
+  label: string
+  value: number
+  hue: string
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-1 bg-[#06061a] py-3">
@@ -203,10 +235,16 @@ function Stat({
         {label}
       </div>
     </div>
-  );
+  )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
   return (
     <section className="mb-5">
       <h4
@@ -217,7 +255,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h4>
       {children}
     </section>
-  );
+  )
 }
 
 function Row({ k, v }: { k: string; v: string }) {
@@ -236,5 +274,5 @@ function Row({ k, v }: { k: string; v: string }) {
         {v}
       </span>
     </div>
-  );
+  )
 }

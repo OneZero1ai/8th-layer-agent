@@ -71,9 +71,7 @@ export function Layout() {
         </div>
       </nav>
       <main
-        className={
-          wide ? "w-full px-0 py-0" : "max-w-2xl mx-auto py-8 px-4"
-        }
+        className={wide ? "w-full px-0 py-0" : "max-w-2xl mx-auto py-8 px-4"}
       >
         <Outlet context={{ setPendingCount }} />
       </main>

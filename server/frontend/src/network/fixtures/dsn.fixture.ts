@@ -2,42 +2,58 @@
 // Mirrors the "I need help with CloudFront" intent path through the test-fleet shape.
 
 export interface DsnResolutionStep {
-  step: string;
-  ts_offset_ms: number;
-  detail: string;
+  step: string
+  ts_offset_ms: number
+  detail: string
 }
 
 export interface DsnCandidate {
-  l2_id: string;
-  enterprise: string;
-  group: string;
-  sim_score: number;
-  ku_count_in_topic: number;
-  expert_personas: string[];
-  policy_if_queried: "direct" | "cross_group_summary" | "cross_enterprise_blocked" | "summary_only";
+  l2_id: string
+  enterprise: string
+  group: string
+  sim_score: number
+  ku_count_in_topic: number
+  expert_personas: string[]
+  policy_if_queried:
+    | "direct"
+    | "cross_group_summary"
+    | "cross_enterprise_blocked"
+    | "summary_only"
 }
 
 export interface DsnResolveResponse {
-  intent: string;
-  embedding_preview: number[]; // 16-dim sparkline vector
-  resolution_path: DsnResolutionStep[];
-  candidates: DsnCandidate[];
+  intent: string
+  embedding_preview: number[] // 16-dim sparkline vector
+  resolution_path: DsnResolutionStep[]
+  candidates: DsnCandidate[]
 }
 
 const cloudFrontEmbedding = [
-  0.18, -0.42, 0.61, 0.07, -0.31, 0.55, 0.22, -0.18,
-  0.39, -0.05, 0.48, -0.27, 0.16, 0.33, -0.44, 0.52,
-];
+  0.18, -0.42, 0.61, 0.07, -0.31, 0.55, 0.22, -0.18, 0.39, -0.05, 0.48, -0.27,
+  0.16, 0.33, -0.44, 0.52,
+]
 
 export function dsnFixtureFor(intent: string): DsnResolveResponse {
   return {
     intent,
     embedding_preview: cloudFrontEmbedding,
     resolution_path: [
-      { step: "embed", ts_offset_ms: 18, detail: "Bedrock Titan v2 — 1024d → preview 16d" },
-      { step: "fan_out", ts_offset_ms: 42, detail: "AIGRP signature lookup × 6 L2s" },
+      {
+        step: "embed",
+        ts_offset_ms: 18,
+        detail: "Bedrock Titan v2 — 1024d → preview 16d",
+      },
+      {
+        step: "fan_out",
+        ts_offset_ms: 42,
+        detail: "AIGRP signature lookup × 6 L2s",
+      },
       { step: "rank", ts_offset_ms: 134, detail: "cosine-sim top-K=3" },
-      { step: "policy_overlay", ts_offset_ms: 152, detail: "consent + group policy applied" },
+      {
+        step: "policy_overlay",
+        ts_offset_ms: 152,
+        detail: "consent + group policy applied",
+      },
     ],
     candidates: [
       {
@@ -95,5 +111,5 @@ export function dsnFixtureFor(intent: string): DsnResolveResponse {
         policy_if_queried: "cross_enterprise_blocked",
       },
     ],
-  };
+  }
 }

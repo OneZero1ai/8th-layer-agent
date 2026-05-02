@@ -3,32 +3,35 @@
 // events plus a final_results payload.
 
 export interface TraceEvent {
-  step: number;
-  ts_offset_ms: number;
-  l2_id: string;
-  action: string;
-  payload_preview: string;
-  result_summary: string;
-  latency_ms: number;
+  step: number
+  ts_offset_ms: number
+  l2_id: string
+  action: string
+  payload_preview: string
+  result_summary: string
+  latency_ms: number
 }
 
 export interface RedactedKuResult {
-  ku_id: string;
-  l2_id: string;
-  domain_tags: string[];
+  ku_id: string
+  l2_id: string
+  domain_tags: string[]
   // For summary-only policy: title + a short summary, with redacted body.
-  title: string;
-  summary: string;
-  body: string | null; // null = redacted
-  policy: "direct" | "summary_only" | "blocked";
-  reason?: string;
+  title: string
+  summary: string
+  body: string | null // null = redacted
+  policy: "direct" | "summary_only" | "blocked"
+  reason?: string
 }
 
 export interface DemoTraceResponse {
-  scenario: "cross-group-query" | "cross-enterprise-blocked" | "cross-enterprise-consented";
-  total_latency_ms: number;
-  events: TraceEvent[];
-  final_results: RedactedKuResult[];
+  scenario:
+    | "cross-group-query"
+    | "cross-enterprise-blocked"
+    | "cross-enterprise-consented"
+  total_latency_ms: number
+  events: TraceEvent[]
+  final_results: RedactedKuResult[]
 }
 
 export const crossGroupQueryFixture: DemoTraceResponse = {
@@ -87,7 +90,8 @@ export const crossGroupQueryFixture: DemoTraceResponse = {
       l2_id: "acme/solutions",
       domain_tags: ["cloudfront", "edge", "failover"],
       title: "CloudFront origin-shield + secondary origin failover ladder",
-      summary: "Pattern for two-tier failover using origin-shield as health-anchor.",
+      summary:
+        "Pattern for two-tier failover using origin-shield as health-anchor.",
       body: null,
       policy: "summary_only",
     },
@@ -96,7 +100,8 @@ export const crossGroupQueryFixture: DemoTraceResponse = {
       l2_id: "acme/solutions",
       domain_tags: ["cloudfront", "ttl", "stale-while-revalidate"],
       title: "Stale-if-error TTL tuning for B2B dashboard tiles",
-      summary: "Long stale-if-error window stabilises dashboards through origin blips.",
+      summary:
+        "Long stale-if-error window stabilises dashboards through origin blips.",
       body: null,
       policy: "summary_only",
     },
@@ -105,12 +110,13 @@ export const crossGroupQueryFixture: DemoTraceResponse = {
       l2_id: "acme/solutions",
       domain_tags: ["cloudfront", "lambda-edge"],
       title: "Lambda@Edge auth-token rewrite — viewer-request gotcha",
-      summary: "Trailing slash in path triggers double rewrite if not normalised.",
+      summary:
+        "Trailing slash in path triggers double rewrite if not normalised.",
       body: null,
       policy: "summary_only",
     },
   ],
-};
+}
 
 export const crossEnterpriseBlockedFixture: DemoTraceResponse = {
   scenario: "cross-enterprise-blocked",
@@ -139,7 +145,8 @@ export const crossEnterpriseBlockedFixture: DemoTraceResponse = {
       ts_offset_ms: 43,
       l2_id: "orion/engineering",
       action: "consent_check",
-      payload_preview: "consent_record(orion ↔ acme, engineering ↔ engineering)",
+      payload_preview:
+        "consent_record(orion ↔ acme, engineering ↔ engineering)",
       result_summary: "no active consent — BLOCKED",
       latency_ms: 9,
     },
@@ -165,7 +172,7 @@ export const crossEnterpriseBlockedFixture: DemoTraceResponse = {
       reason: "no active consent record (orion ↔ acme)",
     },
   ],
-};
+}
 
 export const crossEnterpriseConsentedFixture: DemoTraceResponse = {
   scenario: "cross-enterprise-consented",
@@ -194,7 +201,8 @@ export const crossEnterpriseConsentedFixture: DemoTraceResponse = {
       ts_offset_ms: 48,
       l2_id: "orion/engineering",
       action: "consent_check",
-      payload_preview: "consent_record(orion ↔ acme, engineering ↔ engineering)",
+      payload_preview:
+        "consent_record(orion ↔ acme, engineering ↔ engineering)",
       result_summary: "active · policy=summary_only",
       latency_ms: 11,
     },
@@ -232,7 +240,8 @@ export const crossEnterpriseConsentedFixture: DemoTraceResponse = {
       l2_id: "acme/engineering",
       domain_tags: ["cloudfront", "edge", "failover"],
       title: "CloudFront origin-shield + secondary origin failover ladder",
-      summary: "Pattern for two-tier failover using origin-shield as health-anchor.",
+      summary:
+        "Pattern for two-tier failover using origin-shield as health-anchor.",
       body: null,
       policy: "summary_only",
     },
@@ -241,7 +250,8 @@ export const crossEnterpriseConsentedFixture: DemoTraceResponse = {
       l2_id: "acme/engineering",
       domain_tags: ["cloudfront", "route53", "health-check"],
       title: "Route53 health-check thresholds for edge-failover triggers",
-      summary: "3-of-5 thresholds avoid flapping for typical B2B traffic shapes.",
+      summary:
+        "3-of-5 thresholds avoid flapping for typical B2B traffic shapes.",
       body: null,
       policy: "summary_only",
     },
@@ -255,12 +265,12 @@ export const crossEnterpriseConsentedFixture: DemoTraceResponse = {
       policy: "summary_only",
     },
   ],
-};
+}
 
 export const demoTraceFixtures = {
   "cross-group-query": crossGroupQueryFixture,
   "cross-enterprise-blocked": crossEnterpriseBlockedFixture,
   "cross-enterprise-consented": crossEnterpriseConsentedFixture,
-} as const;
+} as const
 
-export type DemoScenario = keyof typeof demoTraceFixtures;
+export type DemoScenario = keyof typeof demoTraceFixtures
