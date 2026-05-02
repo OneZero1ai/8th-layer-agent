@@ -12,7 +12,10 @@ The fork adopts upstream cq's open standard (Knowledge Unit schema, REST contrac
 | Design + decisions | `OneZero1ai/8th-layer` (private) | Architecture decisions, specs, marketing site, AWS deploy templates |
 | Plugin marketplace | [`OneZero1ai/8th-layer-marketplace`](https://github.com/OneZero1ai/8th-layer-marketplace) | Claude Code plugin catalog for the 8th-Layer enterprise connector |
 
-**See:** [`FORK_DELTA.md`](FORK_DELTA.md) for the complete upstream-vs-fork delta — what we add, what we keep unchanged, and our upstream-sync discipline.
+**See:**
+- [`FORK_DELTA.md`](FORK_DELTA.md) — upstream-vs-fork delta (what we add, what we keep unchanged, sync discipline)
+- [`MODIFICATIONS.md`](MODIFICATIONS.md) — Apache-2.0 §4(b) statement of changes; per-file modification catalog
+- [`NOTICE`](NOTICE) — license + attribution
 
 The remainder of this README is upstream cq's documentation, which we adopt as-is. The two are interoperable: a vanilla cq Remote can talk to an 8th-Layer L2, and an 8th-Layer agent can talk to a vanilla cq Remote. The 8th-Layer-specific endpoints (`/aigrp/*`, `/network/dsn/*`, `/consults/*`) are additive.
 
