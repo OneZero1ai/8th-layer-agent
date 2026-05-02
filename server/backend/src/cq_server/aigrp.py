@@ -10,11 +10,23 @@ This module owns:
 - Peer-key auth dependency (Bearer EnterprisePeerKey)
 - Signature computation (centroid of approved KU embeddings + Bloom of domains)
 - Peer-table persistence helpers (against the shared SQLite store)
+- Forwarder-identity validation (header binding + sprint-4 Ed25519 sig)
 
 The /aigrp/* HTTP endpoints live in app.py and call into this module.
 
 Cross-Enterprise mesh is intentionally out of scope here; that's the AI-BGP
 protocol (separate spec, future work).
+
+Environment variables consumed here (sprint 4 — see also ``forward_sign``):
+    CQ_AIGRP_PEER_KEY            shared EnterprisePeerKey for /aigrp/* auth.
+    CQ_AIGRP_IS_FIRST_DEPLOY     ``true`` on the genesis L2 of an Enterprise.
+    CQ_AIGRP_SEED_PEER_URL       seed peer the joiner contacts on startup.
+    CQ_AIGRP_SELF_URL            externally reachable URL of this L2.
+    CQ_ENTERPRISE / CQ_GROUP     this L2's identity components.
+    CQ_AIGRP_L2_PRIVKEY_PATH     forward-signing private key on disk
+                                 (default /data/aigrp_l2_key.bin).
+    CQ_REQUIRE_SIGNED_FORWARDS   ``true`` flips strict mode on receivers
+                                 (legacy unsigned forwards are rejected).
 """
 
 from __future__ import annotations
@@ -121,8 +133,14 @@ def require_forwarder_identity(
     claimed_l2_id: str,
     *,
     same_enterprise_only: bool = True,
+    body_for_sig: dict | None = None,
+    store: object | None = None,
 ) -> str:
     """Validate the forwarder's declared identity on a /forward-* endpoint.
+
+    Layers the CRIT #34 partial fix (header/body binding) with the
+    sprint-4 Ed25519 forward signature (#44 — closes the residual
+    sibling-L2 spoof).
 
     Args:
         request: incoming FastAPI request (must contain the forwarder header).
@@ -134,13 +152,23 @@ def require_forwarder_identity(
             consent path), the header still must match the body but the
             forwarder may belong to a peered foreign Enterprise — that
             authorisation comes from cross_enterprise_consents downstream.
+        body_for_sig: parsed request body (canonicalisable dict). When
+            provided alongside ``store``, the receiver verifies the
+            ``X-8L-Forwarder-Sig`` header against the peer's recorded
+            Ed25519 public key. ``None`` skips signature verification —
+            used by legacy callers that haven't been migrated yet.
+        store: ``RemoteStore`` instance for pubkey lookup. Pass alongside
+            ``body_for_sig``. Typed as ``object`` to avoid an import
+            cycle with ``cq_server.store``.
 
     Returns:
         The header-declared forwarder L2 id (post-validation).
 
     Raises:
         HTTPException 400 on missing/empty header.
-        HTTPException 403 on header/body mismatch or cross-Enterprise spoof.
+        HTTPException 403 on header/body mismatch, cross-Enterprise spoof,
+            missing-sig in strict mode, or invalid signature when the
+            peer's pubkey is on file.
     """
     declared = request.headers.get(FORWARDER_HEADER, "").strip()
     if not declared:
@@ -164,6 +192,60 @@ def require_forwarder_identity(
             status_code=403,
             detail=f"cross-Enterprise forward rejected: forwarder={declared!r} receiver_enterprise={enterprise()!r}",
         )
+
+    # Sprint 4 — Ed25519 forward signature (#44).
+    #
+    # When the caller supplies the parsed body and the store, look up
+    # the peer's pubkey. Three cases:
+    #
+    #   1. Pubkey on file + valid sig          → verified signed forward.
+    #   2. Pubkey on file + missing/invalid sig → 403 (sibling-L2 spoof
+    #      attempt or stale peer key — operator must rotate).
+    #   3. No pubkey on file (legacy peer)     → log WARNING and accept
+    #      via header-only auth, UNLESS CQ_REQUIRE_SIGNED_FORWARDS=true
+    #      (strict mode), in which case 403.
+    #
+    # TODO: post-rollout (after one full bootstrap cycle has populated
+    # every peer's pubkey), flip default of CQ_REQUIRE_SIGNED_FORWARDS
+    # to true and deprecate the legacy code path.
+    if body_for_sig is not None and store is not None:
+        from . import forward_sign
+
+        peer_pubkey = None
+        try:
+            peer_pubkey = store.get_aigrp_peer_pubkey(declared)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            # Defensive: a borked store call shouldn't 500 a forward path.
+            logger.exception("forward-sign: pubkey lookup failed for peer=%s", declared)
+        sig_header = request.headers.get(forward_sign.SIGNATURE_HEADER, "").strip()
+        if peer_pubkey:
+            if not sig_header:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"missing {forward_sign.SIGNATURE_HEADER} header from signed peer {declared!r}",
+                )
+            if not forward_sign.verify_forward_signature(
+                peer_pubkey, body_for_sig, declared, sig_header
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"forward signature verification failed for peer={declared!r}",
+                )
+            logger.info("aigrp: verified signed forward from peer=%s", declared)
+        else:
+            if forward_sign.require_signed_forwards():
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"strict mode (CQ_REQUIRE_SIGNED_FORWARDS=true) and no pubkey "
+                        f"on file for peer={declared!r}; require re-hello"
+                    ),
+                )
+            logger.warning(
+                "aigrp: legacy unsigned forward from peer=%s (no pubkey on file; "
+                "will become 403 once CQ_REQUIRE_SIGNED_FORWARDS=true)",
+                declared,
+            )
     return declared
 
 

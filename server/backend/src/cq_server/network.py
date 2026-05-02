@@ -986,22 +986,31 @@ async def _call_forward_query(
     if peer_key:
         headers["authorization"] = f"Bearer {peer_key}"
     # SEC-CRIT #34 — declare the forwarder identity so the receiver can pin
-    # the body's requester_l2_id to the same value.
-    headers[aigrp.FORWARDER_HEADER] = f"{requester['enterprise']}/{requester['group']}"
+    # the body's requester_l2_id to the same value. Sprint 4 (#44) — also
+    # Ed25519-sign the request body when this L2 has a key on disk.
+    from . import aigrp as _aigrp_mod
+    from . import forward_sign
+
+    forwarder_l2_id = f"{requester['enterprise']}/{requester['group']}"
+    headers[_aigrp_mod.FORWARDER_HEADER] = forwarder_l2_id
+    body = {
+        "query_vec": query_vec,
+        "query_text": query_text,
+        "requester_l2_id": forwarder_l2_id,
+        "requester_enterprise": requester["enterprise"],
+        "requester_group": requester["group"],
+        "requester_persona": requester_persona,
+        "max_results": 5,
+    }
+    sig = forward_sign.sign_forward_request(body, forwarder_l2_id)
+    if sig:
+        headers[forward_sign.SIGNATURE_HEADER] = sig
     t0 = time.monotonic()
     try:
         r = await client.post(
             f"{base}/api/v1/aigrp/forward-query",
             headers=headers,
-            json={
-                "query_vec": query_vec,
-                "query_text": query_text,
-                "requester_l2_id": f"{requester['enterprise']}/{requester['group']}",
-                "requester_enterprise": requester["enterprise"],
-                "requester_group": requester["group"],
-                "requester_persona": requester_persona,
-                "max_results": 5,
-            },
+            json=body,
         )
         latency = int((time.monotonic() - t0) * 1000)
         if r.status_code == 200:

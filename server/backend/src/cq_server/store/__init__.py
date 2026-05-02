@@ -1112,6 +1112,7 @@ class RemoteStore:
         domain_count: int,
         embedding_model: str | None,
         signature_received: bool,
+        public_key_ed25519: str | None = None,
     ) -> None:
         """Insert or update an AIGRP peer record.
 
@@ -1120,6 +1121,13 @@ class RemoteStore:
         means the caller is just announcing the peer's existence (e.g.
         from /aigrp/hello before the peer's signature is fetched); we
         leave the signature columns alone if the row already exists.
+
+        ``public_key_ed25519`` (sprint 4) is the peer's forward-signing
+        public key, base64url-encoded. ``None`` leaves any existing
+        value alone (so a /signature poll that doesn't carry pubkey
+        doesn't wipe what /aigrp/hello recorded). To explicitly clear
+        a pubkey, pass an empty string and the caller path will go
+        through the dedicated ``set_aigrp_peer_pubkey`` helper.
         """
         self._check_open()
         now = datetime.now(UTC).isoformat()
@@ -1133,13 +1141,15 @@ class RemoteStore:
                     INSERT INTO aigrp_peers (
                         l2_id, enterprise, "group", endpoint_url,
                         embedding_centroid, domain_bloom, ku_count, domain_count,
-                        embedding_model, first_seen_at, last_seen_at, last_signature_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        embedding_model, first_seen_at, last_seen_at, last_signature_at,
+                        public_key_ed25519
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         l2_id, enterprise, group, endpoint_url,
                         embedding_centroid, domain_bloom, ku_count, domain_count,
                         embedding_model, now, now, now if signature_received else None,
+                        public_key_ed25519,
                     ),
                 )
             elif signature_received:
@@ -1159,6 +1169,11 @@ class RemoteStore:
                         now, now, l2_id,
                     ),
                 )
+                if public_key_ed25519 is not None:
+                    self._conn.execute(
+                        "UPDATE aigrp_peers SET public_key_ed25519 = ? WHERE l2_id = ?",
+                        (public_key_ed25519, l2_id),
+                    )
             else:
                 # touch last_seen but keep cached signature
                 self._conn.execute(
@@ -1170,6 +1185,28 @@ class RemoteStore:
                     """,
                     (enterprise, group, endpoint_url, now, l2_id),
                 )
+                if public_key_ed25519 is not None:
+                    self._conn.execute(
+                        "UPDATE aigrp_peers SET public_key_ed25519 = ? WHERE l2_id = ?",
+                        (public_key_ed25519, l2_id),
+                    )
+
+    def get_aigrp_peer_pubkey(self, l2_id: str) -> str | None:
+        """Return the base64url-encoded Ed25519 public key for ``l2_id``,
+        or ``None`` if the peer is unknown / has no pubkey on file.
+
+        Used by the receiver-side forward-signature verifier in
+        ``aigrp.require_forwarder_identity`` (sprint 4).
+        """
+        self._check_open()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT public_key_ed25519 FROM aigrp_peers WHERE l2_id = ?",
+                (l2_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row[0]
 
     def list_aigrp_peers(self, enterprise: str) -> list[dict[str, Any]]:
         """Return every known peer in the given Enterprise.
@@ -1184,7 +1221,8 @@ class RemoteStore:
                 SELECT l2_id, enterprise, "group", endpoint_url,
                        embedding_centroid, domain_bloom,
                        ku_count, domain_count, embedding_model,
-                       first_seen_at, last_seen_at, last_signature_at
+                       first_seen_at, last_seen_at, last_signature_at,
+                       public_key_ed25519
                 FROM aigrp_peers
                 WHERE enterprise = ?
                 ORDER BY last_seen_at DESC
@@ -1205,6 +1243,7 @@ class RemoteStore:
                 "first_seen_at": r[9],
                 "last_seen_at": r[10],
                 "last_signature_at": r[11],
+                "public_key_ed25519": r[12],
             }
             for r in rows
         ]
