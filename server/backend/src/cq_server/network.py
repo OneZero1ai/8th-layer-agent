@@ -794,6 +794,17 @@ async def network_dsn_resolve(
     # toward keeping peers and just rely on cosine to deprioritize.
     # When query_domains is empty (the public marketing case), the
     # prefilter is a no-op and behavior is unchanged.
+    #
+    # SEC-MED M-6 — bloom_dropped count is a topic-discovery oracle for
+    # anonymous callers: a public visitor submits query_domains=["x"]
+    # and observes which fleet L2s drop (= don't claim that domain in
+    # their Bloom). With binary search across L2s, this leaks "does
+    # L2 X know about topic Y" even though the caller can't actually
+    # query. For anonymous callers (no caller_enterprise/group), the
+    # prefilter still RUNS to give cosine a tighter peer set (perf
+    # win), but the per-call bloom_dropped count is suppressed in the
+    # response. Authenticated callers see the full count.
+    is_anonymous = not (request.caller_enterprise or request.caller_group)
     t_bloom = time.monotonic()
     bloom_dropped = 0
     if request.query_domains:
@@ -813,6 +824,8 @@ async def network_dsn_resolve(
             else:
                 bloom_dropped += 1
         snapshots = kept
+    # SEC-MED M-6 — anonymous oracle suppression.
+    bloom_dropped_reported: int | None = None if is_anonymous else bloom_dropped
     bloom_ms = int((time.monotonic() - t_bloom) * 1000)
     if request.query_domains:
         path.append(
@@ -820,7 +833,7 @@ async def network_dsn_resolve(
                 step="bloom_prefilter",
                 latency_ms=bloom_ms,
                 l2_count=len(snapshots),
-                bloom_dropped=bloom_dropped,
+                bloom_dropped=bloom_dropped_reported,
             )
         )
 
