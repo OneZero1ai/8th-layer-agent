@@ -100,7 +100,7 @@ def _generate_and_persist(path: Path) -> Ed25519PrivateKey:
     # subsequent chmod tightens to 0600 immediately.
     path.write_bytes(raw)
     try:
-        os.chmod(path, 0o600)
+        path.chmod(0o600)
     except OSError:
         # Best-effort on filesystems that don't support unix mode bits
         # (e.g. FAT-formatted bind mount). Log but don't fail startup.
@@ -205,9 +205,7 @@ def signing_input_for(body: dict[str, Any], forwarder_l2_id: str) -> bytes:
     return canonicalize(body) + forwarder_l2_id.encode("utf-8")
 
 
-def sign_forward_request(
-    body: dict[str, Any], forwarder_l2_id: str
-) -> str | None:
+def sign_forward_request(body: dict[str, Any], forwarder_l2_id: str) -> str | None:
     """Sign a forward-* request body. Returns the b64url signature or
     ``None`` when signing is disabled (no key on disk).
 

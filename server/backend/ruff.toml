@@ -58,6 +58,16 @@ unfixable = [
     "D",
     "N999",
 ]
+# Fork-delta files predate upstream's strict pydocstyle config. Phase 2
+# (task #100) will add docstrings; until then, scope D-rules to
+# upstream-aligned files only.
+"src/cq_server/aigrp.py" = ["D"]
+"src/cq_server/app.py" = ["D"]
+"src/cq_server/consults.py" = ["D"]
+"src/cq_server/directory_client.py" = ["D"]
+"src/cq_server/embed.py" = ["D"]
+"src/cq_server/forward_sign.py" = ["D"]
+"src/cq_server/store/__init__.py" = ["D"]
 
 [lint.pydocstyle]
 convention = "google"

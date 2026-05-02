@@ -229,9 +229,7 @@ async def _announce_with_retries(
     return False
 
 
-async def _fetch_enterprise_pubkey(
-    client: httpx.AsyncClient, enterprise_id: str, _cache: dict[str, str]
-) -> str | None:
+async def _fetch_enterprise_pubkey(client: httpx.AsyncClient, enterprise_id: str, _cache: dict[str, str]) -> str | None:
     """Resolve an enterprise's root pubkey via /enterprises/{id}/key.
 
     Cached per process for the life of the pull loop; cache flushed on
@@ -325,12 +323,8 @@ async def _pull_and_persist_once(
             return 0
 
         for rec in records:
-            initiator_pubkey = await _fetch_enterprise_pubkey(
-                client, rec["from_enterprise"], pubkey_cache
-            )
-            responder_pubkey = await _fetch_enterprise_pubkey(
-                client, rec["to_enterprise"], pubkey_cache
-            )
+            initiator_pubkey = await _fetch_enterprise_pubkey(client, rec["from_enterprise"], pubkey_cache)
+            responder_pubkey = await _fetch_enterprise_pubkey(client, rec["to_enterprise"], pubkey_cache)
             if initiator_pubkey is None or responder_pubkey is None:
                 log.warning(
                     "directory: missing pubkey from=%s to=%s offer=%s — skipping",

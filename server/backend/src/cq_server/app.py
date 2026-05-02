@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
@@ -24,9 +24,9 @@ from starlette.responses import FileResponse
 from . import aigrp
 from .auth import require_admin
 from .auth import router as auth_router
+from .consults import router as consults_router
 from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV, require_api_key
-from .consults import router as consults_router
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
 from .migrations import run_migrations
@@ -34,7 +34,7 @@ from .network import router as network_router
 from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
-from .store import RemoteStore, SqliteStore, Store, normalize_domains
+from .store import RemoteStore, normalize_domains
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -62,10 +62,10 @@ class StatsResponse(BaseModel):
     domains: dict[str, int]
 
 
-_store: Store | None = None
+_store: RemoteStore | None = None
 
 
-def _get_store() -> Store:
+def _get_store() -> RemoteStore:
     """Return the global store instance."""
     if _store is None:
         raise RuntimeError("Store not initialised")
@@ -102,13 +102,15 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
         from . import forward_sign
 
         try:
-            hello_payload = json.dumps({
-                "l2_id": aigrp.self_l2_id(),
-                "enterprise": aigrp.enterprise(),
-                "group": aigrp.group(),
-                "endpoint_url": aigrp.self_url(),
-                "public_key_ed25519": forward_sign.self_public_key_b64u(),
-            }).encode()
+            hello_payload = json.dumps(
+                {
+                    "l2_id": aigrp.self_l2_id(),
+                    "enterprise": aigrp.enterprise(),
+                    "group": aigrp.group(),
+                    "endpoint_url": aigrp.self_url(),
+                    "public_key_ed25519": forward_sign.self_public_key_b64u(),
+                }
+            ).encode()
             req = urllib.request.Request(
                 f"{aigrp.seed_peer_url()}/api/v1/aigrp/hello",
                 method="POST",
@@ -160,13 +162,15 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
         """
         from . import forward_sign
 
-        payload = json.dumps({
-            "l2_id": aigrp.self_l2_id(),
-            "enterprise": aigrp.enterprise(),
-            "group": aigrp.group(),
-            "endpoint_url": aigrp.self_url(),
-            "public_key_ed25519": forward_sign.self_public_key_b64u(),
-        }).encode()
+        payload = json.dumps(
+            {
+                "l2_id": aigrp.self_l2_id(),
+                "enterprise": aigrp.enterprise(),
+                "group": aigrp.group(),
+                "endpoint_url": aigrp.self_url(),
+                "public_key_ed25519": forward_sign.self_public_key_b64u(),
+            }
+        ).encode()
         try:
             req = urllib.request.Request(
                 f"{peer_endpoint.rstrip('/')}/api/v1/aigrp/hello",
@@ -203,7 +207,9 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     )
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         sig = json.loads(resp.read())
-                    centroid = base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
+                    centroid = (
+                        base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
+                    )
                     bloom = base64.b64decode(sig["domain_bloom_b64"]) if sig.get("domain_bloom_b64") else None
                     store.upsert_aigrp_peer(
                         l2_id=sig["l2_id"],
@@ -285,10 +291,8 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         for task in (aigrp_task, dsn_cache_task, directory_task):
             if task is not None:
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError, Exception):
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
         _store.close()
 
 
@@ -375,9 +379,7 @@ def aigrp_lookup(
     if payload is None:
         # Don't 503 here — the hook is best-effort and a 503 would
         # log loudly on every prompt if Bedrock is briefly slow.
-        return AigrpLookupResponse(
-            trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0
-        )
+        return AigrpLookupResponse(trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0)
     from .embed import unpack
 
     query_vec = unpack(payload[0])
@@ -442,8 +444,7 @@ class AigrpHelloRequest(BaseModel):
     endpoint_url: str = Field(default="", description="how peers should reach me; empty = stub L2 (consumer-only)")
     public_key_ed25519: str | None = Field(
         default=None,
-        description="forward-signing Ed25519 public key, unpadded base64url; "
-        "None on pre-sprint-4 peers",
+        description="forward-signing Ed25519 public key, unpadded base64url; None on pre-sprint-4 peers",
     )
 
 
@@ -569,14 +570,16 @@ async def aigrp_hello(
         try:
             import urllib.request
 
-            announce_payload = json.dumps({
-                "l2_id": body.l2_id,
-                "enterprise": body.enterprise,
-                "group": body.group,
-                "endpoint_url": body.endpoint_url,
-                "announced_by": aigrp.self_l2_id(),
-                "public_key_ed25519": body.public_key_ed25519,
-            }).encode()
+            announce_payload = json.dumps(
+                {
+                    "l2_id": body.l2_id,
+                    "enterprise": body.enterprise,
+                    "group": body.group,
+                    "endpoint_url": body.endpoint_url,
+                    "announced_by": aigrp.self_l2_id(),
+                    "public_key_ed25519": body.public_key_ed25519,
+                }
+            ).encode()
             for p in peers:
                 if p["l2_id"] == body.l2_id or p["l2_id"] == aigrp.self_l2_id():
                     continue
@@ -1153,7 +1156,7 @@ def consents_sign(
         raise HTTPException(
             status_code=422,
             detail="cross-Enterprise consents must span two distinct Enterprises; "
-                   "use the per-KU cross_group_allowed flag for intra-Enterprise scoping",
+            "use the per-KU cross_group_allowed flag for intra-Enterprise scoping",
         )
     if request.policy != "summary_only":
         raise HTTPException(

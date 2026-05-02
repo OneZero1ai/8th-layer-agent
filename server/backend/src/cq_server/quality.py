@@ -13,10 +13,11 @@ degenerate inputs that no honest agent should be sending.
 Each guard returns a `(reject, reason)` tuple. None means accept; a string
 means reject with that explanation.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from cq.models import Insight
 

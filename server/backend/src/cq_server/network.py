@@ -44,7 +44,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .auth import create_token, get_current_user
+from .auth import create_token
 from .deps import get_store
 from .embed import embed_text, unpack
 from .store import RemoteStore
@@ -120,7 +120,7 @@ TOPOLOGY_CACHE_TTL_SECONDS = 3.0
 # one live `_fan_out_all` and warms the cache for the next request.
 # ---------------------------------------------------------------------------
 
-_signature_cache: dict[str, "_L2Snapshot"] = {}
+_signature_cache: dict[str, _L2Snapshot] = {}
 _signature_cache_filled_at: float = 0.0  # monotonic; 0.0 means never
 _SIGNATURE_CACHE_LOCK: asyncio.Lock | None = None  # lazily created in async context
 
@@ -237,9 +237,7 @@ def _peer_key_for(enterprise: str) -> str:
     try:
         import boto3
 
-        ssm = boto3.client(
-            "ssm", region_name=os.environ.get("AWS_REGION", "us-east-1")
-        )
+        ssm = boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         resp = ssm.get_parameter(
             Name=f"/8l-aigrp/{enterprise}/peer-key",
             WithDecryption=True,
@@ -475,12 +473,8 @@ async def _fetch_one_l2(client: httpx.AsyncClient, l2: dict[str, str]) -> _L2Sna
     peer_key = _peer_key_for(l2["enterprise"])
     admin_jwt = _admin_service_jwt()
     base = l2["endpoint"].rstrip("/")
-    aigrp_headers = (
-        {"authorization": f"Bearer {peer_key}"} if peer_key else {}
-    )
-    admin_headers = (
-        {"authorization": f"Bearer {admin_jwt}"} if admin_jwt else {}
-    )
+    aigrp_headers = {"authorization": f"Bearer {peer_key}"} if peer_key else {}
+    admin_headers = {"authorization": f"Bearer {admin_jwt}"} if admin_jwt else {}
 
     async def _peers() -> dict[str, Any] | None:
         try:
@@ -493,9 +487,7 @@ async def _fetch_one_l2(client: httpx.AsyncClient, l2: dict[str, str]) -> _L2Sna
 
     async def _sig() -> dict[str, Any] | None:
         try:
-            r = await client.get(
-                f"{base}/api/v1/aigrp/signature", headers=aigrp_headers
-            )
+            r = await client.get(f"{base}/api/v1/aigrp/signature", headers=aigrp_headers)
             if r.status_code == 200:
                 return r.json()
         except Exception:
@@ -516,9 +508,7 @@ async def _fetch_one_l2(client: httpx.AsyncClient, l2: dict[str, str]) -> _L2Sna
             logger.warning("peers/active fetch failed slug=%s", l2["slug"])
         return None
 
-    peers_res, sig_res, active_res = await asyncio.gather(
-        _peers(), _sig(), _active(), return_exceptions=False
-    )
+    peers_res, sig_res, active_res = await asyncio.gather(_peers(), _sig(), _active(), return_exceptions=False)
     if peers_res is not None:
         snap.peers = peers_res.get("peers", [])
         snap.reachable = True
@@ -590,10 +580,7 @@ def _build_topology(snapshots: list[_L2Snapshot], consents: list[dict[str, Any]]
         )
         by_enterprise.setdefault(snap.enterprise, []).append(l2_row)
 
-    enterprises = [
-        TopologyEnterprise(enterprise=name, l2s=l2s)
-        for name, l2s in sorted(by_enterprise.items())
-    ]
+    enterprises = [TopologyEnterprise(enterprise=name, l2s=l2s) for name, l2s in sorted(by_enterprise.items())]
     consent_rows = [
         TopologyConsent(
             requester_enterprise=c["requester_enterprise"],
@@ -678,15 +665,10 @@ def _decide_dsn_policy(
         return "summary_only", "same_enterprise_xgroup_summary"
     # Cross-Enterprise — search for a matching consent.
     for c in consents:
-        if (
-            c.get("requester_enterprise") == caller_enterprise
-            and c.get("responder_enterprise") == cand_enterprise
-        ):
+        if c.get("requester_enterprise") == caller_enterprise and c.get("responder_enterprise") == cand_enterprise:
             req_g = c.get("requester_group")
             resp_g = c.get("responder_group")
-            if (req_g is None or req_g == caller_group) and (
-                resp_g is None or resp_g == cand_group
-            ):
+            if (req_g is None or req_g == caller_group) and (resp_g is None or resp_g == cand_group):
                 return c.get("policy", "summary_only"), "cross_enterprise_consent"
     if include_consented_cross_enterprise:
         return "denied", "cross_enterprise_no_consent"
@@ -723,9 +705,7 @@ async def network_topology(
         return cached  # type: ignore[no-any-return]
 
     snapshots = await _fan_out_all(FLEET_L2S)
-    consents = store.list_cross_enterprise_consents(
-        include_expired=False, now_iso=_now_iso(), limit=200
-    )
+    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
     response = _build_topology(snapshots, consents)
     _TOPOLOGY_CACHE["value"] = response
     _TOPOLOGY_CACHE["expires_at"] = now + TOPOLOGY_CACHE_TTL_SECONDS
@@ -779,15 +759,8 @@ async def network_dsn_resolve(
     t1 = time.monotonic()
     async with _signature_cache_lock():
         cached_snapshots = list(_signature_cache.values())
-        cache_age_ms = (
-            int((time.monotonic() - _signature_cache_filled_at) * 1000)
-            if _signature_cache_filled_at
-            else -1
-        )
-    cache_hit = (
-        len(cached_snapshots) > 0
-        and 0 <= cache_age_ms <= DSN_CACHE_STALE_SECS * 1000
-    )
+        cache_age_ms = int((time.monotonic() - _signature_cache_filled_at) * 1000) if _signature_cache_filled_at else -1
+    cache_hit = len(cached_snapshots) > 0 and 0 <= cache_age_ms <= DSN_CACHE_STALE_SECS * 1000
     if cache_hit:
         snapshots = cached_snapshots
     else:
@@ -818,6 +791,7 @@ async def network_dsn_resolve(
     bloom_dropped = 0
     if request.query_domains:
         from . import aigrp as _aigrp_mod
+
         kept: list[_L2Snapshot] = []
         for snap in snapshots:
             sig = snap.signature or {}
@@ -844,9 +818,7 @@ async def network_dsn_resolve(
         )
 
     t2 = time.monotonic()
-    consents = store.list_cross_enterprise_consents(
-        include_expired=False, now_iso=_now_iso(), limit=200
-    )
+    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
 
     candidates: list[DsnCandidate] = []
     for snap in snapshots:
@@ -865,9 +837,7 @@ async def network_dsn_resolve(
             continue
         l2_id = sig.get("l2_id") or f"{snap.enterprise}/{snap.group}"
         active = snap.active_personas or []
-        expert_personas = [
-            p.get("persona", "") for p in active if p.get("discoverable") is not False
-        ][:5]
+        expert_personas = [p.get("persona", "") for p in active if p.get("discoverable") is not False][:5]
         candidates.append(
             DsnCandidate(
                 l2_id=l2_id,
@@ -1030,9 +1000,7 @@ async def _resolve_dsn_internal(
         return None, [], int((time.monotonic() - t0) * 1000)
     intent_vec = unpack(payload[0])
     snapshots = await _fan_out_all(FLEET_L2S)
-    consents = store.list_cross_enterprise_consents(
-        include_expired=False, now_iso=_now_iso(), limit=200
-    )
+    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
     candidates: list[DsnCandidate] = []
     for snap in snapshots:
         sig = snap.signature or {}
@@ -1147,9 +1115,7 @@ async def network_demo(
                 l2_id=f"{requester['enterprise']}/{requester['group']}",
                 action="aigrp_lookup",
                 payload_preview=f"intent={intent!r}",
-                result_summary=(
-                    f"{local_hits} local hits; routing via DSN to find expert L2"
-                ),
+                result_summary=(f"{local_hits} local hits; routing via DSN to find expert L2"),
                 latency_ms=lookup_ms,
             )
         )
@@ -1205,9 +1171,7 @@ async def network_demo(
         target_slug = target_slug_map.get(top.l2_id)
         target = _l2_by_slug(target_slug) if target_slug else None
         if target is None:
-            raise HTTPException(
-                status_code=503, detail=f"no fleet row for l2_id={top.l2_id}"
-            )
+            raise HTTPException(status_code=503, detail=f"no fleet row for l2_id={top.l2_id}")
         fq_body, fq_ms = await _call_forward_query(
             client,
             target,
@@ -1224,12 +1188,9 @@ async def network_demo(
                 l2_id=top.l2_id,
                 action="aigrp_forward_query",
                 payload_preview=(
-                    f"requester={requester['enterprise']}/{requester['group']} "
-                    f"persona={request.requester_persona}"
+                    f"requester={requester['enterprise']}/{requester['group']} persona={request.requester_persona}"
                 ),
-                result_summary=(
-                    f"{result_count} hits returned; policy_applied={policy_applied}"
-                ),
+                result_summary=(f"{result_count} hits returned; policy_applied={policy_applied}"),
                 latency_ms=fq_ms,
             )
         )

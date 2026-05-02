@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .api_keys import encode_token, generate_secret, hash_secret, secret_prefix
 from .deps import get_api_key_pepper, get_store
-from .store import RemoteStore, Store
+from .store import RemoteStore
 from .ttl import parse_ttl
 
 MAX_ACTIVE_API_KEYS_PER_USER = 20
@@ -206,7 +206,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-async def login(request: LoginRequest, store: Store = Depends(get_store)) -> LoginResponse:
+async def login(request: LoginRequest, store: RemoteStore = Depends(get_store)) -> LoginResponse:
     """Authenticate a user and return a JWT token.
 
     Args:
@@ -227,7 +227,7 @@ async def login(request: LoginRequest, store: Store = Depends(get_store)) -> Log
 
 
 @router.get("/me")
-async def me(username: str = Depends(get_current_user), store: Store = Depends(get_store)) -> MeResponse:
+async def me(username: str = Depends(get_current_user), store: RemoteStore = Depends(get_store)) -> MeResponse:
     """Return the current user's info.
 
     Args:
@@ -246,7 +246,7 @@ async def me(username: str = Depends(get_current_user), store: Store = Depends(g
     return MeResponse(username=user["username"], created_at=user["created_at"])
 
 
-async def _require_user_id(store: Store, username: str) -> int:
+async def _require_user_id(store: RemoteStore, username: str) -> int:
     """Return the integer user id for the authenticated caller.
 
     Raises:
@@ -262,7 +262,7 @@ async def _require_user_id(store: Store, username: str) -> int:
 async def create_api_key_route(
     request: CreateApiKeyRequest,
     username: str = Depends(get_current_user),
-    store: Store = Depends(get_store),
+    store: RemoteStore = Depends(get_store),
     pepper: str = Depends(get_api_key_pepper),
 ) -> CreateApiKeyResponse:
     """Create a new API key owned by the authenticated user.
@@ -306,7 +306,7 @@ async def create_api_key_route(
 @router.get("/api-keys")
 async def list_api_keys_route(
     username: str = Depends(get_current_user),
-    store: Store = Depends(get_store),
+    store: RemoteStore = Depends(get_store),
 ) -> ApiKeysPublic:
     """Return the authenticated user's API keys. Never returns plaintext.
 
@@ -322,7 +322,7 @@ async def list_api_keys_route(
 async def revoke_api_key_route(
     key_id: str,
     username: str = Depends(get_current_user),
-    store: Store = Depends(get_store),
+    store: RemoteStore = Depends(get_store),
 ) -> Message:
     """Revoke the given API key if it belongs to the caller.
 
