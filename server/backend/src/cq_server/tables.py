@@ -97,9 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_aigrp_peers_enterprise ON aigrp_peers(enterprise)
 # Sprint 4 — peers gain ``public_key_ed25519`` for cryptographic forward-id
 # binding (issue #44). Idempotent ALTER TABLE is run alongside CREATE so
 # pre-sprint-4 deployments pick up the column on first restart.
-_AIGRP_PEERS_COLUMN_STATEMENTS = (
-    "ALTER TABLE aigrp_peers ADD COLUMN public_key_ed25519 TEXT",
-)
+_AIGRP_PEERS_COLUMN_STATEMENTS = ("ALTER TABLE aigrp_peers ADD COLUMN public_key_ed25519 TEXT",)
 
 CONSULTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS consults (

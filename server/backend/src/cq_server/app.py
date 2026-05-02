@@ -3,7 +3,7 @@
 import json
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated
 
@@ -24,11 +24,13 @@ from starlette.responses import FileResponse
 from . import aigrp
 from .auth import require_admin
 from .auth import router as auth_router
+from .consults import router as consults_router
+from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
+from .migrations import run_migrations
 from .network import router as network_router
-from .consults import router as consults_router
 from .quality import check_propose_quality
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
@@ -100,13 +102,15 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
         from . import forward_sign
 
         try:
-            hello_payload = json.dumps({
-                "l2_id": aigrp.self_l2_id(),
-                "enterprise": aigrp.enterprise(),
-                "group": aigrp.group(),
-                "endpoint_url": aigrp.self_url(),
-                "public_key_ed25519": forward_sign.self_public_key_b64u(),
-            }).encode()
+            hello_payload = json.dumps(
+                {
+                    "l2_id": aigrp.self_l2_id(),
+                    "enterprise": aigrp.enterprise(),
+                    "group": aigrp.group(),
+                    "endpoint_url": aigrp.self_url(),
+                    "public_key_ed25519": forward_sign.self_public_key_b64u(),
+                }
+            ).encode()
             req = urllib.request.Request(
                 f"{aigrp.seed_peer_url()}/api/v1/aigrp/hello",
                 method="POST",
@@ -158,13 +162,15 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
         """
         from . import forward_sign
 
-        payload = json.dumps({
-            "l2_id": aigrp.self_l2_id(),
-            "enterprise": aigrp.enterprise(),
-            "group": aigrp.group(),
-            "endpoint_url": aigrp.self_url(),
-            "public_key_ed25519": forward_sign.self_public_key_b64u(),
-        }).encode()
+        payload = json.dumps(
+            {
+                "l2_id": aigrp.self_l2_id(),
+                "enterprise": aigrp.enterprise(),
+                "group": aigrp.group(),
+                "endpoint_url": aigrp.self_url(),
+                "public_key_ed25519": forward_sign.self_public_key_b64u(),
+            }
+        ).encode()
         try:
             req = urllib.request.Request(
                 f"{peer_endpoint.rstrip('/')}/api/v1/aigrp/hello",
@@ -201,7 +207,9 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     )
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         sig = json.loads(resp.read())
-                    centroid = base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
+                    centroid = (
+                        base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
+                    )
                     bloom = base64.b64decode(sig["domain_bloom_b64"]) if sig.get("domain_bloom_b64") else None
                     store.upsert_aigrp_peer(
                         l2_id=sig["l2_id"],
@@ -235,7 +243,22 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     pepper = os.environ.get(API_KEY_PEPPER_ENV, "")
     if not pepper:
         raise RuntimeError(f"{API_KEY_PEPPER_ENV} environment variable is required")
-    db_path = Path(os.environ.get("CQ_DB_PATH", "/data/cq.db"))
+    # Resolve URL and filesystem path together so the migration runner
+    # and the runtime store cannot diverge on which database they're
+    # using — see ``resolve_sqlite_db_path``. This drops once #309
+    # wires ``SqliteStore`` to ``CQ_DATABASE_URL`` directly.
+    database_url, db_path = resolve_sqlite_db_path()
+    # Bring the database under Alembic management before opening the
+    # store. Three cases handled: fresh DB → upgrade head; pre-Alembic
+    # DB → stamp baseline + upgrade head; already-stamped DB → upgrade
+    # head (no-op when no pending revisions). The legacy
+    # ``_ensure_schema()`` inside SqliteStore still runs after this;
+    # both paths are idempotent and the legacy one will be removed in
+    # #310 once this PR has rolled out everywhere.
+    run_migrations(database_url)
+    # Phase 1 of upstream merge — keep our sync RemoteStore as the
+    # primary store (carries all fork-delta methods: AIGRP, consults,
+    # directory, multi-tenant scope). Phase 2 ports to async SqliteStore.
     _store = RemoteStore(db_path=db_path)
     app_instance.state.store = _store
     app_instance.state.api_key_pepper = pepper
@@ -262,16 +285,15 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     directory_task = asyncio.create_task(directory_bootstrap_and_loop(_store))
 
-    yield
-
-    for task in (aigrp_task, dsn_cache_task, directory_task):
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-    _store.close()
+    try:
+        yield
+    finally:
+        for task in (aigrp_task, dsn_cache_task, directory_task):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+        _store.close()
 
 
 # --- API routes on a shared router so they can be mounted at both / and /api. ---
@@ -357,9 +379,7 @@ def aigrp_lookup(
     if payload is None:
         # Don't 503 here — the hook is best-effort and a 503 would
         # log loudly on every prompt if Bedrock is briefly slow.
-        return AigrpLookupResponse(
-            trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0
-        )
+        return AigrpLookupResponse(trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0)
     from .embed import unpack
 
     query_vec = unpack(payload[0])
@@ -424,8 +444,7 @@ class AigrpHelloRequest(BaseModel):
     endpoint_url: str = Field(default="", description="how peers should reach me; empty = stub L2 (consumer-only)")
     public_key_ed25519: str | None = Field(
         default=None,
-        description="forward-signing Ed25519 public key, unpadded base64url; "
-        "None on pre-sprint-4 peers",
+        description="forward-signing Ed25519 public key, unpadded base64url; None on pre-sprint-4 peers",
     )
 
 
@@ -551,14 +570,16 @@ async def aigrp_hello(
         try:
             import urllib.request
 
-            announce_payload = json.dumps({
-                "l2_id": body.l2_id,
-                "enterprise": body.enterprise,
-                "group": body.group,
-                "endpoint_url": body.endpoint_url,
-                "announced_by": aigrp.self_l2_id(),
-                "public_key_ed25519": body.public_key_ed25519,
-            }).encode()
+            announce_payload = json.dumps(
+                {
+                    "l2_id": body.l2_id,
+                    "enterprise": body.enterprise,
+                    "group": body.group,
+                    "endpoint_url": body.endpoint_url,
+                    "announced_by": aigrp.self_l2_id(),
+                    "public_key_ed25519": body.public_key_ed25519,
+                }
+            ).encode()
             for p in peers:
                 if p["l2_id"] == body.l2_id or p["l2_id"] == aigrp.self_l2_id():
                     continue
@@ -1135,7 +1156,7 @@ def consents_sign(
         raise HTTPException(
             status_code=422,
             detail="cross-Enterprise consents must span two distinct Enterprises; "
-                   "use the per-KU cross_group_allowed flag for intra-Enterprise scoping",
+            "use the per-KU cross_group_allowed flag for intra-Enterprise scoping",
         )
     if request.policy != "summary_only":
         raise HTTPException(
@@ -1280,7 +1301,7 @@ def query_semantic(
 
 
 @api_router.get("/query")
-def query_units(
+async def query_units(
     domains: Annotated[list[str], Query()],
     languages: Annotated[list[str] | None, Query()] = None,
     frameworks: Annotated[list[str] | None, Query()] = None,
@@ -1312,7 +1333,7 @@ def query_units(
 
 
 @api_router.post("/propose", status_code=201)
-def propose_unit(
+async def propose_unit(
     request: ProposeRequest,
     username: str = Depends(require_api_key),
 ) -> KnowledgeUnit:
@@ -1351,7 +1372,7 @@ def propose_unit(
 
 
 @api_router.post("/confirm/{unit_id}")
-def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
+async def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
     """Confirm a knowledge unit, boosting its confidence."""
     store = _get_store()
     unit = store.get(unit_id)
@@ -1363,7 +1384,7 @@ def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) -> Kno
 
 
 @api_router.post("/flag/{unit_id}")
-def flag_unit(unit_id: str, request: FlagRequest, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
+async def flag_unit(unit_id: str, request: FlagRequest, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
     """Flag a knowledge unit, reducing its confidence."""
     store = _get_store()
     unit = store.get(unit_id)

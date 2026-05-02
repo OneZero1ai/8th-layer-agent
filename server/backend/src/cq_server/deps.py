@@ -17,7 +17,7 @@ def get_store(request: Request) -> RemoteStore:
         request: The incoming FastAPI request.
 
     Returns:
-        The RemoteStore instance attached to the application state.
+        The Store instance attached to the application state.
     """
     return request.app.state.store
 
@@ -34,7 +34,7 @@ def get_api_key_pepper(request: Request) -> str:
     return pepper
 
 
-def require_api_key(
+async def require_api_key(
     request: Request,
     background_tasks: BackgroundTasks,
     store: RemoteStore = Depends(get_store),
@@ -50,7 +50,7 @@ def require_api_key(
     Args:
         request: The incoming FastAPI request.
         background_tasks: FastAPI background tasks used to record usage.
-        store: The remote store.
+        store: The store dependency.
 
     Returns:
         The username of the authenticated caller.

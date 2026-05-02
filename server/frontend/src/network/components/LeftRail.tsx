@@ -1,23 +1,23 @@
-import { Cpu, Layers, GitBranch } from "lucide-react";
+import { Cpu, GitBranch, Layers } from "lucide-react"
 
-export type LayerKey = "L1" | "L2" | "L3";
+export type LayerKey = "L1" | "L2" | "L3"
 
 interface Props {
-  active: LayerKey;
-  onChange: (k: LayerKey) => void;
+  active: LayerKey
+  onChange: (k: LayerKey) => void
 }
 
 const ITEMS: Array<{
-  key: LayerKey;
-  label: string;
-  sub: string;
-  Icon: typeof Cpu;
-  enabled: boolean;
+  key: LayerKey
+  label: string
+  sub: string
+  Icon: typeof Cpu
+  enabled: boolean
 }> = [
   { key: "L1", label: "L1", sub: "agents", Icon: Cpu, enabled: true },
   { key: "L2", label: "L2", sub: "commons", Icon: Layers, enabled: true },
   { key: "L3", label: "L3", sub: "broker", Icon: GitBranch, enabled: false },
-];
+]
 
 export function LeftRail({ active, onChange }: Props) {
   return (
@@ -33,7 +33,7 @@ export function LeftRail({ active, onChange }: Props) {
       </div>
       <div className="flex flex-col gap-2 px-2">
         {ITEMS.map((it) => {
-          const isActive = active === it.key;
+          const isActive = active === it.key
           return (
             <button
               key={it.key}
@@ -67,7 +67,9 @@ export function LeftRail({ active, onChange }: Props) {
               </span>
               <span
                 className="text-[8px] uppercase tracking-[0.22em] text-white/40"
-                style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
+                style={{
+                  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                }}
               >
                 {it.sub}
               </span>
@@ -77,7 +79,7 @@ export function LeftRail({ active, onChange }: Props) {
                 </span>
               )}
             </button>
-          );
+          )
         })}
       </div>
 
@@ -109,5 +111,5 @@ export function LeftRail({ active, onChange }: Props) {
         </div>
       </div>
     </div>
-  );
+  )
 }

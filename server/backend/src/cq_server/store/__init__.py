@@ -1,4 +1,17 @@
-"""SQLite-backed remote knowledge store.
+"""Store package: protocol + concrete backends.
+
+Fork-delta layout (sprint 4 Track B upstream merge):
+
+* Upstream's async ``SqliteStore`` and ``Store`` protocol are re-exported
+  from the dedicated ``_sqlite``/``_protocol`` modules — that's the surface
+  cq#337 ships and our new code (and tests) speaks.
+* Our fork-delta ``RemoteStore`` (sync, multi-tenant scope, AIGRP/consults/
+  directory methods) is preserved verbatim below as the carrier for
+  fork-delta capability — phase 2 ports its tables to Alembic and its
+  methods either to ``SqliteStore`` or to a thin async extension class.
+* Both stores hit the same SQLite file. ``RemoteStore`` uses its own
+  sync ``sqlite3`` connection; ``SqliteStore`` uses SQLAlchemy. They
+  coexist for the duration of phase 1.
 
 Stores knowledge units in a SQLite database for remote sharing.
 Auto-creates the database directory and schema on first use.
@@ -21,9 +34,9 @@ from ..tables import (
     DEFAULT_ENTERPRISE_ID,
     DEFAULT_GROUP_ID,
     ensure_aigrp_peers_table,
-    ensure_directory_peerings_schema,
     ensure_api_keys_table,
     ensure_consults_schema,
+    ensure_directory_peerings_schema,
     ensure_embedding_columns,
     ensure_peers_schema,
     ensure_review_columns,
@@ -32,13 +45,19 @@ from ..tables import (
     ensure_users_table,
     ensure_xgroup_consent_schema,
 )
+from ._normalize import normalize_domains
 from ._protocol import Store
+from ._sqlite import DEFAULT_DB_PATH, SqliteStore
 
-__all__ = ["DEFAULT_DB_PATH", "RemoteStore", "Store", "normalize_domains"]
+__all__ = [
+    "DEFAULT_DB_PATH",
+    "RemoteStore",
+    "SqliteStore",
+    "Store",
+    "normalize_domains",
+]
 
 _logger = logging.getLogger(__name__)
-
-DEFAULT_DB_PATH = Path("/data/cq.db")
 
 _SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS knowledge_units (
@@ -58,11 +77,6 @@ CREATE TABLE IF NOT EXISTS knowledge_unit_domains (
 CREATE INDEX IF NOT EXISTS idx_domains_domain
     ON knowledge_unit_domains(domain);
 """
-
-
-def normalize_domains(domains: list[str]) -> list[str]:
-    """Lowercase, strip whitespace, drop empties, and deduplicate domain tags."""
-    return list(dict.fromkeys(d.strip().lower() for d in domains if d.strip()))
 
 
 class RemoteStore:

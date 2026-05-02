@@ -439,9 +439,7 @@ def request_consult(
                 )
         else:
             # Cross-Enterprise — must have an active directory peering.
-            x_enterprise = _resolve_x_enterprise_target(
-                store, body.to_l2_id, self_enterprise
-            )
+            x_enterprise = _resolve_x_enterprise_target(store, body.to_l2_id, self_enterprise)
             if x_enterprise is None:
                 raise HTTPException(
                     status_code=403,
@@ -558,23 +556,26 @@ def post_consult_message(
     )
 
     if target_peer is not None:
-        _forward_message(target_peer, {
-            "thread_id": thread_id,
-            "message_id": msg_id,
-            "from_l2_id": self_l2_id,
-            "from_persona": self_persona,
-            # Hand the thread shape back so the peer can lazily mirror
-            # the thread row if it's somehow missing (defensive — should
-            # always exist from the original /consults/forward-request).
-            "thread_subject": thread.get("subject"),
-            "thread_to_l2_id": thread["to_l2_id"],
-            "thread_to_persona": thread["to_persona"],
-            "thread_from_l2_id": thread["from_l2_id"],
-            "thread_from_persona": thread["from_persona"],
-            "thread_created_at": thread["created_at"],
-            "content": body.content,
-            "created_at": now,
-        })
+        _forward_message(
+            target_peer,
+            {
+                "thread_id": thread_id,
+                "message_id": msg_id,
+                "from_l2_id": self_l2_id,
+                "from_persona": self_persona,
+                # Hand the thread shape back so the peer can lazily mirror
+                # the thread row if it's somehow missing (defensive — should
+                # always exist from the original /consults/forward-request).
+                "thread_subject": thread.get("subject"),
+                "thread_to_l2_id": thread["to_l2_id"],
+                "thread_to_persona": thread["to_persona"],
+                "thread_from_l2_id": thread["from_l2_id"],
+                "thread_from_persona": thread["from_persona"],
+                "thread_created_at": thread["created_at"],
+                "content": body.content,
+                "created_at": now,
+            },
+        )
         # Kept side-note: cross-L2 unused var lint guard
         del other_persona
 
@@ -844,17 +845,11 @@ def _require_x_enterprise_auth(
     if body.from_l2_id != forwarder_l2_id:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"forwarder identity mismatch: header={forwarder_l2_id!r} "
-                f"body.from_l2_id={body.from_l2_id!r}"
-            ),
+            detail=(f"forwarder identity mismatch: header={forwarder_l2_id!r} body.from_l2_id={body.from_l2_id!r}"),
         )
 
     # Peering lookup — by offer_id directly.
-    peerings = [
-        p for p in store.list_directory_peerings(status="active")
-        if p["offer_id"] == offer_id
-    ]
+    peerings = [p for p in store.list_directory_peerings(status="active") if p["offer_id"] == offer_id]
     if not peerings:
         raise HTTPException(
             status_code=403,
@@ -872,9 +867,7 @@ def _require_x_enterprise_auth(
     forwarder_enterprise, _, _ = forwarder_l2_id.partition("/")
     self_enterprise = aigrp_mod.enterprise()
     other_enterprise = (
-        peering["from_enterprise"]
-        if peering["to_enterprise"] == self_enterprise
-        else peering["to_enterprise"]
+        peering["from_enterprise"] if peering["to_enterprise"] == self_enterprise else peering["to_enterprise"]
     )
     if forwarder_enterprise != other_enterprise:
         raise HTTPException(

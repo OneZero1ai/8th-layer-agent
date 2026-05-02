@@ -1,5 +1,6 @@
 """Tests for authentication module."""
 
+import asyncio
 import time
 from collections.abc import Iterator
 from pathlib import Path

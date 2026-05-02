@@ -3,11 +3,11 @@
 // components only).
 
 export interface TourStep {
-  title: string;
-  body: string;
-  highlightNodes?: string[];
-  highlightEdges?: string[];
-  zoomTo?: { cx: number; cy: number; scale: number } | null;
+  title: string
+  body: string
+  highlightNodes?: string[]
+  highlightEdges?: string[]
+  zoomTo?: { cx: number; cy: number; scale: number } | null
 }
 
 export const TOUR_STEPS: TourStep[] = [
@@ -56,4 +56,4 @@ export const TOUR_STEPS: TourStep[] = [
     highlightNodes: [],
     zoomTo: null,
   },
-];
+]

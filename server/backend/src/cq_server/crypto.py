@@ -31,7 +31,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-
 # ---------------------------------------------------------------------------
 # base64url helpers (no padding) — directory + forward-sign both use this
 # ---------------------------------------------------------------------------

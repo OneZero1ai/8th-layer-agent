@@ -35,10 +35,14 @@ import hashlib
 import logging
 import os
 import struct
+from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Iterable
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request
+
+if TYPE_CHECKING:
+    from .store import RemoteStore
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +64,21 @@ def seed_peer_url() -> str:
 
 
 def self_url() -> str:
-    """Externally reachable URL of *this* L2 — included in /aigrp/hello so
-    the seed can call us back / record us in its peer table."""
+    """Externally reachable URL of *this* L2.
+
+    Included in /aigrp/hello so the seed can call us back / record us in
+    its peer table.
+    """
     return os.environ.get("CQ_AIGRP_SELF_URL", "").rstrip("/")
 
 
 def enterprise() -> str:
+    """This L2's enterprise id (CQ_ENTERPRISE env)."""
     return os.environ.get("CQ_ENTERPRISE", "default-enterprise")
 
 
 def group() -> str:
+    """This L2's group id within its enterprise (CQ_GROUP env)."""
     return os.environ.get("CQ_GROUP", "default")
 
 
@@ -83,7 +92,8 @@ def aigrp_enabled() -> bool:
 
     Lets the cq Remote run in legacy single-L2 mode (e.g., the existing
     `mvp` stack with no AIGRP wiring) without crashing or hammering /aigrp
-    against itself."""
+    against itself.
+    """
     return bool(os.environ.get("CQ_AIGRP_PEER_KEY"))
 
 
@@ -134,7 +144,7 @@ def require_forwarder_identity(
     *,
     same_enterprise_only: bool = True,
     body_for_sig: dict | None = None,
-    store: object | None = None,
+    store: RemoteStore | None = None,
 ) -> str:
     """Validate the forwarder's declared identity on a /forward-* endpoint.
 
@@ -224,9 +234,7 @@ def require_forwarder_identity(
                     status_code=403,
                     detail=f"missing {forward_sign.SIGNATURE_HEADER} header from signed peer {declared!r}",
                 )
-            if not forward_sign.verify_forward_signature(
-                peer_pubkey, body_for_sig, declared, sig_header
-            ):
+            if not forward_sign.verify_forward_signature(peer_pubkey, body_for_sig, declared, sig_header):
                 raise HTTPException(
                     status_code=403,
                     detail=f"forward signature verification failed for peer={declared!r}",
@@ -302,18 +310,15 @@ def bloom_contains(bloom: bytes, domain: str) -> bool:
 
 def bloom_matches_any(bloom: bytes, domains: Iterable[str]) -> bool:
     """True iff at least one of ``domains`` is plausibly in the Bloom."""
-    for d in domains:
-        if bloom_contains(bloom, d):
-            return True
-    return False
+    return any(bloom_contains(bloom, d) for d in domains)
 
 
 def compute_centroid(embeddings_iter: Iterable[bytes]) -> bytes | None:
-    """Compute the L2-normalized centroid of an iterable of packed-float32 LE
-    embedding blobs. Returns packed-float32 LE bytes, or None if no embeddings.
+    """Compute the L2-normalized centroid of packed-float32 LE embeddings.
 
-    Centroid is the average direction of the corpus — semantic match against
-    a query gives a coarse "does this L2 know about this topic?" signal.
+    Returns packed-float32 LE bytes, or None if no embeddings. Centroid is
+    the average direction of the corpus — semantic match against a query
+    gives a coarse "does this L2 know about this topic?" signal.
     """
     import numpy as np
 
@@ -344,4 +349,5 @@ def compute_centroid(embeddings_iter: Iterable[bytes]) -> bytes | None:
 
 
 def now_iso() -> str:
+    """UTC now as an ISO-8601 string (used in AIGRP signature timestamps)."""
     return datetime.now(UTC).isoformat()
