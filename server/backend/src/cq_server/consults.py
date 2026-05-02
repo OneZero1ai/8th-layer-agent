@@ -19,6 +19,7 @@ service token; out of scope here.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import aigrp as aigrp_mod
+from . import forward_sign
 from .auth import get_current_user
 from .deps import get_store
 from .store import RemoteStore
@@ -240,6 +242,127 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
         ) from e
 
 
+def _resolve_x_enterprise_target(
+    store: RemoteStore, to_l2_id: str, self_enterprise: str
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Resolve a cross-Enterprise consult target via the directory peering mirror.
+
+    Returns ``(peering_row, target_endpoint_row)`` when an active peering
+    exists between this enterprise and the target's enterprise, AND the
+    target l2_id appears in the peering's ``to_l2_endpoints_json`` roster
+    (the directory's snapshot of the other side's L2s at peering time).
+    Returns None when no peering exists or the target L2 isn't in the
+    peering's roster.
+
+    The bearer + per-L2 sig auth on the wire is derived from the
+    returned peering record (caller composes via ``forward_sign``).
+    """
+    try:
+        target_enterprise, _ = to_l2_id.split("/", 1)
+    except ValueError:
+        return None
+    if target_enterprise == self_enterprise:
+        # Caller should have routed this as same-Enterprise — defensive guard.
+        return None
+    peering = store.find_active_directory_peering(
+        from_enterprise=self_enterprise,
+        to_enterprise=target_enterprise,
+    )
+    if peering is None:
+        return None
+    try:
+        endpoints = json.loads(peering.get("to_l2_endpoints_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        endpoints = []
+    for ep in endpoints:
+        if isinstance(ep, dict) and ep.get("l2_id") == to_l2_id:
+            return peering, ep
+    return None
+
+
+X_ENTERPRISE_FORWARD_PATH = "/api/v1/consults/x-enterprise-forward-request"
+
+
+def _x_enterprise_forward_request(
+    peering: dict[str, Any],
+    target_endpoint: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """POST a cross-Enterprise consult forward to the peer L2.
+
+    Auth on the wire is **two-layer**:
+
+    1. ``Authorization: Bearer <peering-bearer>`` — derived locally
+       from the peering's offer + accept signatures (HKDF-SHA256). The
+       receiver, also a party to this peering, derives the same bearer
+       and matches. This proves "the sender knows about an active
+       peering between us and them."
+
+    2. ``X-8L-Forwarder-Sig`` (when this L2 has an Ed25519 keypair on
+       disk per sprint-4 PR #53) — Ed25519 signature over the canonical
+       request body + forwarder l2_id. The receiver looks up the
+       forwarder's pubkey from its peering record's roster and verifies.
+       This proves "this specific L2 within the sender's enterprise
+       sent this forward."
+
+    Plus the ``X-8L-Forwarder-L2-Id`` and ``X-8L-Peering-Offer-Id``
+    headers so the receiver can look up the relevant peering + pubkey
+    deterministically.
+
+    Best-effort like the same-Enterprise forward path. Failure does NOT
+    roll back the local mirror write.
+    """
+    base = target_endpoint["endpoint_url"].rstrip("/")
+    bearer = forward_sign.derive_peering_bearer(
+        peering["offer_signature_b64u"],
+        peering["accept_signature_b64u"],
+    )
+    forwarder_id = _self_l2_id()
+    headers: dict[str, str] = {
+        "authorization": f"Bearer {bearer}",
+        aigrp_mod.FORWARDER_HEADER: forwarder_id,
+        "x-8l-peering-offer-id": peering["offer_id"],
+    }
+    sig = forward_sign.sign_forward_request(payload, forwarder_id)
+    if sig:
+        headers[forward_sign.SIGNATURE_HEADER] = sig
+    try:
+        with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
+            r = client.post(
+                f"{base}{X_ENTERPRISE_FORWARD_PATH}",
+                headers=headers,
+                json=payload,
+            )
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"peer {target_endpoint['l2_id']} returned {r.status_code} "
+                    f"on x-enterprise-forward-request: {r.text[:200]}"
+                ),
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"peer {target_endpoint['l2_id']} unreachable: {e}",
+        ) from e
+
+
+def _redact_for_policy(content: str, policy: str) -> str:
+    """Apply ``consult_logging_policy`` to a message body for local storage.
+
+    Per directory-v1 spec + decisions/10:
+    - mutual_log_required → store full content
+    - summary_only_log    → redact body, keep thread metadata only
+    - no_log_consults     → caller skips the message-row write entirely;
+                            this helper still returns a redacted string
+                            for any path that does insist on writing.
+    """
+    if policy == "mutual_log_required":
+        return content
+    return f"<redacted: {policy}>"
+
+
 def _to_thread_out(row: dict[str, Any]) -> ConsultThreadOut:
     return ConsultThreadOut(
         thread_id=row["thread_id"],
@@ -275,42 +398,68 @@ def request_consult(
     a single round-trip is sufficient for the asker.
     """
     self_l2_id, self_persona = _self_identity(store, username)
+    self_enterprise = aigrp_mod.enterprise()
 
     thread_id = f"th_{uuid4().hex[:16]}"
     msg_id = f"msg_{uuid4().hex[:16]}"
     now = _now_iso()
 
-    # Resolve cross-L2 target if the recipient lives on a different L2.
-    is_same_l2 = body.to_l2_id == self_l2_id
+    # Three routing modes:
+    #   1. same-L2 (this process)               — no forward
+    #   2. cross-L2 same-Enterprise              — forward via AIGRP peer table + EnterprisePeerKey
+    #   3. cross-Enterprise                      — forward via directory peering mirror + per-pair bearer
     target_peer: dict[str, Any] | None = None
+    x_enterprise: tuple[dict[str, Any], dict[str, Any]] | None = None
+    target_logging_policy = "mutual_log_required"  # default for same-L2 / same-Enterprise
+
+    is_same_l2 = body.to_l2_id == self_l2_id
 
     if not is_same_l2:
-        target_peer = _resolve_peer(store, body.to_l2_id)
-        if target_peer is None:
+        # Distinguish same-Enterprise (uses AIGRP peer table) from
+        # cross-Enterprise (uses directory peering mirror).
+        try:
+            target_enterprise, _ = body.to_l2_id.split("/", 1)
+        except ValueError:
             raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"target L2 {body.to_l2_id!r} is not in this L2's AIGRP peer "
-                    "table — either it's not in the same Enterprise or AIGRP "
-                    "hasn't converged yet. Cross-Enterprise consults will use "
-                    "AI-BGP (issue #19), not yet shipped."
-                ),
+                status_code=400,
+                detail=f"to_l2_id {body.to_l2_id!r} must be enterprise/group form",
+            ) from None
+
+        if target_enterprise == self_enterprise:
+            # Same-Enterprise — must be in AIGRP peer table.
+            target_peer = _resolve_peer(store, body.to_l2_id)
+            if target_peer is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"target L2 {body.to_l2_id!r} is not in this L2's AIGRP "
+                        "peer table — AIGRP hasn't converged yet or the L2 is "
+                        "not part of this Enterprise."
+                    ),
+                )
+        else:
+            # Cross-Enterprise — must have an active directory peering.
+            x_enterprise = _resolve_x_enterprise_target(
+                store, body.to_l2_id, self_enterprise
             )
-        # Cross-Enterprise reach is gated on AI-BGP. Today it's just a
-        # peer-table lookup — same-Enterprise only by virtue of how the
-        # peer table is populated. Belt-and-braces guard:
-        if target_peer["enterprise"] != aigrp_mod.enterprise():
-            raise HTTPException(
-                status_code=501,
-                detail=(
-                    "cross-Enterprise consult routing is on the roadmap "
-                    "(issue #19 AI-BGP); same-Enterprise cross-Group works today."
-                ),
-            )
+            if x_enterprise is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"no active peering covers {body.to_l2_id!r}. Either "
+                        "no peering exists with enterprise "
+                        f"{target_enterprise!r}, or the target L2 is not in the "
+                        "peering's roster."
+                    ),
+                )
+            peering_row, _ep = x_enterprise
+            target_logging_policy = peering_row["consult_logging_policy"]
 
     # Mirror-write the thread + opening message LOCALLY first. This is
     # the asker's audit point: even if the forward fails, the asker's
     # L2 has a durable record of "I tried to consult X on Y at T".
+    # Logging-policy applies to the asker side too — for symmetry — so
+    # both ends honor the same policy on what gets persisted.
     store.create_consult(
         thread_id=thread_id,
         from_l2_id=self_l2_id,
@@ -320,29 +469,36 @@ def request_consult(
         subject=body.subject,
         created_at=now,
     )
-    store.append_consult_message(
-        message_id=msg_id,
-        thread_id=thread_id,
-        from_l2_id=self_l2_id,
-        from_persona=self_persona,
-        content=body.content,
-        created_at=now,
-    )
+    if target_logging_policy != "no_log_consults":
+        store.append_consult_message(
+            message_id=msg_id,
+            thread_id=thread_id,
+            from_l2_id=self_l2_id,
+            from_persona=self_persona,
+            content=_redact_for_policy(body.content, target_logging_policy),
+            created_at=now,
+        )
 
-    # Forward to the recipient L2 if cross-L2. Both sides log = the
-    # routing-through-L2 corporate-IP audit point per decisions/10.
+    forward_payload = {
+        "thread_id": thread_id,
+        "message_id": msg_id,
+        "from_l2_id": self_l2_id,
+        "from_persona": self_persona,
+        "to_l2_id": body.to_l2_id,
+        "to_persona": body.to_persona,
+        "subject": body.subject,
+        "content": body.content,
+        "created_at": now,
+    }
+
+    # Forward via the appropriate path. Both sides log per the
+    # logging policy = the routing-through-L2 corporate-IP audit point
+    # per decisions/10.
     if target_peer is not None:
-        _forward_request(target_peer, {
-            "thread_id": thread_id,
-            "message_id": msg_id,
-            "from_l2_id": self_l2_id,
-            "from_persona": self_persona,
-            "to_l2_id": body.to_l2_id,
-            "to_persona": body.to_persona,
-            "subject": body.subject,
-            "content": body.content,
-            "created_at": now,
-        })
+        _forward_request(target_peer, forward_payload)
+    elif x_enterprise is not None:
+        peering_row, target_endpoint = x_enterprise
+        _x_enterprise_forward_request(peering_row, target_endpoint, forward_payload)
 
     row = store.get_consult(thread_id)
     assert row is not None  # just inserted

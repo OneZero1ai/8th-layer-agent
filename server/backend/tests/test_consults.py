@@ -249,12 +249,14 @@ def test_closed_thread_excluded_from_inbox_by_default(client: TestClient) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_cross_l2_target_unknown_peer_returns_404(client: TestClient) -> None:
-    """Cross-L2 to a peer not in this L2's AIGRP table returns 404.
+def test_cross_l2_unreachable_target_is_rejected(client: TestClient) -> None:
+    """Cross-L2 to an unreachable peer is rejected with 403 or 404.
 
-    Same-Enterprise different-Group works once AIGRP has converged
-    (covered separately in test_cross_l2_routing.py with a stubbed
-    peer table). Cross-Enterprise still 501 — gated on AI-BGP (#19).
+    The test fixture's enterprise is the default — so ``acme/solutions``
+    is a cross-Enterprise target with no active directory peering →
+    403 'no active peering'. (Pre-sprint-4: was 501 'AI-BGP roadmap'.
+    Pre-Track-A: was 404 'AIGRP peer table'.) Both flavours of
+    'unreachable' are rejected before any side effects.
     """
     r = client.post(
         "/api/v1/consults/request",
@@ -265,11 +267,8 @@ def test_cross_l2_target_unknown_peer_returns_404(client: TestClient) -> None:
             "content": "hi from engineering",
         },
     )
-    # No peer in the AIGRP table for this test fixture's enterprise,
-    # so we get 404 not 201. The forward path itself is exercised in
-    # test_cross_l2_routing.py.
-    assert r.status_code == 404, r.text
-    assert "AIGRP peer table" in r.json()["detail"]
+    assert r.status_code == 403, r.text
+    assert "no active peering" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

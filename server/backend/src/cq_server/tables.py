@@ -254,7 +254,8 @@ CREATE TABLE IF NOT EXISTS aigrp_directory_peerings (
     accept_payload_canonical  TEXT NOT NULL,
     accept_signature_b64u     TEXT NOT NULL,
     accept_signing_key_id     TEXT NOT NULL,
-    last_synced_at            TEXT NOT NULL
+    last_synced_at            TEXT NOT NULL,
+    to_l2_endpoints_json      TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_directory_peerings_from
     ON aigrp_directory_peerings(from_enterprise, status);
@@ -262,15 +263,36 @@ CREATE INDEX IF NOT EXISTS idx_directory_peerings_to
     ON aigrp_directory_peerings(to_enterprise, status);
 """
 
+# Sprint-4 additive — Track A phase 1. The directory's GET /peerings
+# response carries `to_l2_endpoints` (a roster snapshot of the OTHER
+# enterprise's L2s at peering time). The L2 directory client now
+# persists that JSON so cross-Enterprise consult forwards can resolve
+# the target L2 endpoint without a directory round-trip per request.
+_DIRECTORY_PEERINGS_NEW_COLUMNS = [
+    "ALTER TABLE aigrp_directory_peerings ADD COLUMN to_l2_endpoints_json TEXT NOT NULL DEFAULT '[]'",
+]
+
 
 def ensure_directory_peerings_schema(conn: sqlite3.Connection) -> None:
     """Create aigrp_directory_peerings table.
 
     Sprint 3 — local mirror of peering records pulled from the public
     8th-Layer Directory. Each row carries BOTH signed envelopes (offer
-    + accept) so any local consumer can re-verify offline. Idempotent.
+    + accept) so any local consumer can re-verify offline.
+
+    Sprint 4 (Track A phase 1) — additive ``to_l2_endpoints_json``
+    column for cross-Enterprise consult forward routing. Idempotent.
     """
     conn.executescript(DIRECTORY_PEERINGS_TABLE_SQL)
+    # Idempotent ADD COLUMN for pre-sprint-4 DBs. SQLite's
+    # `ALTER TABLE ... ADD COLUMN` raises on already-present columns
+    # so we probe table_info first.
+    cursor = conn.execute("PRAGMA table_info(aigrp_directory_peerings)")
+    existing = {row[1] for row in cursor.fetchall()}
+    for stmt in _DIRECTORY_PEERINGS_NEW_COLUMNS:
+        col_name = stmt.split("ADD COLUMN ")[1].split()[0]
+        if col_name not in existing:
+            conn.execute(stmt)
 
 
 def ensure_consults_schema(conn: sqlite3.Connection) -> None:

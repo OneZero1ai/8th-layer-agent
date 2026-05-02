@@ -222,8 +222,14 @@ def test_cross_l2_message_forwards_to_other_side(
     assert forwarded[0]["json"]["from_persona"] == ALICE
 
 
-def test_cross_enterprise_target_returns_501(client: TestClient) -> None:
-    """A peer in a different Enterprise is gated until AI-BGP (issue #19)."""
+def test_cross_enterprise_no_peering_returns_403(client: TestClient) -> None:
+    """A peer in a different Enterprise needs an active directory peering.
+
+    Sprint 4 Track A: 501 (AI-BGP roadmap) is now 403 ("no active
+    peering"). Without a row in aigrp_directory_peerings between us
+    and the target enterprise, the cross-Enterprise forward path
+    refuses to route.
+    """
     r = client.post(
         "/api/v1/consults/request",
         headers=_headers(client, ALICE),
@@ -233,8 +239,8 @@ def test_cross_enterprise_target_returns_501(client: TestClient) -> None:
             "content": "hi from across the boundary",
         },
     )
-    assert r.status_code == 501, r.text
-    assert "AI-BGP" in r.json()["detail"]
+    assert r.status_code == 403, r.text
+    assert "no active peering" in r.json()["detail"].lower()
 
 
 def test_unknown_peer_returns_404(client: TestClient) -> None:
