@@ -202,15 +202,24 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
                 json=payload,
             )
         if r.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"peer {target['l2_id']} returned {r.status_code} on /consults/forward-request: {r.text[:200]}",
+            # SEC-MED M-1 — log diagnosis-rich detail server-side; return
+            # a generic 502 to the client so peer response bodies (which
+            # may contain stack traces / config paths / tenant ids) don't
+            # leak through to the originating user.
+            logger.warning(
+                "consults forward-request: peer=%s status=%s body=%r",
+                target["l2_id"],
+                r.status_code,
+                r.text[:200],
             )
+            raise HTTPException(status_code=502, detail="peer unreachable")
     except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"peer {target['l2_id']} unreachable: {e}",
-        ) from e
+        logger.warning(
+            "consults forward-request: peer=%s transport_error=%r",
+            target["l2_id"],
+            e,
+        )
+        raise HTTPException(status_code=502, detail="peer unreachable") from e
 
 
 def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -231,15 +240,21 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
                 json=payload,
             )
         if r.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"peer {target['l2_id']} returned {r.status_code} on /consults/forward-message",
+            # SEC-MED M-1 — log server-side, return generic to client.
+            logger.warning(
+                "consults forward-message: peer=%s status=%s body=%r",
+                target["l2_id"],
+                r.status_code,
+                r.text[:200],
             )
+            raise HTTPException(status_code=502, detail="peer unreachable")
     except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"peer {target['l2_id']} unreachable: {e}",
-        ) from e
+        logger.warning(
+            "consults forward-message: peer=%s transport_error=%r",
+            target["l2_id"],
+            e,
+        )
+        raise HTTPException(status_code=502, detail="peer unreachable") from e
 
 
 def _resolve_x_enterprise_target(

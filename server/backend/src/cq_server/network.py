@@ -38,7 +38,7 @@ import struct
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -355,7 +355,10 @@ class DsnResolveRequest(BaseModel):
     # resolver consults each peer's Bloom filter (already exchanged via
     # AIGRP) and drops peers whose Bloom doesn't claim any of these
     # domains BEFORE cosine ranking. Issue #22.
-    query_domains: list[str] = Field(default_factory=list, max_length=20)
+    # SEC-HIGH #35 — per-item max_length=64 caps a malicious caller from
+    # smuggling a 1MB string in via a single domain entry; max_items=20
+    # caps total list size.
+    query_domains: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=20)
 
 
 class DsnCandidate(BaseModel):
@@ -562,7 +565,11 @@ def _build_topology(snapshots: list[_L2Snapshot], consents: list[dict[str, Any]]
             TopologyActivePersona(
                 persona=row.get("persona", ""),
                 last_seen_at=row.get("last_seen_at", ""),
-                working_dir_hint=row.get("working_dir_hint"),
+                # SEC-HIGH #36 — working_dir_hint is internal-debug,
+                # not public-marketing-site data. Topology is
+                # unauthenticated; always redact. If an authed caller
+                # needs the hint, add a separate authed endpoint.
+                working_dir_hint=None,
                 expertise_domains=list(row.get("expertise_domains") or []),
             )
             for row in active
@@ -837,14 +844,24 @@ async def network_dsn_resolve(
             continue
         l2_id = sig.get("l2_id") or f"{snap.enterprise}/{snap.group}"
         active = snap.active_personas or []
-        expert_personas = [p.get("persona", "") for p in active if p.get("discoverable") is not False][:5]
+        # SEC-HIGH #36 — when policy says the caller can't query, redact
+        # the recon-relevant metadata too. Otherwise an anonymous viewer
+        # walks every fleet L2's persona list + KU counts via DSN even
+        # though they can't actually query. The candidate still surfaces
+        # so the policy story is honest ("here's the L2, but you'd be
+        # denied"); the personas + counts are not.
+        leak_safe = policy not in ("denied", "summary_only")
+        expert_personas = (
+            [p.get("persona", "") for p in active if p.get("discoverable") is not False][:5] if leak_safe else []
+        )
+        ku_count = int(sig.get("ku_count", 0)) if leak_safe else 0
         candidates.append(
             DsnCandidate(
                 l2_id=l2_id,
                 enterprise=snap.enterprise,
                 group=snap.group,
                 sim_score=round(sim, 4),
-                ku_count_in_topic=int(sig.get("ku_count", 0)),
+                ku_count_in_topic=ku_count,
                 top_domains=[],
                 expert_personas=expert_personas,
                 policy_if_queried=policy,
