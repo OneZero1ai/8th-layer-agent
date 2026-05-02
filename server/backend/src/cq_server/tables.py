@@ -88,10 +88,18 @@ CREATE TABLE IF NOT EXISTS aigrp_peers (
     embedding_model TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
-    last_signature_at TEXT
+    last_signature_at TEXT,
+    public_key_ed25519 TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_aigrp_peers_enterprise ON aigrp_peers(enterprise);
 """
+
+# Sprint 4 — peers gain ``public_key_ed25519`` for cryptographic forward-id
+# binding (issue #44). Idempotent ALTER TABLE is run alongside CREATE so
+# pre-sprint-4 deployments pick up the column on first restart.
+_AIGRP_PEERS_COLUMN_STATEMENTS = (
+    "ALTER TABLE aigrp_peers ADD COLUMN public_key_ed25519 TEXT",
+)
 
 CONSULTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS consults (
@@ -210,10 +218,18 @@ def ensure_aigrp_peers_table(conn: sqlite3.Connection) -> None:
 
     Holds this L2's view of every other L2 it knows about in the same
     Enterprise, including their last-published signature (centroid +
-    Bloom). Built up via /aigrp/hello flooding at deploy time and
-    refreshed by the periodic peer-poll task.
+    Bloom) and (sprint 4) their forward-signing Ed25519 public key.
+    Built up via /aigrp/hello flooding at deploy time and refreshed by
+    the periodic peer-poll task.
     """
     conn.executescript(AIGRP_PEERS_TABLE_SQL)
+    cursor = conn.execute("PRAGMA table_info(aigrp_peers)")
+    existing = {row[1] for row in cursor.fetchall()}
+    for statement in _AIGRP_PEERS_COLUMN_STATEMENTS:
+        col = statement.split("COLUMN ")[1].split()[0]
+        if col not in existing:
+            conn.execute(statement)
+    conn.commit()
 
 
 def ensure_users_table(conn: sqlite3.Connection) -> None:

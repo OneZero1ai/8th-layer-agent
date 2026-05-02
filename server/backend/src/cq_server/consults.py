@@ -155,6 +155,27 @@ def _self_l2_id() -> str:
     return f"{aigrp_mod.enterprise()}/{aigrp_mod.group()}"
 
 
+def _build_forward_headers(peer_key: str, payload: dict[str, Any]) -> dict[str, str]:
+    """Compose authorization + forwarder-identity + (sprint 4) signature
+    headers for outbound /consults/forward-* calls.
+
+    The signature header is omitted when no L2 keypair is available on
+    disk — receivers fall back to legacy unsigned mode (until they flip
+    ``CQ_REQUIRE_SIGNED_FORWARDS=true``).
+    """
+    from . import forward_sign
+
+    forwarder_id = _self_l2_id()
+    headers = {
+        "authorization": f"Bearer {peer_key}",
+        aigrp_mod.FORWARDER_HEADER: forwarder_id,
+    }
+    sig = forward_sign.sign_forward_request(payload, forwarder_id)
+    if sig:
+        headers[forward_sign.SIGNATURE_HEADER] = sig
+    return headers
+
+
 def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
     """POST /consults/forward-request to a peer L2 with the peer-key bearer.
 
@@ -162,19 +183,20 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
     write. Callers see 502 if the peer is unreachable so they know the
     remote side won't see the message until they reach the recipient L2
     directly. Subsequent replies retry independently.
+
+    Sprint 4 (#44) — when this L2 has an Ed25519 keypair on disk, the
+    request body is signed and the sig travels in ``X-8L-Forwarder-Sig``.
     """
     base = target["endpoint_url"].rstrip("/")
     peer_key = os.environ.get("CQ_AIGRP_PEER_KEY", "")
     if not peer_key:
         raise HTTPException(503, detail="cross-L2 routing requires CQ_AIGRP_PEER_KEY")
+    headers = _build_forward_headers(peer_key, payload)
     try:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
                 f"{base}/api/v1/consults/forward-request",
-                headers={
-                    "authorization": f"Bearer {peer_key}",
-                    aigrp_mod.FORWARDER_HEADER: _self_l2_id(),
-                },
+                headers=headers,
                 json=payload,
             )
         if r.status_code >= 400:
@@ -190,19 +212,20 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
 
 
 def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
-    """POST /consults/forward-message — symmetric to _forward_request."""
+    """POST /consults/forward-message — symmetric to _forward_request.
+
+    Sprint 4 (#44) — same Ed25519 signature treatment as forward-request.
+    """
     base = target["endpoint_url"].rstrip("/")
     peer_key = os.environ.get("CQ_AIGRP_PEER_KEY", "")
     if not peer_key:
         raise HTTPException(503, detail="cross-L2 routing requires CQ_AIGRP_PEER_KEY")
+    headers = _build_forward_headers(peer_key, payload)
     try:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
                 f"{base}/api/v1/consults/forward-message",
-                headers={
-                    "authorization": f"Bearer {peer_key}",
-                    aigrp_mod.FORWARDER_HEADER: _self_l2_id(),
-                },
+                headers=headers,
                 json=payload,
             )
         if r.status_code >= 400:
@@ -499,8 +522,16 @@ def forward_consult_request(
     Idempotent on thread_id collision: if the thread already exists
     (re-delivery, retry), we skip the create and just append the message
     if it's new. Same for message_id.
+
+    Sprint 4 (#44) — pubkey-on-file peers must also present a valid
+    ``X-8L-Forwarder-Sig`` over JCS(body) || from_l2_id.
     """
-    aigrp_mod.require_forwarder_identity(request, body.from_l2_id)
+    aigrp_mod.require_forwarder_identity(
+        request,
+        body.from_l2_id,
+        body_for_sig=body.model_dump(mode="json"),
+        store=store,
+    )
     if store.get_consult(body.thread_id) is None:
         store.create_consult(
             thread_id=body.thread_id,
@@ -561,8 +592,15 @@ def forward_consult_message(
     audit trail on this side.
 
     SEC-CRIT #34 — same forwarder-identity binding as /forward-request.
+    Sprint 4 (#44) — also requires Ed25519 forward signature for peers
+    with a recorded pubkey.
     """
-    aigrp_mod.require_forwarder_identity(request, body.from_l2_id)
+    aigrp_mod.require_forwarder_identity(
+        request,
+        body.from_l2_id,
+        body_for_sig=body.model_dump(mode="json"),
+        store=store,
+    )
     existing = store.get_consult(body.thread_id)
     if existing is None:
         if not (

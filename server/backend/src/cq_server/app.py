@@ -89,13 +89,23 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
     def _try_bootstrap() -> bool:
         """Hit the seed's /aigrp/hello and absorb its peer table.
         Returns True on success. Idempotent on the seed side.
+
+        Sprint 4 (#44) — every hello (initial + every poll cycle re-hello)
+        carries this L2's Ed25519 forward-signing public key so the
+        receiver can populate its ``aigrp_peers.public_key_ed25519`` row.
+        Re-sending on every cycle is intentional self-healing: if the
+        first hello was lost or the receiver was rebuilt, the next cycle
+        recovers without operator intervention.
         """
+        from . import forward_sign
+
         try:
             hello_payload = json.dumps({
                 "l2_id": aigrp.self_l2_id(),
                 "enterprise": aigrp.enterprise(),
                 "group": aigrp.group(),
                 "endpoint_url": aigrp.self_url(),
+                "public_key_ed25519": forward_sign.self_public_key_b64u(),
             }).encode()
             req = urllib.request.Request(
                 f"{aigrp.seed_peer_url()}/api/v1/aigrp/hello",
@@ -122,6 +132,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     domain_count=p.get("domain_count", 0),
                     embedding_model=p.get("embedding_model"),
                     signature_received=False,
+                    public_key_ed25519=p.get("public_key_ed25519"),
                 )
             log.info("aigrp bootstrap: seed=%s peers=%d", aigrp.seed_peer_url(), len(body.get("peers", [])))
             return True
@@ -138,6 +149,37 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
     #    pending; gives self-healing if the seed was down at start.
     import base64
 
+    def _rehello_peer(peer_endpoint: str) -> None:
+        """Re-send hello to a known peer so they pick up our pubkey.
+
+        Sprint 4 (#44) — re-hello on every poll cycle, idempotent on the
+        receiver. This is the recovery path for a peer that joined
+        before this L2 generated its key, or whose row was rebuilt.
+        """
+        from . import forward_sign
+
+        payload = json.dumps({
+            "l2_id": aigrp.self_l2_id(),
+            "enterprise": aigrp.enterprise(),
+            "group": aigrp.group(),
+            "endpoint_url": aigrp.self_url(),
+            "public_key_ed25519": forward_sign.self_public_key_b64u(),
+        }).encode()
+        try:
+            req = urllib.request.Request(
+                f"{peer_endpoint.rstrip('/')}/api/v1/aigrp/hello",
+                method="POST",
+                data=payload,
+                headers={
+                    "content-type": "application/json",
+                    "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
     while True:
         try:
             await asyncio.sleep(poll_interval)
@@ -149,6 +191,8 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     continue
                 if not p["endpoint_url"]:
                     continue
+                # Sprint 4 — push our pubkey to this peer (cheap, idempotent).
+                _rehello_peer(p["endpoint_url"])
                 try:
                     req = urllib.request.Request(
                         f"{p['endpoint_url'].rstrip('/')}/api/v1/aigrp/signature",
@@ -367,12 +411,22 @@ class AigrpHelloRequest(BaseModel):
     a developer laptop or a customer-edge node without inbound exposure).
     Stub peers are recorded in the table but skipped by the periodic
     poll loop (since there's no address to poll).
+
+    Sprint 4 (#44) — joiners include their forward-signing Ed25519
+    public key (base64url-encoded). Optional for backward compat with
+    pre-sprint-4 peers; receivers store NULL when absent and fall back
+    to legacy unsigned forward auth for that peer.
     """
 
     l2_id: str = Field(min_length=1, description="canonical Enterprise/Group identity")
     enterprise: str = Field(min_length=1)
     group: str = Field(min_length=1)
     endpoint_url: str = Field(default="", description="how peers should reach me; empty = stub L2 (consumer-only)")
+    public_key_ed25519: str | None = Field(
+        default=None,
+        description="forward-signing Ed25519 public key, unpadded base64url; "
+        "None on pre-sprint-4 peers",
+    )
 
 
 class AigrpAnnounceRequest(BaseModel):
@@ -383,6 +437,10 @@ class AigrpAnnounceRequest(BaseModel):
     group: str = Field(min_length=1)
     endpoint_url: str = Field(default="", description="empty = stub L2 (consumer-only)")
     announced_by: str = Field(default="", description="l2_id of the peer doing the flooding")
+    public_key_ed25519: str | None = Field(
+        default=None,
+        description="forwarded pubkey of the joiner (sprint 4); None for legacy peers",
+    )
 
 
 class AigrpPeer(BaseModel):
@@ -398,6 +456,7 @@ class AigrpPeer(BaseModel):
     first_seen_at: str
     last_seen_at: str
     last_signature_at: str | None = None
+    public_key_ed25519: str | None = None
 
 
 class AigrpPeersResponse(BaseModel):
@@ -477,6 +536,7 @@ async def aigrp_hello(
         domain_count=0,
         embedding_model=None,
         signature_received=False,
+        public_key_ed25519=body.public_key_ed25519,
     )
 
     # Compose the response — current peer table from this L2's POV.
@@ -497,6 +557,7 @@ async def aigrp_hello(
                 "group": body.group,
                 "endpoint_url": body.endpoint_url,
                 "announced_by": aigrp.self_l2_id(),
+                "public_key_ed25519": body.public_key_ed25519,
             }).encode()
             for p in peers:
                 if p["l2_id"] == body.l2_id or p["l2_id"] == aigrp.self_l2_id():
@@ -527,6 +588,8 @@ async def aigrp_hello(
     # we exist as a peer; otherwise it learns about every OTHER peer the
     # seed knows but never records the seed itself. Real EIGRP neighbor
     # adjacency advertisements include the speaker too.
+    from . import forward_sign
+
     self_entry = {
         "l2_id": aigrp.self_l2_id(),
         "enterprise": aigrp.enterprise(),
@@ -538,6 +601,7 @@ async def aigrp_hello(
         "first_seen_at": aigrp.now_iso(),
         "last_seen_at": aigrp.now_iso(),
         "last_signature_at": None,
+        "public_key_ed25519": forward_sign.self_public_key_b64u(),
     }
     peers_plus_self = peers + [self_entry]
 
@@ -573,6 +637,7 @@ def aigrp_announce(
         domain_count=0,
         embedding_model=None,
         signature_received=False,
+        public_key_ed25519=body.public_key_ed25519,
     )
     return {"recorded": body.l2_id, "by": aigrp.self_l2_id()}
 
@@ -719,10 +784,16 @@ def aigrp_forward_query(
 
     # AIGRP forward-query supports cross-Enterprise via consent table — the
     # foreign forwarder's Enterprise legitimately differs from the receiver's.
-    aigrp.require_forwarder_identity(
-        request, body.requester_l2_id, same_enterprise_only=False
-    )
+    # Sprint 4 (#44) — when the peer has a pubkey on file, also verifies
+    # the Ed25519 signature over JCS(body) || requester_l2_id.
     store = _get_store()
+    aigrp.require_forwarder_identity(
+        request,
+        body.requester_l2_id,
+        same_enterprise_only=False,
+        body_for_sig=body.model_dump(mode="json"),
+        store=store,
+    )
 
     responder_enterprise = aigrp.enterprise()
     responder_group = aigrp.group()
