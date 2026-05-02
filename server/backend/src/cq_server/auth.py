@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .api_keys import encode_token, generate_secret, hash_secret, secret_prefix
 from .deps import get_api_key_pepper, get_store
-from .store import RemoteStore
+from .store import RemoteStore, Store
 from .ttl import parse_ttl
 
 MAX_ACTIVE_API_KEYS_PER_USER = 20
@@ -206,12 +206,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(request: LoginRequest, store: RemoteStore = Depends(get_store)) -> LoginResponse:
+async def login(request: LoginRequest, store: Store = Depends(get_store)) -> LoginResponse:
     """Authenticate a user and return a JWT token.
 
     Args:
         request: Login credentials.
-        store: The remote store dependency.
+        store: The store dependency.
 
     Returns:
         A LoginResponse with a signed JWT and the username.
@@ -227,12 +227,12 @@ def login(request: LoginRequest, store: RemoteStore = Depends(get_store)) -> Log
 
 
 @router.get("/me")
-def me(username: str = Depends(get_current_user), store: RemoteStore = Depends(get_store)) -> MeResponse:
+async def me(username: str = Depends(get_current_user), store: Store = Depends(get_store)) -> MeResponse:
     """Return the current user's info.
 
     Args:
         username: The authenticated username from the JWT dependency.
-        store: The remote store dependency.
+        store: The store dependency.
 
     Returns:
         A MeResponse with the user's username and creation timestamp.
@@ -246,7 +246,7 @@ def me(username: str = Depends(get_current_user), store: RemoteStore = Depends(g
     return MeResponse(username=user["username"], created_at=user["created_at"])
 
 
-def _require_user_id(store: RemoteStore, username: str) -> int:
+async def _require_user_id(store: Store, username: str) -> int:
     """Return the integer user id for the authenticated caller.
 
     Raises:
@@ -259,10 +259,10 @@ def _require_user_id(store: RemoteStore, username: str) -> int:
 
 
 @router.post("/api-keys", status_code=201)
-def create_api_key_route(
+async def create_api_key_route(
     request: CreateApiKeyRequest,
     username: str = Depends(get_current_user),
-    store: RemoteStore = Depends(get_store),
+    store: Store = Depends(get_store),
     pepper: str = Depends(get_api_key_pepper),
 ) -> CreateApiKeyResponse:
     """Create a new API key owned by the authenticated user.
@@ -279,7 +279,7 @@ def create_api_key_route(
         duration = parse_ttl(request.ttl)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    user_id = _require_user_id(store, username)
+    user_id = await _require_user_id(store, username)
     if store.count_active_api_keys_for_user(user_id) >= MAX_ACTIVE_API_KEYS_PER_USER:
         raise HTTPException(
             status_code=409,
@@ -304,25 +304,25 @@ def create_api_key_route(
 
 
 @router.get("/api-keys")
-def list_api_keys_route(
+async def list_api_keys_route(
     username: str = Depends(get_current_user),
-    store: RemoteStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> ApiKeysPublic:
     """Return the authenticated user's API keys. Never returns plaintext.
 
     Revoked keys are included with ``is_active: false`` so users can audit
     their own revocation history.
     """
-    user_id = _require_user_id(store, username)
+    user_id = await _require_user_id(store, username)
     data = [_to_public(row) for row in store.list_api_keys_for_user(user_id)]
     return ApiKeysPublic(data=data, count=len(data))
 
 
 @router.post("/api-keys/{key_id}/revoke")
-def revoke_api_key_route(
+async def revoke_api_key_route(
     key_id: str,
     username: str = Depends(get_current_user),
-    store: RemoteStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> Message:
     """Revoke the given API key if it belongs to the caller.
 
@@ -331,7 +331,7 @@ def revoke_api_key_route(
     A 404 is returned when the key does not exist or is owned by a
     different user (uniform response, no enumeration oracle).
     """
-    user_id = _require_user_id(store, username)
+    user_id = await _require_user_id(store, username)
     if store.get_api_key_for_user(user_id=user_id, key_id=key_id) is None:
         raise HTTPException(status_code=404, detail="API key not found")
     store.revoke_api_key(user_id=user_id, key_id=key_id)

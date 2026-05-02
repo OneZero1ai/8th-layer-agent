@@ -1,5 +1,6 @@
 """Tests for the review endpoints."""
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any

@@ -1,28 +1,31 @@
-import { useState, useEffect } from "react";
-import { Link, Outlet, useLocation } from "react-router";
-import { useAuth } from "../auth";
-import { api } from "../api";
+import { useEffect, useState } from "react"
+import { Link, Outlet, useLocation } from "react-router"
+import { api } from "../api"
+import { useAuth } from "../auth"
 
 export function Layout() {
-  const { username, logout } = useAuth();
-  const location = useLocation();
-  const [pendingCount, setPendingCount] = useState(0);
-  const onDashboard = location.pathname === "/dashboard";
+  const { username, logout } = useAuth()
+  const location = useLocation()
+  const [pendingCount, setPendingCount] = useState(0)
+  const onDashboard = location.pathname === "/dashboard"
   // Network page needs a full-width main; everything else stays narrow.
-  const wide = location.pathname === "/network";
+  const wide = location.pathname === "/network"
 
   useEffect(() => {
-    if (onDashboard) return;
+    if (onDashboard) return
     function fetchCount() {
-      api.reviewQueue(0, 0).then((r) => setPendingCount(r.total)).catch(() => {});
+      api
+        .reviewQueue(0, 0)
+        .then((r) => setPendingCount(r.total))
+        .catch(() => {})
     }
-    fetchCount();
-    const interval = setInterval(fetchCount, 15_000);
-    return () => clearInterval(interval);
-  }, [onDashboard]);
+    fetchCount()
+    const interval = setInterval(fetchCount, 15_000)
+    return () => clearInterval(interval)
+  }, [onDashboard])
 
   function navLink(path: string, label: string) {
-    const active = location.pathname === path;
+    const active = location.pathname === path
     return (
       <Link
         to={path}
@@ -39,7 +42,7 @@ export function Layout() {
           </span>
         )}
       </Link>
-    );
+    )
   }
 
   return (
@@ -54,8 +57,11 @@ export function Layout() {
             {navLink("/settings/api-keys", "API Keys")}
           </div>
           <div className="flex items-center gap-3">
-            <span className="hidden md:inline text-sm text-gray-500">{username}</span>
+            <span className="hidden md:inline text-sm text-gray-500">
+              {username}
+            </span>
             <button
+              type="button"
               onClick={logout}
               className="text-sm text-gray-400 hover:text-gray-700"
             >
@@ -72,5 +78,5 @@ export function Layout() {
         <Outlet context={{ setPendingCount }} />
       </main>
     </div>
-  );
+  )
 }

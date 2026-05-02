@@ -5,19 +5,19 @@ import hmac
 from fastapi import BackgroundTasks, Depends, HTTPException, Request
 
 from .api_keys import decode_token, hash_secret
-from .store import RemoteStore
+from .store import Store
 
 API_KEY_PEPPER_ENV = "CQ_API_KEY_PEPPER"  # pragma: allowlist secret
 
 
-def get_store(request: Request) -> RemoteStore:
+def get_store(request: Request) -> Store:
     """FastAPI dependency that returns the store from app state.
 
     Args:
         request: The incoming FastAPI request.
 
     Returns:
-        The RemoteStore instance attached to the application state.
+        The Store instance attached to the application state.
     """
     return request.app.state.store
 
@@ -34,10 +34,10 @@ def get_api_key_pepper(request: Request) -> str:
     return pepper
 
 
-def require_api_key(
+async def require_api_key(
     request: Request,
     background_tasks: BackgroundTasks,
-    store: RemoteStore = Depends(get_store),
+    store: Store = Depends(get_store),
 ) -> str:
     """Authenticate an API key and return the owning user's username.
 
@@ -50,7 +50,7 @@ def require_api_key(
     Args:
         request: The incoming FastAPI request.
         background_tasks: FastAPI background tasks used to record usage.
-        store: The remote store.
+        store: The store dependency.
 
     Returns:
         The username of the authenticated caller.
