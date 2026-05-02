@@ -1085,6 +1085,59 @@ def peers_active(
     return ActivePeersResponse(active_peers=active, count=len(active))
 
 
+@api_router.get("/aigrp/peers-active")
+def aigrp_peers_active(
+    group: Annotated[str | None, Query()] = None,
+    since_minutes: Annotated[int, Query(gt=0, le=24 * 60)] = PEER_ACTIVE_DEFAULT_WINDOW_MIN,
+    _peer: None = Depends(aigrp.require_peer_key),
+) -> ActivePeersResponse:
+    """Active personas as seen by THIS L2 — peer-key auth, intra-Enterprise.
+
+    SEC-HIGH H-6 / SEC-MED M-4 — replaces the aggregator's old JWT-over-
+    cross-L2 path (network.py:_admin_service_jwt). The aggregator now
+    authenticates to fleet L2s with the per-Enterprise peer key (the
+    same trust channel as the rest of /aigrp/*) instead of minting a
+    JWT under a shared secret.
+
+    Same response shape as ``GET /peers/active`` so the aggregator's
+    caller can stay shape-stable. Difference: no per-user scoping
+    (caller is a peer L2, not a user); no ``include_self`` /
+    ``self_persona`` filter (peer L2s see every persona on this L2,
+    same as before).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    store = _get_store()
+    now = datetime.now(UTC)
+    since_iso = (now - timedelta(minutes=since_minutes)).isoformat()
+    rows = store.list_active_peers(
+        enterprise_id=aigrp.enterprise(),
+        since_iso=since_iso,
+        group_id=group,
+        exclude_persona=None,
+    )
+    active: list[ActivePeer] = []
+    for r in rows:
+        try:
+            last_seen = datetime.fromisoformat(r["last_seen_at"])
+        except ValueError:
+            continue
+        delta_min = max(0.0, (now - last_seen).total_seconds() / 60.0)
+        active.append(
+            ActivePeer(
+                persona=r["persona"],
+                enterprise_id=r["enterprise_id"],
+                group_id=r["group_id"],
+                last_seen_at=r["last_seen_at"],
+                minutes_since_last_seen=round(delta_min, 2),
+                discoverable=r["discoverable"],
+                working_dir_hint=None,  # SEC-HIGH H-2 — same redaction as /network/topology
+                expertise_domains=r["expertise_domains"],
+            )
+        )
+    return ActivePeersResponse(active_peers=active, count=len(active))
+
+
 # --- Phase 6 step 3 — Lane D: consent admin endpoints ---------------------
 
 

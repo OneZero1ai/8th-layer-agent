@@ -44,7 +44,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .auth import create_token
 from .deps import get_store
 from .embed import embed_text, unpack
 from .store import RemoteStore
@@ -252,23 +251,6 @@ def _peer_key_for(enterprise: str) -> str:
         return ""
 
 
-def _admin_service_jwt() -> str:
-    """Mint a short-lived admin JWT to authenticate /peers/active calls.
-
-    Each L2 in the fleet validates this with its own ``CQ_JWT_SECRET``;
-    in dev that secret is shared, in prod each L2 gets its own and we'd
-    move to per-L2 service tokens — out of scope for this PR. Returns
-    empty string when no secret is configured.
-    """
-    secret = os.environ.get("CQ_JWT_SECRET", "")
-    if not secret:
-        return ""
-    # Username here is informational; the receiving L2 only checks
-    # signature + expiry. We send "service-network-proxy" so audit logs
-    # can identify the caller.
-    return create_token("service-network-proxy", secret=secret, ttl_hours=1)
-
-
 # ---------------------------------------------------------------------------
 # Pydantic response models.
 # ---------------------------------------------------------------------------
@@ -474,10 +456,12 @@ async def _fetch_one_l2(client: httpx.AsyncClient, l2: dict[str, str]) -> _L2Sna
         endpoint=l2["endpoint"],
     )
     peer_key = _peer_key_for(l2["enterprise"])
-    admin_jwt = _admin_service_jwt()
     base = l2["endpoint"].rstrip("/")
+    # SEC-HIGH H-6 / SEC-MED M-4 — aggregator no longer mints cross-L2 JWTs.
+    # All fan-out auth is the per-Enterprise AIGRP peer key, including
+    # the active-personas read (now via /aigrp/peers-active instead of
+    # the JWT-gated /peers/active).
     aigrp_headers = {"authorization": f"Bearer {peer_key}"} if peer_key else {}
-    admin_headers = {"authorization": f"Bearer {admin_jwt}"} if admin_jwt else {}
 
     async def _peers() -> dict[str, Any] | None:
         try:
@@ -500,15 +484,15 @@ async def _fetch_one_l2(client: httpx.AsyncClient, l2: dict[str, str]) -> _L2Sna
     async def _active() -> list[dict[str, Any]] | None:
         try:
             r = await client.get(
-                f"{base}/api/v1/peers/active",
-                headers=admin_headers,
-                params={"include_self": "true", "since_minutes": 60},
+                f"{base}/api/v1/aigrp/peers-active",
+                headers=aigrp_headers,
+                params={"since_minutes": 60},
             )
             if r.status_code == 200:
                 body = r.json()
                 return list(body.get("active_peers", []))
         except Exception:
-            logger.warning("peers/active fetch failed slug=%s", l2["slug"])
+            logger.warning("aigrp/peers-active fetch failed slug=%s", l2["slug"])
         return None
 
     peers_res, sig_res, active_res = await asyncio.gather(_peers(), _sig(), _active(), return_exceptions=False)

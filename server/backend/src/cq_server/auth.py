@@ -1,4 +1,18 @@
-"""Authentication: password hashing, JWT creation and validation."""
+"""Authentication: password hashing, JWT creation and validation.
+
+SEC-MED M-4 — JWT iss/aud claims pin a token to the L2 that minted it.
+Combined with H-6 (per-L2 CQ_JWT_SECRET in SSM) the prior single-
+point-of-failure trust model — "leak any L2's secret, mint as anyone
+on any L2" — collapses to "leak L2 X's secret, impersonate users on
+L2 X only." Cross-L2 user-auth is gone; the only L2-to-L2 auth is the
+per-Enterprise AIGRP peer key + Ed25519 forward signatures.
+
+The aggregator's old _admin_service_jwt path used to mint a JWT under
+its own secret and present it to fleet L2s — that worked only because
+the secret was shared. With per-L2 secrets it can't work; replaced
+with /aigrp/peers-active (peer-key gated) so the network proxy reads
+presence over the same trust channel as the rest of /aigrp/*.
+"""
 
 import os
 import uuid
@@ -10,6 +24,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from . import aigrp
 from .api_keys import encode_token, generate_secret, hash_secret, secret_prefix
 from .deps import get_api_key_pepper, get_store
 from .store import RemoteStore
@@ -29,19 +44,42 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 def create_token(username: str, *, secret: str, ttl_hours: int = 24) -> str:
-    """Create a JWT token for the given username."""
+    """Create a JWT token bound to this L2's identity.
+
+    iss/aud both set to ``aigrp.self_l2_id()`` so a token minted on L2
+    A is rejected by L2 B's ``verify_token`` even if the two share a
+    secret. Combined with per-L2 secrets (H-6), this closes the
+    cross-L2-impersonation surface the audit flagged.
+    """
     now = datetime.now(UTC)
+    self_l2 = aigrp.self_l2_id()
     payload = {
         "sub": username,
         "iat": now,
         "exp": now + timedelta(hours=ttl_hours),
+        "iss": self_l2,
+        "aud": self_l2,
     }
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
 def verify_token(token: str, *, secret: str) -> dict[str, Any]:
-    """Verify and decode a JWT token."""
-    return jwt.decode(token, secret, algorithms=["HS256"])
+    """Verify a JWT token and return its claims.
+
+    Requires ``iss`` and ``aud`` to both match this L2's identity. A
+    legacy token (no iss/aud) is rejected — the breaking change is
+    deliberate (closes M-4 / H-6); existing users re-login within
+    the 24h TTL anyway.
+    """
+    self_l2 = aigrp.self_l2_id()
+    return jwt.decode(
+        token,
+        secret,
+        algorithms=["HS256"],
+        audience=self_l2,
+        issuer=self_l2,
+        options={"require": ["iss", "aud", "sub", "exp"]},
+    )
 
 
 class LoginRequest(BaseModel):
