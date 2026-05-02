@@ -198,10 +198,19 @@ def test_query_domains_drops_peers_whose_bloom_doesnt_match(client, monkeypatch)
 
     jwt = _login(client)
     # Only orion-eng (cloudfront,lambda) and acme-sol (cloudfront,edge,cdn) have cloudfront.
+    # SEC-MED M-6 — pass caller_enterprise/group so bloom_dropped is reported.
+    # Anonymous (marketing/public) callers get null'd bloom_dropped to suppress
+    # the topic-discovery oracle. Internal callers see the full count.
     resp = client.post(
         "/api/v1/network/dsn/resolve",
         headers={"Authorization": f"Bearer {jwt}"},
-        json={"intent": "cloudfront origin failover", "query_domains": ["cloudfront"], "max_candidates": 10},
+        json={
+            "intent": "cloudfront origin failover",
+            "query_domains": ["cloudfront"],
+            "max_candidates": 10,
+            "caller_enterprise": "orion",
+            "caller_group": "engineering",
+        },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
