@@ -1,0 +1,37 @@
+8th-Layer.ai Agent (8l-cq plugin)
+Copyright (c) 2026 OneZero1.ai
+
+Licensed under the Apache License, Version 2.0 (the "License"); see the
+LICENSE file at the root of this repository for the full text. You may
+obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+================================================================================
+
+This product is a fork of:
+
+    cq — https://github.com/mozilla-ai/cq
+    Copyright (c) Mozilla AI
+    Licensed under the Apache License, Version 2.0
+
+This fork was created on 2026-04-26. The exact upstream commit pinned at
+fork creation is recorded in FORK_DELTA.md. Modifications by OneZero1.ai
+relative to upstream cq are catalogued in MODIFICATIONS.md, in fulfillment
+of Apache License, Version 2.0 §4(b).
+
+This product retains the open standard portions of upstream cq unchanged
+(Knowledge Unit schema at schema/knowledge-unit.schema.json, REST contract,
+DID/KERI identity model, tier model, SDK APIs, MCP tool surface).
+
+The Apache License, Version 2.0 §6 explicitly does not grant trademark
+rights. Where this product references "cq", "Mozilla AI", or "Mozilla.ai",
+references are factual attribution only — they are not claims of
+endorsement, sponsorship, or affiliation. The Claude Code plugin shipped
+by this product is named "8l-cq" to distinguish it from upstream cq.
