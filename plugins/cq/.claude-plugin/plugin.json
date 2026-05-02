@@ -1,15 +1,15 @@
 {
-  "name": "cq",
-  "version": "0.8.0",
-  "description": "Shared knowledge commons for AI agents; find, share, and confirm collective knowledge to stop rediscovering the same failures.",
+  "name": "8l-cq",
+  "version": "0.8.0+8l-dev",
+  "description": "8th-Layer.ai agent — Apache-2.0 fork of Mozilla.AI's cq plugin (https://github.com/mozilla-ai/cq) adding enterprise execution: AIGRP intra-Enterprise routing, DSN intent resolution, L3 live consults, multi-tenant scope, directory + reputation log primitives. Speaks the cq protocol natively (MCP server is still named 'cq' for protocol compatibility); pair with an 8th-Layer.ai tenant Remote for the enterprise feature set.",
   "author": {
-    "name": "Mozilla AI",
-    "email": "hello@mozilla.ai",
-    "url": "https://github.com/mozilla-ai/"
+    "name": "OneZero1.ai",
+    "email": "support@onezero1.ai",
+    "url": "https://8thlayer.onezero1.ai"
   },
-  "repository": "https://github.com/mozilla-ai/cq",
+  "repository": "https://github.com/OneZero1ai/8th-layer-agent",
   "license": "Apache-2.0",
-  "keywords": ["knowledge-sharing", "agent-learning", "agent-commons", "pitfall-avoidance", "team-knowledge"],
+  "keywords": ["8th-layer", "enterprise", "cq", "agent-to-agent", "knowledge-graph", "aigrp", "multi-tenant"],
   "commands": "./commands/",
   "skills": "./skills/",
   "mcpServers": {
