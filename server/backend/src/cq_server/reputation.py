@@ -66,14 +66,25 @@ def _utc_now_iso() -> str:
 def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
     """Return RFC-8785-canonicalised JSON bytes for the payload.
 
-    Stand-in implementation: ``json.dumps`` with ``sort_keys=True``
-    and tight separators is byte-equal to JCS for the JSON shapes
-    we use (no floats, no Unicode escapes that need NFC). The
-    directory's ``/announce`` path uses the same approach today; we
-    follow it so verifier code is shared. Swap in a real RFC 8785
-    library when float / Unicode hits real production traffic.
+    Stand-in implementation: ``json.dumps`` with ``sort_keys=True``,
+    tight separators, and ``ensure_ascii=False`` so non-ASCII
+    characters are emitted as raw UTF-8 (per RFC 8785 §3.2.2) instead
+    of ``\\uXXXX`` escapes. Without ``ensure_ascii=False``, a body
+    containing any accented character (persona name, summary fragment)
+    would produce canonical bytes that differ from a conformant JCS
+    verifier's output — once Ed25519 signing lands, signatures would
+    only verify against another Python-default mistake. The directory's
+    ``/announce`` path uses the same approach today; we follow it so
+    verifier code is shared. Float serialisation (RFC 8785 requires
+    Grisu3/Dragon4) is still a future swap-in for a real JCS library;
+    avoid float values in event bodies until then.
     """
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 def compute_payload_hash(canonical_bytes: bytes) -> str:
@@ -162,10 +173,23 @@ def record_event(
         The new event_id on success, or ``None`` if recording was
         skipped (logged) or failed (logged at WARNING).
     """
+    # SAVEPOINT wraps the two writes (event row + chain-meta upsert) so
+    # that a failure in either is rolled back together inside the
+    # caller's outer transaction. Without this, an INSERT-then-upsert
+    # sequence could commit a partial state: the event row lands but
+    # `last_event_hash` stays stale, silently forking the chain on the
+    # next call. The savepoint ROLLBACK touches only reputation-layer
+    # work — the caller's surrounding state-change transaction remains
+    # intact, preserving the "best-effort, never breaks the caller"
+    # contract documented above.
+    savepoint_open = False
     try:
         ent = enterprise_id or _enterprise_id()
         l2 = l2_id or _self_l2_id()
         ts_str = ts or _utc_now_iso()
+
+        conn.execute("SAVEPOINT rep_write")
+        savepoint_open = True
 
         last_event_id, prev_event_hash = _read_chain_meta(conn, ent)
 
@@ -203,8 +227,21 @@ def record_event(
             ),
         )
         _upsert_chain_meta(conn, ent, event_id, payload_hash)
+        conn.execute("RELEASE SAVEPOINT rep_write")
         return event_id
     except Exception:  # noqa: BLE001 — this MUST NOT break callers
+        if savepoint_open:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT rep_write")
+                conn.execute("RELEASE SAVEPOINT rep_write")
+            except Exception:  # noqa: BLE001
+                # If even the rollback fails, the connection is in a
+                # weird place — but we still must not propagate.
+                logger.warning(
+                    "reputation: SAVEPOINT rollback failed; connection "
+                    "may be in inconsistent state",
+                    exc_info=True,
+                )
         logger.warning(
             "reputation: failed to record %s event; chain not advanced",
             event_type,

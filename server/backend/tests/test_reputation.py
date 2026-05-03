@@ -122,4 +122,62 @@ class TestRecordEvent:
         # bad has no reputation_events table → INSERT raises → record_event swallows.
         result = reputation.record_event(bad, event_type="consult.closed", body={})
         assert result is None
-        bad.close()
+
+    def test_partial_write_rolls_back_event_row(
+        self, conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lock in the SAVEPOINT invariant: if INSERT succeeds but the
+        chain-meta upsert fails, BOTH must roll back so the chain stays
+        consistent. Without the savepoint wrap, the event row would
+        commit while last_event_hash stayed stale, silently forking the
+        chain on the next call."""
+        # Land one event cleanly first so we have a known chain meta.
+        e1 = reputation.record_event(conn, event_type="consult.closed", body={"i": 1})
+        conn.commit()
+        assert e1 is not None
+        meta_before = conn.execute(
+            "SELECT last_event_id, last_event_hash FROM reputation_chain_meta WHERE enterprise_id = ?",
+            ("test-corp",),
+        ).fetchone()
+        count_before = conn.execute(
+            "SELECT COUNT(*) FROM reputation_events"
+        ).fetchone()[0]
+
+        # Force the chain-meta upsert to raise mid-record_event. The
+        # event-row INSERT will already have happened by then.
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("simulated upsert failure")
+
+        monkeypatch.setattr(reputation, "_upsert_chain_meta", _boom)
+
+        result = reputation.record_event(
+            conn, event_type="consult.closed", body={"i": 2}
+        )
+        assert result is None  # best-effort returned None per contract
+        # Caller's commit happens — verify nothing leaked.
+        conn.commit()
+
+        # Event row from the failed call must NOT have persisted.
+        count_after = conn.execute(
+            "SELECT COUNT(*) FROM reputation_events"
+        ).fetchone()[0]
+        assert count_after == count_before, (
+            "savepoint failed to roll back the orphan event row"
+        )
+
+        # Chain meta still points at e1, NOT a fictitious advance.
+        meta_after = conn.execute(
+            "SELECT last_event_id, last_event_hash FROM reputation_chain_meta WHERE enterprise_id = ?",
+            ("test-corp",),
+        ).fetchone()
+        assert meta_after == meta_before
+
+    def test_canonical_bytes_uses_raw_utf8_for_non_ascii(self) -> None:
+        """RFC 8785 §3.2.2: non-ASCII characters must be raw UTF-8, not
+        \\uXXXX escapes. Without ensure_ascii=False, json.dumps default
+        would escape — verifier interop would silently break for any
+        body with an accented character."""
+        b = reputation.canonical_payload_bytes({"name": "Citroën"})
+        # raw UTF-8 'ë' is 0xC3 0xAB; the escaped form would be 6 ASCII bytes
+        assert b"\xc3\xab" in b
+        assert b"\\u" not in b
