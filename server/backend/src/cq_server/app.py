@@ -315,10 +315,25 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     daily_root_task = asyncio.create_task(daily_root_loop(_fresh_conn))
 
+    # Task #108 sub-task 4 (publish side) — periodically POSTs any
+    # unpublished daily roots to the directory. Self-disables in
+    # skip-announce mode or when CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset.
+    from .directory_client import reputation_publish_loop
+
+    reputation_publish_task = asyncio.create_task(
+        reputation_publish_loop(_fresh_conn)
+    )
+
     try:
         yield
     finally:
-        for task in (aigrp_task, dsn_cache_task, directory_task, daily_root_task):
+        for task in (
+            aigrp_task,
+            dsn_cache_task,
+            directory_task,
+            daily_root_task,
+            reputation_publish_task,
+        ):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
