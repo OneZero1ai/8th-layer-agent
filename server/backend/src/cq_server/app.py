@@ -25,6 +25,8 @@ from . import aigrp
 from .auth import require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
+import sqlite3
+
 from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
@@ -299,10 +301,24 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     directory_task = asyncio.create_task(directory_bootstrap_and_loop(_store))
 
+    # Task #108 sub-task 3 — daily Merkle root computation. Sleeps until
+    # next UTC midnight, then rolls up the prior day's reputation_events
+    # per Enterprise. Skipped when reputation activity hasn't started
+    # (the helper checks reputation_chain_meta).
+    from .daily_root import daily_root_loop
+
+    def _fresh_conn() -> sqlite3.Connection:
+        # Inline sqlite3.connect against the same DB path the store uses
+        # — keeps the loop's connection lifecycle independent so a
+        # long-running task can't pin the store's primary connection.
+        return sqlite3.connect(str(db_path), timeout=10)
+
+    daily_root_task = asyncio.create_task(daily_root_loop(_fresh_conn))
+
     try:
         yield
     finally:
-        for task in (aigrp_task, dsn_cache_task, directory_task):
+        for task in (aigrp_task, dsn_cache_task, directory_task, daily_root_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -317,6 +333,9 @@ api_router.include_router(auth_router)
 api_router.include_router(review_router)
 api_router.include_router(network_router)
 api_router.include_router(consults_router)
+from .reputation_routes import router as reputation_router
+
+api_router.include_router(reputation_router)
 
 
 @api_router.get("/health")
