@@ -31,16 +31,14 @@ import hashlib
 # sha256("8l-reputation-empty-day-v1") — non-overlapping with any
 # real Merkle root because real leaves are sha256(canonical-payload)
 # pre-images of canonical event bodies, never this fixed string.
-EMPTY_DAY_ROOT: str = (
-    "sha256:" + hashlib.sha256(b"8l-reputation-empty-day-v1").hexdigest()
-)
+EMPTY_DAY_ROOT: str = "sha256:" + hashlib.sha256(b"8l-reputation-empty-day-v1").hexdigest()
 
 
 def _strip_prefix(h: str) -> bytes:
     """Convert a ``sha256:<hex>`` string to the underlying 32-byte digest."""
     if not h.startswith("sha256:"):
         raise ValueError(f"expected sha256:<hex> form, got {h!r}")
-    return bytes.fromhex(h[len("sha256:"):])
+    return bytes.fromhex(h[len("sha256:") :])
 
 
 def _hash_pair(left: bytes, right: bytes) -> bytes:

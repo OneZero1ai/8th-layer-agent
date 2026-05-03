@@ -467,7 +467,7 @@ async def publish_reputation_root(
     return r.status_code, None
 
 
-async def reputation_publish_loop(get_conn: "Callable[[], sqlite3.Connection]") -> None:
+async def reputation_publish_loop(get_conn: Callable[[], sqlite3.Connection]) -> None:
     """Periodically POST any unpublished daily roots to the directory.
 
     Runs every ``CQ_DIRECTORY_PUBLISH_INTERVAL_SEC`` (default 5 min).
@@ -487,17 +487,12 @@ async def reputation_publish_loop(get_conn: "Callable[[], sqlite3.Connection]") 
 
     if skip_announce():
         # Skip-announce mode means no privkey on disk; we can't sign roots.
-        log.info(
-            "directory: reputation publish loop disabled (CQ_DIRECTORY_SKIP_ANNOUNCE=true)"
-        )
+        log.info("directory: reputation publish loop disabled (CQ_DIRECTORY_SKIP_ANNOUNCE=true)")
         return
 
     privkey_path = os.environ.get("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", "")
     if not privkey_path:
-        log.info(
-            "directory: reputation publish loop disabled "
-            "(CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset)"
-        )
+        log.info("directory: reputation publish loop disabled (CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset)")
         return
 
     try:

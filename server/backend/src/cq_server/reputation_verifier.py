@@ -112,9 +112,7 @@ def verify_event_signatures(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def verify_root(
-    root: dict[str, Any], events: list[dict[str, Any]]
-) -> dict[str, Any]:
+def verify_root(root: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     """Verify a daily Merkle root against its event list.
 
     Two checks:
@@ -139,7 +137,7 @@ def verify_root(
         ``{ok, root_matches_events, signature_valid, count}``. ``ok``
         is the conjunction.
     """
-    leaf_hashes = [e.get("payload_hash") for e in events]
+    leaf_hashes: list[str] = [h for h in (e.get("payload_hash") for e in events) if isinstance(h, str)]
     recomputed = merkle_root(leaf_hashes)
     root_matches = recomputed == root.get("merkle_root_hash")
 

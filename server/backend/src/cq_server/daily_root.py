@@ -30,8 +30,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from datetime import UTC, date, datetime, timedelta
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .merkle import merkle_root
 from .reputation import (
@@ -56,9 +57,7 @@ def _day_window(day_iso: str) -> tuple[str, str]:
     return f"{day_iso}T00:00:00Z", f"{day_iso}T23:59:59Z"
 
 
-def _read_day_events(
-    conn: sqlite3.Connection, enterprise_id: str, day_iso: str
-) -> list[dict[str, Any]]:
+def _read_day_events(conn: sqlite3.Connection, enterprise_id: str, day_iso: str) -> list[dict[str, Any]]:
     """Return events for ``enterprise_id`` on ``day_iso``, ordered by ts ASC."""
     start_ts, end_ts = _day_window(day_iso)
     rows = conn.execute(
@@ -74,9 +73,7 @@ def _read_day_events(
     return [{"event_id": r[0], "ts": r[1], "payload_hash": r[2]} for r in rows]
 
 
-def _existing_root(
-    conn: sqlite3.Connection, enterprise_id: str, day_iso: str
-) -> dict[str, Any] | None:
+def _existing_root(conn: sqlite3.Connection, enterprise_id: str, day_iso: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
         SELECT enterprise_id, root_date, event_count, merkle_root_hash,
@@ -103,9 +100,7 @@ def _existing_root(
     }
 
 
-def compute_root_for_day(
-    conn: sqlite3.Connection, enterprise_id: str, day_iso: str
-) -> dict[str, Any]:
+def compute_root_for_day(conn: sqlite3.Connection, enterprise_id: str, day_iso: str) -> dict[str, Any]:
     """Compute (or fetch existing) Merkle root for one Enterprise-day.
 
     Idempotent — returns the existing row if already computed. The
@@ -198,9 +193,7 @@ def _all_enterprise_ids(conn: sqlite3.Connection) -> list[str]:
     Sources from ``reputation_chain_meta`` rather than scanning events
     directly — chain meta is one row per Enterprise so this is cheap.
     """
-    rows = conn.execute(
-        "SELECT enterprise_id FROM reputation_chain_meta"
-    ).fetchall()
+    rows = conn.execute("SELECT enterprise_id FROM reputation_chain_meta").fetchall()
     return [r[0] for r in rows]
 
 
@@ -246,8 +239,7 @@ async def daily_root_loop(get_conn: Callable[[], sqlite3.Connection]) -> None:
                         result = compute_root_for_day(conn, enterprise_id, yesterday)
                         conn.commit()
                         logger.info(
-                            "daily_root_loop: computed root enterprise=%s day=%s "
-                            "events=%d root=%s",
+                            "daily_root_loop: computed root enterprise=%s day=%s events=%d root=%s",
                             enterprise_id,
                             yesterday,
                             result["event_count"],
@@ -267,14 +259,10 @@ async def daily_root_loop(get_conn: Callable[[], sqlite3.Connection]) -> None:
             finally:
                 conn.close()
         except Exception:  # noqa: BLE001 — never let this loop die
-            logger.warning(
-                "daily_root_loop: outer iteration crashed", exc_info=True
-            )
+            logger.warning("daily_root_loop: outer iteration crashed", exc_info=True)
 
 
-def compute_yesterday_root_now(
-    conn: sqlite3.Connection, enterprise_id: str
-) -> dict[str, Any]:
+def compute_yesterday_root_now(conn: sqlite3.Connection, enterprise_id: str) -> dict[str, Any]:
     """Convenience: compute yesterday's root immediately (no scheduling).
 
     Used by tests + an admin trigger endpoint. Never called from the

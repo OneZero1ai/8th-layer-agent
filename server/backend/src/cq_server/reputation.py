@@ -76,12 +76,12 @@ def _utc_now_iso() -> str:
 
 
 def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
-    """Return RFC-8785-canonicalised JSON bytes for the payload.
+    r"""Return RFC-8785-canonicalised JSON bytes for the payload.
 
     Stand-in implementation: ``json.dumps`` with ``sort_keys=True``,
     tight separators, and ``ensure_ascii=False`` so non-ASCII
     characters are emitted as raw UTF-8 (per RFC 8785 §3.2.2) instead
-    of ``\\uXXXX`` escapes. Without ``ensure_ascii=False``, a body
+    of ``\uXXXX`` escapes. Without ``ensure_ascii=False``, a body
     containing any accented character (persona name, summary fragment)
     would produce canonical bytes that differ from a conformant JCS
     verifier's output — once Ed25519 signing lands, signatures would
@@ -277,8 +277,7 @@ def record_event(
                 # If even the rollback fails, the connection is in a
                 # weird place — but we still must not propagate.
                 logger.warning(
-                    "reputation: SAVEPOINT rollback failed; connection "
-                    "may be in inconsistent state",
+                    "reputation: SAVEPOINT rollback failed; connection may be in inconsistent state",
                     exc_info=True,
                 )
         logger.warning(

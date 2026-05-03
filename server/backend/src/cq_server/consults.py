@@ -658,6 +658,7 @@ def close_consult(
         # swallows on failure so a flaky reputation chain never blocks
         # consult-close. Body shape per reputation-v1.md §"consult.closed".
         from .reputation import record_event as _record_event
+
         _record_event(
             store._conn,
             event_type="consult.closed",

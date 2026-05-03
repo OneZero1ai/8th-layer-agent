@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -25,8 +26,6 @@ from . import aigrp
 from .auth import require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
-import sqlite3
-
 from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
@@ -229,6 +228,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                     # we successfully fetched + stored a fresh signature from
                     # the peer. Body shape per reputation-v1.md §"peer.heartbeat".
                     from .reputation import record_event as _record_event
+
                     _record_event(
                         store._conn,
                         event_type="peer.heartbeat",
@@ -320,9 +320,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # skip-announce mode or when CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset.
     from .directory_client import reputation_publish_loop
 
-    reputation_publish_task = asyncio.create_task(
-        reputation_publish_loop(_fresh_conn)
-    )
+    reputation_publish_task = asyncio.create_task(reputation_publish_loop(_fresh_conn))
 
     try:
         yield

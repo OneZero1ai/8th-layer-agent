@@ -136,6 +136,7 @@ def _hook_ku_event(store: "RemoteStore", unit_id: str, verb: str, enterprise_id:
     shape per ``reputation-v1.md`` §"ku.event".
     """
     from .reputation import record_event as _record_event
+
     _record_event(
         store._conn,
         event_type="ku.event",
