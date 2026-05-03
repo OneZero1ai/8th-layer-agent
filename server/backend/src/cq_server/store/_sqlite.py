@@ -374,6 +374,95 @@ class SqliteStore:
         return await self._run_sync(self._approved_domains_sync)
 
     # ------------------------------------------------------------------
+    # Fork-delta: L3 consults (#105 PR-A increment 5)
+    # Backed by ``consults`` + ``consult_messages`` (Alembic 0004).
+    # ------------------------------------------------------------------
+
+    async def create_consult(
+        self,
+        *,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        to_l2_id: str,
+        to_persona: str,
+        subject: str | None,
+        created_at: str,
+    ) -> None:
+        """Open a new consult thread. Status starts at 'open'."""
+        await self._run_sync(
+            self._create_consult_sync,
+            thread_id=thread_id,
+            from_l2_id=from_l2_id,
+            from_persona=from_persona,
+            to_l2_id=to_l2_id,
+            to_persona=to_persona,
+            subject=subject,
+            created_at=created_at,
+        )
+
+    async def get_consult(self, thread_id: str) -> dict[str, Any] | None:
+        """Return one consult thread by id, or None if absent."""
+        return await self._run_sync(self._get_consult_sync, thread_id)
+
+    async def append_consult_message(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        content: str,
+        created_at: str,
+    ) -> None:
+        """Append a message to an existing thread."""
+        await self._run_sync(
+            self._append_consult_message_sync,
+            message_id=message_id,
+            thread_id=thread_id,
+            from_l2_id=from_l2_id,
+            from_persona=from_persona,
+            content=content,
+            created_at=created_at,
+        )
+
+    async def list_consult_messages(self, thread_id: str) -> list[dict[str, Any]]:
+        """Return messages for a thread, oldest-first."""
+        return await self._run_sync(self._list_consult_messages_sync, thread_id)
+
+    async def close_consult(
+        self,
+        *,
+        thread_id: str,
+        closed_at: str,
+        resolution_summary: str | None,
+    ) -> bool:
+        """Mark a thread closed; True if it was open before."""
+        return await self._run_sync(
+            self._close_consult_sync,
+            thread_id=thread_id,
+            closed_at=closed_at,
+            resolution_summary=resolution_summary,
+        )
+
+    async def list_inbox(
+        self,
+        *,
+        to_l2_id: str,
+        to_persona: str,
+        include_closed: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return threads addressed to (l2_id, persona)."""
+        return await self._run_sync(
+            self._list_inbox_sync,
+            to_l2_id=to_l2_id,
+            to_persona=to_persona,
+            include_closed=include_closed,
+            limit=limit,
+        )
+
+    # ------------------------------------------------------------------
     # Fork-delta: tenancy + xgroup helpers (#105 PR-A increment 2)
     # ------------------------------------------------------------------
 
@@ -1179,6 +1268,170 @@ class SqliteStore:
                 {"v": 1 if allowed else 0, "id": unit_id},
             )
         return cur.rowcount > 0
+
+    _CONSULT_COLS = (
+        "thread_id, from_l2_id, from_persona, to_l2_id, to_persona, "
+        "subject, status, claimed_by, created_at, closed_at, resolution_summary"
+    )
+
+    @staticmethod
+    def _consult_row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "thread_id": row[0],
+            "from_l2_id": row[1],
+            "from_persona": row[2],
+            "to_l2_id": row[3],
+            "to_persona": row[4],
+            "subject": row[5],
+            "status": row[6],
+            "claimed_by": row[7],
+            "created_at": row[8],
+            "closed_at": row[9],
+            "resolution_summary": row[10],
+        }
+
+    def _create_consult_sync(
+        self,
+        *,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        to_l2_id: str,
+        to_persona: str,
+        subject: str | None,
+        created_at: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO consults (
+                        thread_id, from_l2_id, from_persona,
+                        to_l2_id, to_persona, subject,
+                        status, created_at
+                    ) VALUES (
+                        :thread_id, :from_l2_id, :from_persona,
+                        :to_l2_id, :to_persona, :subject,
+                        'open', :created_at
+                    )
+                    """
+                ),
+                {
+                    "thread_id": thread_id,
+                    "from_l2_id": from_l2_id,
+                    "from_persona": from_persona,
+                    "to_l2_id": to_l2_id,
+                    "to_persona": to_persona,
+                    "subject": subject,
+                    "created_at": created_at,
+                },
+            )
+
+    def _get_consult_sync(self, thread_id: str) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(f"SELECT {self._CONSULT_COLS} FROM consults WHERE thread_id = :tid"),
+                {"tid": thread_id},
+            ).fetchone()
+        return self._consult_row_to_dict(row) if row else None
+
+    def _append_consult_message_sync(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        from_l2_id: str,
+        from_persona: str,
+        content: str,
+        created_at: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO consult_messages (
+                        message_id, thread_id, from_l2_id,
+                        from_persona, content, created_at
+                    ) VALUES (
+                        :message_id, :thread_id, :from_l2_id,
+                        :from_persona, :content, :created_at
+                    )
+                    """
+                ),
+                {
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "from_l2_id": from_l2_id,
+                    "from_persona": from_persona,
+                    "content": content,
+                    "created_at": created_at,
+                },
+            )
+
+    def _list_consult_messages_sync(self, thread_id: str) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT message_id, thread_id, from_l2_id,
+                           from_persona, content, created_at
+                    FROM consult_messages
+                    WHERE thread_id = :tid
+                    ORDER BY created_at ASC
+                    """
+                ),
+                {"tid": thread_id},
+            ).fetchall()
+        return [
+            {
+                "message_id": r[0],
+                "thread_id": r[1],
+                "from_l2_id": r[2],
+                "from_persona": r[3],
+                "content": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    def _close_consult_sync(
+        self,
+        *,
+        thread_id: str,
+        closed_at: str,
+        resolution_summary: str | None,
+    ) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text(
+                    """
+                    UPDATE consults
+                    SET status = 'closed', closed_at = :closed_at,
+                        resolution_summary = :res
+                    WHERE thread_id = :tid AND status != 'closed'
+                    """
+                ),
+                {"closed_at": closed_at, "res": resolution_summary, "tid": thread_id},
+            )
+        return cur.rowcount > 0
+
+    def _list_inbox_sync(
+        self,
+        *,
+        to_l2_id: str,
+        to_persona: str,
+        include_closed: bool,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        sql = f"SELECT {self._CONSULT_COLS} FROM consults WHERE to_l2_id = :to_l2 AND to_persona = :to_p"
+        params: dict[str, Any] = {"to_l2": to_l2_id, "to_p": to_persona}
+        if not include_closed:
+            sql += " AND status != 'closed'"
+        sql += " ORDER BY created_at DESC LIMIT :limit"
+        params["limit"] = limit
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [self._consult_row_to_dict(r) for r in rows]
 
     def _approved_domains_sync(self) -> set[str]:
         with self._engine.connect() as conn:
