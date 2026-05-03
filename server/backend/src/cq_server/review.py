@@ -109,7 +109,7 @@ async def review_queue(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewQueueResponse:
     """Return pending KUs for review, scoped to the caller's Enterprise."""
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     items = await store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id)
     total = await store.pending_count(enterprise_id=enterprise_id)
     return ReviewQueueResponse(
@@ -128,7 +128,7 @@ async def review_queue(
     )
 
 
-def _hook_ku_event(store: "SqliteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
+async def _hook_ku_event(store: "SqliteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
     """Reputation hook for KU lifecycle transitions (#108 sub-task 5).
 
     Best-effort: ``record_event`` swallows on failure so a flaky
@@ -157,7 +157,7 @@ async def approve_unit(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
     """Approve a pending KU in the admin's Enterprise."""
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
@@ -166,7 +166,7 @@ async def approve_unit(
     await store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
-    _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
+    await _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 
@@ -177,7 +177,7 @@ async def reject_unit(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
     """Reject a pending KU in the admin's Enterprise."""
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
@@ -186,7 +186,7 @@ async def reject_unit(
     await store.set_review_status(unit_id, "rejected", username, enterprise_id=enterprise_id)
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
-    _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
+    await _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 
@@ -201,7 +201,7 @@ async def delete_unit(
     Cross-tenant DELETEs return 404 — same shape as missing-id, so
     enumeration probes can't fingerprint other tenants' KU IDs.
     """
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     deleted = await store.delete(unit_id, enterprise_id=enterprise_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
@@ -214,7 +214,7 @@ async def review_stats(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewStatsResponse:
     """Return dashboard metrics, scoped to the caller's Enterprise."""
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     counts = await store.counts_by_status(enterprise_id=enterprise_id)
     return ReviewStatsResponse(
         counts={
@@ -242,7 +242,7 @@ async def list_units(
     store: SqliteStore = Depends(get_store),
 ) -> list[ReviewItem]:
     """List KUs in the admin's Enterprise, filtered by domain/confidence/status."""
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     items = await store.list_units(
         domain=domain,
         confidence_min=confidence_min,
@@ -272,7 +272,7 @@ async def get_unit(
 
     Cross-tenant GETs return 404 — same shape as missing-id.
     """
-    enterprise_id = _admin_enterprise(username, store)
+    enterprise_id = await _admin_enterprise(username, store)
     ku = await store.get_any(unit_id, enterprise_id=enterprise_id)
     if ku is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")

@@ -943,10 +943,14 @@ class SqliteStore:
         return KnowledgeUnit.model_validate_json(row[0]) if row is not None else None
 
     def _get_user_sync(self, username: str) -> dict[str, Any] | None:
-        from ._queries import SELECT_USER_BY_USERNAME
-
         with self._engine.connect() as conn:
-            row = conn.execute(SELECT_USER_BY_USERNAME, {"username": username}).fetchone()
+            row = conn.execute(
+                text(
+                    "SELECT id, username, password_hash, created_at, role, "
+                    "enterprise_id, group_id FROM users WHERE username = :u"
+                ),
+                {"u": username},
+            ).fetchone()
         if row is None:
             return None
         return {
@@ -954,6 +958,9 @@ class SqliteStore:
             "username": row[1],
             "password_hash": row[2],
             "created_at": row[3],
+            "role": row[4],
+            "enterprise_id": row[5],
+            "group_id": row[6],
         }
 
     def _insert_sync(self, unit: KnowledgeUnit) -> None:
