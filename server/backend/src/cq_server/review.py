@@ -11,16 +11,16 @@ from pydantic import BaseModel
 
 from .auth import require_admin
 from .deps import get_store
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 
-def _admin_enterprise(username: str, store: RemoteStore) -> str:
+async def _admin_enterprise(username: str, store: SqliteStore) -> str:
     """Resolve the admin caller's enterprise_id from the user row.
 
     Raises 401 if the row vanished between auth and request handling
     (revoked admin, race with delete, etc.).
     """
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return user["enterprise_id"]
@@ -102,16 +102,16 @@ router = APIRouter(prefix="/review", tags=["review"])
 
 
 @router.get("/queue")
-def review_queue(
+async def review_queue(
     limit: int = 20,
     offset: int = 0,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> ReviewQueueResponse:
     """Return pending KUs for review, scoped to the caller's Enterprise."""
     enterprise_id = _admin_enterprise(username, store)
-    items = store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id)
-    total = store.pending_count(enterprise_id=enterprise_id)
+    items = await store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id)
+    total = await store.pending_count(enterprise_id=enterprise_id)
     return ReviewQueueResponse(
         items=[
             ReviewItem(
@@ -128,7 +128,7 @@ def review_queue(
     )
 
 
-def _hook_ku_event(store: "RemoteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
+def _hook_ku_event(store: "SqliteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
     """Reputation hook for KU lifecycle transitions (#108 sub-task 5).
 
     Best-effort: ``record_event`` swallows on failure so a flaky
@@ -151,50 +151,50 @@ def _hook_ku_event(store: "RemoteStore", unit_id: str, verb: str, enterprise_id:
 
 
 @router.post("/{unit_id}/approve")
-def approve_unit(
+async def approve_unit(
     unit_id: str,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
     """Approve a pending KU in the admin's Enterprise."""
     enterprise_id = _admin_enterprise(username, store)
-    status = store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     if status["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
-    store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
-    updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    await store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
+    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 
 @router.post("/{unit_id}/reject")
-def reject_unit(
+async def reject_unit(
     unit_id: str,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> ReviewDecisionResponse:
     """Reject a pending KU in the admin's Enterprise."""
     enterprise_id = _admin_enterprise(username, store)
-    status = store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     if status["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
-    store.set_review_status(unit_id, "rejected", username, enterprise_id=enterprise_id)
-    updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    await store.set_review_status(unit_id, "rejected", username, enterprise_id=enterprise_id)
+    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 
 @router.delete("/{unit_id}", status_code=204)
-def delete_unit(
+async def delete_unit(
     unit_id: str,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> None:
     """Hard-delete a KU in the admin's Enterprise (irreversible).
 
@@ -202,48 +202,48 @@ def delete_unit(
     enumeration probes can't fingerprint other tenants' KU IDs.
     """
     enterprise_id = _admin_enterprise(username, store)
-    deleted = store.delete(unit_id, enterprise_id=enterprise_id)
+    deleted = await store.delete(unit_id, enterprise_id=enterprise_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     return None
 
 
 @router.get("/stats")
-def review_stats(
+async def review_stats(
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> ReviewStatsResponse:
     """Return dashboard metrics, scoped to the caller's Enterprise."""
     enterprise_id = _admin_enterprise(username, store)
-    counts = store.counts_by_status(enterprise_id=enterprise_id)
+    counts = await store.counts_by_status(enterprise_id=enterprise_id)
     return ReviewStatsResponse(
         counts={
             "pending": counts.get("pending", 0),
             "approved": counts.get("approved", 0),
             "rejected": counts.get("rejected", 0),
         },
-        domains=store.domain_counts(enterprise_id=enterprise_id),
-        confidence_distribution=store.confidence_distribution(enterprise_id=enterprise_id),
-        recent_activity=store.recent_activity(enterprise_id=enterprise_id),
+        domains=await store.domain_counts(enterprise_id=enterprise_id),
+        confidence_distribution=await store.confidence_distribution(enterprise_id=enterprise_id),
+        recent_activity=await store.recent_activity(enterprise_id=enterprise_id),
         trends=TrendsResponse(
-            daily=[DailyCount(**d) for d in store.daily_counts(enterprise_id=enterprise_id)],
+            daily=[DailyCount(**d) for d in await store.daily_counts(enterprise_id=enterprise_id)],
         ),
     )
 
 
 @router.get("/units")
-def list_units(
+async def list_units(
     domain: str | None = None,
     confidence_min: float | None = None,
     confidence_max: float | None = None,
     status: str | None = None,
     limit: int = 100,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> list[ReviewItem]:
     """List KUs in the admin's Enterprise, filtered by domain/confidence/status."""
     enterprise_id = _admin_enterprise(username, store)
-    items = store.list_units(
+    items = await store.list_units(
         domain=domain,
         confidence_min=confidence_min,
         confidence_max=confidence_max,
@@ -263,20 +263,20 @@ def list_units(
 
 
 @router.get("/{unit_id}")
-def get_unit(
+async def get_unit(
     unit_id: str,
     username: str = Depends(require_admin),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> ReviewItem:
     """Return one KU's review row, scoped to the admin's Enterprise.
 
     Cross-tenant GETs return 404 — same shape as missing-id.
     """
     enterprise_id = _admin_enterprise(username, store)
-    ku = store.get_any(unit_id, enterprise_id=enterprise_id)
+    ku = await store.get_any(unit_id, enterprise_id=enterprise_id)
     if ku is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    review = store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    review = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert review is not None  # Unit exists; get_any just returned it.
     return ReviewItem(
         knowledge_unit=ku,

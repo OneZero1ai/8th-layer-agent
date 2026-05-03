@@ -61,7 +61,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         store = _get_store()
         # Seed alice as a real user
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ALICE, pw)
+        store.sync.create_user(ALICE, pw)
         with store._lock, store._conn:
             store._conn.execute(
                 "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
@@ -95,7 +95,7 @@ def _seed_peering(
             }
         ]
     store = _get_store()
-    store.upsert_directory_peering(
+    store.sync.upsert_directory_peering(
         offer_id=offer_id,
         from_enterprise=from_ent,
         to_enterprise=to_ent,

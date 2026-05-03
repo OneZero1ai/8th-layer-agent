@@ -36,7 +36,8 @@ from .quality import check_propose_quality
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
-from .store import RemoteStore, normalize_domains
+from .store import normalize_domains
+from .store._sqlite import SqliteStore
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -64,17 +65,17 @@ class StatsResponse(BaseModel):
     domains: dict[str, int]
 
 
-_store: RemoteStore | None = None
+_store: SqliteStore | None = None
 
 
-def _get_store() -> RemoteStore:
+def _get_store() -> SqliteStore:
     """Return the global store instance."""
     if _store is None:
         raise RuntimeError("Store not initialised")
     return _store
 
 
-async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
+async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
     """Bootstrap into the Enterprise mesh on first start, then poll
     every known peer's /aigrp/signature on a 5-min interval forever.
 
@@ -90,7 +91,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
     poll_interval = int(os.environ.get("CQ_AIGRP_POLL_INTERVAL_SEC", "300"))
     needs_bootstrap = (not aigrp.is_first_deploy()) and bool(aigrp.seed_peer_url())
 
-    def _try_bootstrap() -> bool:
+    async def _try_bootstrap() -> bool:
         """Hit the seed's /aigrp/hello and absorb its peer table.
         Returns True on success. Idempotent on the seed side.
 
@@ -127,7 +128,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
             for p in body.get("peers", []):
                 if p.get("l2_id") == aigrp.self_l2_id():
                     continue
-                store.upsert_aigrp_peer(
+                await store.upsert_aigrp_peer(
                     l2_id=p["l2_id"],
                     enterprise=p["enterprise"],
                     group=p["group"],
@@ -147,7 +148,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
             return False
 
     # 1. First-attempt bootstrap on startup (best effort).
-    if needs_bootstrap and _try_bootstrap():
+    if needs_bootstrap and await _try_bootstrap():
         needs_bootstrap = False
 
     # 2. Periodic peer-poll loop — fetch each peer's /aigrp/signature.
@@ -191,9 +192,9 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
     while True:
         try:
             await asyncio.sleep(poll_interval)
-            if needs_bootstrap and _try_bootstrap():
+            if needs_bootstrap and await _try_bootstrap():
                 needs_bootstrap = False
-            peers = store.list_aigrp_peers(aigrp.enterprise())
+            peers = await store.list_aigrp_peers(aigrp.enterprise())
             for p in peers:
                 if p["l2_id"] == aigrp.self_l2_id():
                     continue
@@ -213,7 +214,7 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                         base64.b64decode(sig["embedding_centroid_b64"]) if sig.get("embedding_centroid_b64") else None
                     )
                     bloom = base64.b64decode(sig["domain_bloom_b64"]) if sig.get("domain_bloom_b64") else None
-                    store.upsert_aigrp_peer(
+                    await store.upsert_aigrp_peer(
                         l2_id=sig["l2_id"],
                         enterprise=sig["enterprise"],
                         group=sig["group"],
@@ -273,10 +274,10 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # both paths are idempotent and the legacy one will be removed in
     # #310 once this PR has rolled out everywhere.
     run_migrations(database_url)
-    # Phase 1 of upstream merge — keep our sync RemoteStore as the
-    # primary store (carries all fork-delta methods: AIGRP, consults,
-    # directory, multi-tenant scope). Phase 2 ports to async SqliteStore.
-    _store = RemoteStore(db_path=db_path)
+    # Phase 2b cutover (#105 PR-B): app.state.store is now the async
+    # SqliteStore. SqliteStore stays in tree for the rollback window;
+    # PR-C/D delete it once this cutover bakes.
+    _store = SqliteStore(db_path=db_path)
     app_instance.state.store = _store
     app_instance.state.api_key_pepper = pepper
 
@@ -337,7 +338,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await task
-        _store.close()
+        await _store.close()
 
 
 # --- API routes on a shared router so they can be mounted at both / and /api. ---
@@ -406,7 +407,7 @@ class AigrpLookupResponse(BaseModel):
 
 
 @api_router.post("/aigrp/lookup")
-def aigrp_lookup(
+async def aigrp_lookup(
     request: AigrpLookupRequest,
     _username: str = Depends(require_api_key),
 ) -> AigrpLookupResponse:
@@ -428,7 +429,7 @@ def aigrp_lookup(
     from .embed import unpack
 
     query_vec = unpack(payload[0])
-    raw_hits = store.semantic_query(
+    raw_hits = await store.semantic_query(
         query_vec,
         limit=request.max_results * 3,  # over-fetch so filters have headroom
     )
@@ -545,13 +546,13 @@ class AigrpSignatureResponse(BaseModel):
     computed_at: str
 
 
-def _build_self_signature(store: RemoteStore) -> AigrpSignatureResponse:
+async def _build_self_signature(store: SqliteStore) -> AigrpSignatureResponse:
     """Walk the local approved corpus and produce this L2's signature."""
     import base64
 
-    embeddings = store.approved_embeddings_iter()
+    embeddings = await store.approved_embeddings_iter()
     centroid = aigrp.compute_centroid(embeddings)
-    domains = store.approved_domains()
+    domains = await store.approved_domains()
     bloom = aigrp.compute_domain_bloom(domains)
     return AigrpSignatureResponse(
         l2_id=aigrp.self_l2_id(),
@@ -589,7 +590,7 @@ async def aigrp_hello(
         )
 
     store = _get_store()
-    store.upsert_aigrp_peer(
+    await store.upsert_aigrp_peer(
         l2_id=body.l2_id,
         enterprise=body.enterprise,
         group=body.group,
@@ -604,7 +605,7 @@ async def aigrp_hello(
     )
 
     # Compose the response — current peer table from this L2's POV.
-    peers = store.list_aigrp_peers(aigrp.enterprise())
+    peers = await store.list_aigrp_peers(aigrp.enterprise())
 
     # Fan out the new peer's existence to every other known peer
     # asynchronously. Failures are best-effort; convergence is via
@@ -680,7 +681,7 @@ async def aigrp_hello(
 
 
 @api_router.post("/aigrp/announce", status_code=201)
-def aigrp_announce(
+async def aigrp_announce(
     body: AigrpAnnounceRequest,
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> dict[str, str]:
@@ -692,7 +693,7 @@ def aigrp_announce(
         )
 
     store = _get_store()
-    store.upsert_aigrp_peer(
+    await store.upsert_aigrp_peer(
         l2_id=body.l2_id,
         enterprise=body.enterprise,
         group=body.group,
@@ -709,12 +710,12 @@ def aigrp_announce(
 
 
 @api_router.get("/aigrp/peers")
-def aigrp_peers(
+async def aigrp_peers(
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpPeersResponse:
     """Return our current view of the Enterprise's peer mesh."""
     store = _get_store()
-    peers = store.list_aigrp_peers(aigrp.enterprise())
+    peers = await store.list_aigrp_peers(aigrp.enterprise())
     return AigrpPeersResponse(
         enterprise=aigrp.enterprise(),
         self_l2_id=aigrp.self_l2_id(),
@@ -822,7 +823,7 @@ def _decide_policy_for_ku(
 
 
 @api_router.post("/aigrp/forward-query")
-def aigrp_forward_query(
+async def aigrp_forward_query(
     body: AigrpForwardQueryRequest,
     request: Request,
     _peer: None = Depends(aigrp.require_peer_key),
@@ -869,7 +870,7 @@ def aigrp_forward_query(
     # consent record drives whether we even attempt to return rows.
     consent: dict[str, object] | None = None
     if body.requester_enterprise != responder_enterprise:
-        consent = store.find_cross_enterprise_consent(
+        consent = await store.find_cross_enterprise_consent(
             requester_enterprise=body.requester_enterprise,
             responder_enterprise=responder_enterprise,
             requester_group=body.requester_group,
@@ -878,7 +879,7 @@ def aigrp_forward_query(
         )
         if consent is None:
             # Silent deny — log the attempt and return empty.
-            store.record_cross_l2_audit(
+            await store.record_cross_l2_audit(
                 audit_id=uuid.uuid4().hex,
                 ts=aigrp.now_iso(),
                 requester_l2_id=body.requester_l2_id,
@@ -954,7 +955,7 @@ def aigrp_forward_query(
             break
 
     consent_id = str(consent["consent_id"]) if consent else None
-    store.record_cross_l2_audit(
+    await store.record_cross_l2_audit(
         audit_id=uuid.uuid4().hex,
         ts=aigrp.now_iso(),
         requester_l2_id=body.requester_l2_id,
@@ -1034,7 +1035,7 @@ class ActivePeersResponse(BaseModel):
 
 
 @api_router.post("/peers/heartbeat")
-def peers_heartbeat(
+async def peers_heartbeat(
     request: PeerHeartbeatRequest,
     username: str = Depends(require_api_key),
 ) -> PeerHeartbeatResponse:
@@ -1048,11 +1049,11 @@ def peers_heartbeat(
     from datetime import UTC, datetime
 
     store = _get_store()
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     now = datetime.now(UTC).isoformat()
-    store.upsert_peer(
+    await store.upsert_peer(
         persona=request.persona,
         user_id=int(user["id"]),
         enterprise_id=user["enterprise_id"],
@@ -1070,7 +1071,7 @@ def peers_heartbeat(
 
 
 @api_router.get("/peers/active")
-def peers_active(
+async def peers_active(
     group: Annotated[str | None, Query()] = None,
     since_minutes: Annotated[int, Query(gt=0, le=24 * 60)] = PEER_ACTIVE_DEFAULT_WINDOW_MIN,
     include_self: Annotated[bool, Query()] = False,
@@ -1096,12 +1097,12 @@ def peers_active(
     from datetime import UTC, datetime, timedelta
 
     store = _get_store()
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     now = datetime.now(UTC)
     since_iso = (now - timedelta(minutes=since_minutes)).isoformat()
-    rows = store.list_active_peers(
+    rows = await store.list_active_peers(
         enterprise_id=user["enterprise_id"],
         since_iso=since_iso,
         group_id=group,
@@ -1131,7 +1132,7 @@ def peers_active(
 
 
 @api_router.get("/aigrp/peers-active")
-def aigrp_peers_active(
+async def aigrp_peers_active(
     group: Annotated[str | None, Query()] = None,
     since_minutes: Annotated[int, Query(gt=0, le=24 * 60)] = PEER_ACTIVE_DEFAULT_WINDOW_MIN,
     _peer: None = Depends(aigrp.require_peer_key),
@@ -1155,7 +1156,7 @@ def aigrp_peers_active(
     store = _get_store()
     now = datetime.now(UTC)
     since_iso = (now - timedelta(minutes=since_minutes)).isoformat()
-    rows = store.list_active_peers(
+    rows = await store.list_active_peers(
         enterprise_id=aigrp.enterprise(),
         since_iso=since_iso,
         group_id=group,
@@ -1236,7 +1237,7 @@ class ConsentListResponse(BaseModel):
 
 
 @api_router.post("/consents/sign", status_code=201)
-def consents_sign(
+async def consents_sign(
     request: SignConsentRequest,
     admin_username: str = Depends(require_admin),
 ) -> SignConsentResponse:
@@ -1264,7 +1265,7 @@ def consents_sign(
 
     store = _get_store()
     now = aigrp.now_iso()
-    existing = store.find_active_consent_for_pair(
+    existing = await store.find_active_consent_for_pair(
         requester_enterprise=request.requester_enterprise,
         responder_enterprise=request.responder_enterprise,
         requester_group=request.requester_group,
@@ -1279,7 +1280,7 @@ def consents_sign(
 
     consent_id = "consent_" + uuid.uuid4().hex[:20]
     audit_log_id = "aud_" + uuid.uuid4().hex[:20]
-    store.insert_cross_enterprise_consent(
+    await store.insert_cross_enterprise_consent(
         consent_id=consent_id,
         requester_enterprise=request.requester_enterprise,
         responder_enterprise=request.responder_enterprise,
@@ -1293,7 +1294,7 @@ def consents_sign(
     )
     # Pair the sign event with a row in cross_l2_audit so the audit log
     # tells the full story of "who signed what, when".
-    store.record_cross_l2_audit(
+    await store.record_cross_l2_audit(
         audit_id=audit_log_id,
         ts=now,
         requester_l2_id=None,
@@ -1316,7 +1317,7 @@ def consents_sign(
 
 
 @api_router.get("/consents")
-def consents_list(
+async def consents_list(
     include_expired: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(gt=0, le=500)] = 50,
     _admin: str = Depends(require_admin),
@@ -1328,7 +1329,7 @@ def consents_list(
     Records are ordered newest-first by ``signed_at``.
     """
     store = _get_store()
-    rows = store.list_cross_enterprise_consents(
+    rows = await store.list_cross_enterprise_consents(
         include_expired=include_expired,
         now_iso=aigrp.now_iso(),
         limit=limit,
@@ -1340,7 +1341,7 @@ def consents_list(
 
 
 @api_router.delete("/consents/{consent_id}", status_code=200)
-def consents_revoke(
+async def consents_revoke(
     consent_id: str,
     admin_username: str = Depends(require_admin),
 ) -> dict[str, str]:
@@ -1354,12 +1355,12 @@ def consents_revoke(
     import uuid
 
     store = _get_store()
-    row = store.get_cross_enterprise_consent(consent_id)
+    row = await store.get_cross_enterprise_consent(consent_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Consent not found")
     now = aigrp.now_iso()
-    store.revoke_cross_enterprise_consent(consent_id=consent_id, revoked_at=now)
-    store.record_cross_l2_audit(
+    await store.revoke_cross_enterprise_consent(consent_id=consent_id, revoked_at=now)
+    await store.record_cross_l2_audit(
         audit_id="aud_" + uuid.uuid4().hex[:20],
         ts=now,
         requester_l2_id=None,
@@ -1381,7 +1382,7 @@ def consents_revoke(
 
 
 @api_router.get("/query/semantic")
-def query_semantic(
+async def query_semantic(
     q: Annotated[str, Query(min_length=1)],
     limit: Annotated[int, Query(gt=0, le=50)] = 10,
     _username: str = Depends(require_api_key),
@@ -1394,7 +1395,7 @@ def query_semantic(
     from .embed import unpack
 
     query_vec = unpack(payload[0])
-    hits = store.semantic_query(query_vec, limit=limit)
+    hits = await store.semantic_query(query_vec, limit=limit)
     return [SemanticHit(knowledge_unit=u, similarity=s) for u, s in hits]
 
 
@@ -1416,10 +1417,10 @@ async def query_units(
     discovery flows through ``/aigrp/forward-query`` (consent + audit).
     """
     store = _get_store()
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    return store.query(
+    return await store.query(
         domains,
         languages=languages,
         frameworks=frameworks,
@@ -1463,9 +1464,10 @@ async def propose_unit(
     )
     if embed_payload is not None:
         embedding_bytes, embedding_model = embed_payload
-        store.insert(unit, embedding=embedding_bytes, embedding_model=embedding_model)
+        await store.insert(unit)
+        await store.set_embedding(unit.id, embedding_bytes, embedding_model)
     else:
-        store.insert(unit)
+        await store.insert(unit)
     return unit
 
 
@@ -1473,11 +1475,11 @@ async def propose_unit(
 async def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
     """Confirm a knowledge unit, boosting its confidence."""
     store = _get_store()
-    unit = store.get(unit_id)
+    unit = await store.get(unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     confirmed = apply_confirmation(unit)
-    store.update(confirmed)
+    await store.update(confirmed)
     return confirmed
 
 
@@ -1485,16 +1487,16 @@ async def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) 
 async def flag_unit(unit_id: str, request: FlagRequest, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
     """Flag a knowledge unit, reducing its confidence."""
     store = _get_store()
-    unit = store.get(unit_id)
+    unit = await store.get(unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     flagged = apply_flag(unit, request.reason)
-    store.update(flagged)
+    await store.update(flagged)
     return flagged
 
 
 @api_router.get("/stats")
-def stats(
+async def stats(
     username: str = Depends(require_api_key),
 ) -> StatsResponse:
     """Return store statistics scoped to the caller's Enterprise.
@@ -1505,14 +1507,14 @@ def stats(
     Enterprise — same pattern as /query (CRIT #33).
     """
     store = _get_store()
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     enterprise_id = user["enterprise_id"]
     return StatsResponse(
-        total_units=store.count_in_enterprise(enterprise_id),
-        tiers=store.counts_by_tier(enterprise_id=enterprise_id),
-        domains=store.domain_counts(enterprise_id=enterprise_id),
+        total_units=await store.count_in_enterprise(enterprise_id),
+        tiers=await store.counts_by_tier(enterprise_id=enterprise_id),
+        domains=await store.domain_counts(enterprise_id=enterprise_id),
     )
 
 

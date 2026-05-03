@@ -113,6 +113,24 @@ class SqliteStore:
         self._closed = True
         await asyncio.to_thread(self._engine.dispose)
 
+    def close_sync(self) -> None:
+        """Sync close — for callers outside an async context (tests, scripts)."""
+        if self._closed:
+            return
+        self._closed = True
+        self._engine.dispose()
+
+    @property
+    def sync(self) -> "_SyncStoreProxy":
+        """Sync proxy for callers not in an async context.
+
+        Tests + sync fixtures use ``store.sync.method(...)`` instead of
+        ``await store.method(...)``. Each call forwards to the matching
+        ``_<name>_sync`` private implementation. Transitional shim for
+        the PR-B cutover.
+        """
+        return _SyncStoreProxy(self)
+
     async def confidence_distribution(self) -> dict[str, int]:
         return await self._run_sync(self._confidence_distribution_sync)
 
@@ -2116,3 +2134,30 @@ class SqliteStore:
                 )
             ).fetchall()
         return {r[0] for r in rows if r[0]}
+
+
+class _SyncStoreProxy:
+    """Sync method proxy over SqliteStore.
+
+    Forwards each attribute access to the matching ``_<name>_sync``
+    implementation on the wrapped store. ``close()`` and ``db_path``
+    are surfaced explicitly because they don't follow the
+    ``_method_sync`` naming convention.
+    """
+
+    def __init__(self, store: "SqliteStore") -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        sync_attr = getattr(self._store, f"_{name}_sync", None)
+        if sync_attr is not None:
+            return sync_attr
+        # Fall back to direct attribute (e.g. internal helpers).
+        return getattr(self._store, name)
+
+    @property
+    def db_path(self) -> Path:
+        return self._store._db_path
+
+    def close(self) -> None:
+        self._store.close_sync()

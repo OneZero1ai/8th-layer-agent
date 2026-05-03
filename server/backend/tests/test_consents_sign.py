@@ -31,9 +31,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as c:
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ADMIN, pw)
-        store.create_user(USER, pw)
-        store.set_user_role(ADMIN, "admin")
+        store.sync.create_user(ADMIN, pw)
+        store.sync.create_user(USER, pw)
+        store.sync.set_user_role(ADMIN, "admin")
         yield c
 
 
@@ -68,7 +68,7 @@ class TestSignHappyPath:
         assert body["audit_log_id"].startswith("aud_")
         # Row landed.
         store = _get_store()
-        row = store.get_cross_enterprise_consent(body["consent_id"])
+        row = store.sync.get_cross_enterprise_consent(body["consent_id"])
         assert row is not None
         assert row["requester_enterprise"] == "initech"
         assert row["responder_enterprise"] == "acme"

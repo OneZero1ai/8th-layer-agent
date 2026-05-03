@@ -61,7 +61,7 @@ from .crypto import (
     sign_envelope,
     verify_envelope_signature,
 )
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 # Re-export for callers and tests that still import these from
 # ``cq_server.directory_client`` (sprint-3 surface). The canonical
@@ -316,7 +316,7 @@ async def _post_peerings_pull(
 async def _pull_and_persist_once(
     privkey: Ed25519PrivateKey | None,
     enterprise_id: str,
-    store: RemoteStore,
+    store: SqliteStore,
 ) -> int:
     """One pull cycle. Returns number of peerings persisted."""
     pubkey_cache: dict[str, str] = {}
@@ -371,7 +371,7 @@ async def _pull_and_persist_once(
     return persisted
 
 
-async def _pull_loop(privkey: Ed25519PrivateKey | None, enterprise_id: str, store: RemoteStore) -> None:
+async def _pull_loop(privkey: Ed25519PrivateKey | None, enterprise_id: str, store: SqliteStore) -> None:
     """Long-running peering pull cron."""
     interval = pull_interval_sec()
     log.info("directory: pull loop started enterprise=%s interval=%ds", enterprise_id, interval)
@@ -559,7 +559,7 @@ async def reputation_publish_loop(get_conn: Callable[[], sqlite3.Connection]) ->
                 )
 
 
-async def directory_bootstrap_and_loop(store: RemoteStore) -> None:
+async def directory_bootstrap_and_loop(store: SqliteStore) -> None:
     """Top-level lifespan task: announce, then start the pull loop.
 
     Three modes via env:

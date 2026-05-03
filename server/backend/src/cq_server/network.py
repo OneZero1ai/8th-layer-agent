@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field
 
 from .deps import get_store
 from .embed import embed_text, unpack
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -677,7 +677,7 @@ router = APIRouter(prefix="/network", tags=["network"])
 @router.post("/topology", response_model=TopologyResponse)
 @router.get("/topology", response_model=TopologyResponse)
 async def network_topology(
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> TopologyResponse:
     """Aggregate per-L2 metadata + consent edges into the topology view.
 
@@ -696,16 +696,16 @@ async def network_topology(
         return cached  # type: ignore[no-any-return]
 
     snapshots = await _fan_out_all(FLEET_L2S)
-    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
+    consents = await store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
     response = _build_topology(snapshots, consents)
     _TOPOLOGY_CACHE["value"] = response
     _TOPOLOGY_CACHE["expires_at"] = now + TOPOLOGY_CACHE_TTL_SECONDS
     return response
 
 
-def _resolve_caller_scope(store: RemoteStore, username: str) -> tuple[str, str]:
+async def _resolve_caller_scope(store: SqliteStore, username: str) -> tuple[str, str]:
     """Pull the caller's (enterprise_id, group_id) from their user row."""
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return str(user.get("enterprise_id") or ""), str(user.get("group_id") or "")
@@ -715,7 +715,7 @@ def _resolve_caller_scope(store: RemoteStore, username: str) -> tuple[str, str]:
 @router.get("/dsn/resolve", response_model=DsnResolveResponse)
 async def network_dsn_resolve(
     request: DsnResolveRequest,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> DsnResolveResponse:
     """Embed the caller's intent and rank fleet L2s by topical similarity.
 
@@ -822,7 +822,7 @@ async def network_dsn_resolve(
         )
 
     t2 = time.monotonic()
-    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
+    consents = await store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
 
     candidates: list[DsnCandidate] = []
     for snap in snapshots:
@@ -1005,7 +1005,7 @@ async def _call_forward_query(
 
 
 async def _resolve_dsn_internal(
-    intent: str, caller_enterprise: str, caller_group: str, store: RemoteStore
+    intent: str, caller_enterprise: str, caller_group: str, store: SqliteStore
 ) -> tuple[DsnResolveResponse | None, list[float], int]:
     """Inline DSN resolve used by demo scenarios. Returns (response, intent_vec, dsn_ms)."""
     t0 = time.monotonic()
@@ -1014,7 +1014,7 @@ async def _resolve_dsn_internal(
         return None, [], int((time.monotonic() - t0) * 1000)
     intent_vec = unpack(payload[0])
     snapshots = await _fan_out_all(FLEET_L2S)
-    consents = store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
+    consents = await store.list_cross_enterprise_consents(include_expired=False, now_iso=_now_iso(), limit=200)
     candidates: list[DsnCandidate] = []
     for snap in snapshots:
         sig = snap.signature or {}
@@ -1073,7 +1073,7 @@ def _final_results_from_forward(body: dict[str, Any] | None) -> list[TraceFinalR
 async def network_demo(
     scenario: str,
     request: DemoScenarioRequest,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> TraceResponse:
     """Run one of three named scenarios end-to-end against the live fleet.
 
@@ -1100,7 +1100,7 @@ async def network_demo(
     # Pre-flight gate for the consented variant: a row must exist or we
     # 412 so the demo button can show "sign consent first".
     if scenario == "cross-enterprise-consented":
-        consent = store.find_cross_enterprise_consent(
+        consent = await store.find_cross_enterprise_consent(
             requester_enterprise=requester["enterprise"],
             responder_enterprise=("orion" if requester["enterprise"] == "acme" else "acme"),
             requester_group=requester["group"],

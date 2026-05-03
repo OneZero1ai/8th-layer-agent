@@ -50,7 +50,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
             (DAN, "acme", "engineering"),
         ]:
             pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-            store.create_user(user, pw)
+            store.sync.create_user(user, pw)
             with store._lock, store._conn:
                 store._conn.execute(
                     "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",

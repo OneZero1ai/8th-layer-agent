@@ -143,7 +143,7 @@ class TestHelloPubkeyExchange:
         )
         assert r.status_code == 201
         store = _get_store()
-        assert store.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
+        assert store.sync.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
 
     def test_peers_endpoint_exposes_pubkey(
         self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
@@ -192,7 +192,7 @@ class TestHelloPubkeyExchange:
             )
             assert r.status_code == 201
         store = _get_store()
-        assert store.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
+        assert store.sync.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
 
     def test_legacy_hello_without_pubkey_yields_null(
         self, aigrp_client: TestClient
@@ -209,7 +209,7 @@ class TestHelloPubkeyExchange:
         )
         assert r.status_code == 201
         store = _get_store()
-        assert store.get_aigrp_peer_pubkey(PEER_L2) is None
+        assert store.sync.get_aigrp_peer_pubkey(PEER_L2) is None
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +327,7 @@ class TestSenderSideSignatures:
 
 
 def _seed_peer(store: Any, pubkey_b64u: str | None) -> None:
-    store.upsert_aigrp_peer(
+    store.sync.upsert_aigrp_peer(
         l2_id=PEER_L2,
         enterprise="acme",
         group="engineering",

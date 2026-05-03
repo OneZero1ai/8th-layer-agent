@@ -62,7 +62,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
             (DAN, "acme", "engineering"),
         ]:
             pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-            store.create_user(u, pw)
+            store.sync.create_user(u, pw)
             with store._lock, store._conn:
                 store._conn.execute(
                     "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
@@ -71,7 +71,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         # Seed AIGRP peer table with two siblings on the same Enterprise
         # and one on a different Enterprise (cross-Enterprise should 501).
         now = "2026-05-01T16:00:00+00:00"
-        store.upsert_aigrp_peer(
+        store.sync.upsert_aigrp_peer(
             l2_id="acme/solutions",
             enterprise="acme",
             group="solutions",
@@ -83,7 +83,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
             embedding_model=None,
             signature_received=False,
         )
-        store.upsert_aigrp_peer(
+        store.sync.upsert_aigrp_peer(
             l2_id="rival/eng",
             enterprise="rival",
             group="eng",

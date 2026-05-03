@@ -91,9 +91,9 @@ def _seed_ku(
         insight=Insight(summary=summary, detail=detail, action=action),
     )
     embedding = _pack_vec(_unit_vec(axis=embedding_axis))
-    store.insert(unit, embedding=embedding, embedding_model="amazon.titan-embed-text-v2:0")
+    store.sync.insert(unit, embedding=embedding, embedding_model="amazon.titan-embed-text-v2:0")
     # Approve so semantic_query picks it up.
-    store.set_review_status(unit.id, "approved", "test-reviewer")
+    store.sync.set_review_status(unit.id, "approved", "test-reviewer")
     # Set tenancy scope + xgroup flag explicitly.
     with store._lock, store._conn:
         store._conn.execute(
@@ -239,7 +239,7 @@ class TestCrossEnterpriseWithConsent:
         )
         # Sign a consent: initech -> acme, summary_only.
         store = _get_store()
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id="cons_" + uuid.uuid4().hex[:12],
             requester_enterprise="initech",
             responder_enterprise="acme",
@@ -319,7 +319,7 @@ class TestAuditLog:
         _seed_ku(enterprise_id="acme", group_id="solutions")
         store = _get_store()
         consent_id = "cons_" + uuid.uuid4().hex[:12]
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id=consent_id,
             requester_enterprise="initech",
             responder_enterprise="acme",
@@ -407,7 +407,7 @@ class TestConsentLookup:
     def test_expired_consent_is_ignored(self, aigrp_client: TestClient) -> None:
         _seed_ku(enterprise_id="acme", group_id="solutions")
         store = _get_store()
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id="cons_expired",
             requester_enterprise="initech",
             responder_enterprise="acme",

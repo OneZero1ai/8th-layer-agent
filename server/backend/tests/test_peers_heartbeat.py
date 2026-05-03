@@ -36,8 +36,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         # auth user, not the request body.
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ALICE, pw)
-        store.create_user(BOB, pw)
+        store.sync.create_user(ALICE, pw)
+        store.sync.create_user(BOB, pw)
         # Promote Alice to a foreign tenancy scope. Bob stays default.
         with store._lock, store._conn:
             store._conn.execute(
