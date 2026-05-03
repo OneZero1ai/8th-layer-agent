@@ -21,11 +21,11 @@ Plus a fourth structural test:
    when ``_ensure_schema`` is removed and the migration becomes the
    sole source of truth.
 
-Phase-2 update (task #100): chain head is now ``0006_directory_peerings``
-after porting consults / aigrp_peers / directory_peerings tables to
-Alembic. Tests that previously asserted ``BASELINE_REVISION`` ("0001")
-post-upgrade now assert ``HEAD_REVISION``; the stamp-on-startup logic
-still pins legacy DBs at baseline before walking them up the chain.
+Phase-2 update (task #100): chain head is now ``0007_embedding`` after
+porting consults / aigrp_peers / directory_peerings / embedding-cols
+tables to Alembic. Tests that previously asserted ``BASELINE_REVISION``
+("0001") post-upgrade now assert ``HEAD_REVISION``; the stamp-on-startup
+logic still pins legacy DBs at baseline before walking them up the chain.
 """
 
 from __future__ import annotations
