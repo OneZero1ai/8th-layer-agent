@@ -1,25 +1,33 @@
-"""Reputation log v1-alpha — append-only hash chain.
+"""Reputation log v1 — Ed25519-signed append-only hash chain.
 
-Per [decision 13](crosstalk-enterprise/docs/decisions/13) and
+Per [decision 13](crosstalk-enterprise/docs/decisions/13),
+[decision 21](crosstalk-enterprise/docs/decisions/21) (key location), and
 [reputation-v1 spec](crosstalk-enterprise/docs/specs/reputation-v1.md).
 
 This module is the writer-side foundation: it builds canonical event
-records, hash-chains them via ``prev_event_hash``, persists to the
-``reputation_events`` table, and updates ``reputation_chain_meta``.
+records, hash-chains them via ``prev_event_hash``, signs the canonical
+payload with this L2's Ed25519 key (the same key that signs forward-*
+requests), and persists to the ``reputation_events`` table.
 
-What's IN v1-alpha (this module):
+What's IN v1 (this module):
     * Event canonicalisation via RFC 8785 (JCS).
     * Hash chain via SHA-256 over the canonical bytes.
+    * Ed25519 signing — reuses the L2 forward-sign key from
+      ``forward_sign.get_l2_privkey()``. Signing identity = L2 identity,
+      verifiable against the same ``aigrp_peers.public_key_ed25519``
+      that peers already use for forward-* signature verification.
     * ``record_event(...)`` helper — single API surface for callers.
+    * Backward compatibility: when no signing key is available (test
+      scenarios, signing-disabled deploys), event rows are written with
+      ``signature_b64u = NULL`` and ``signing_key_id = NULL``. Verifiers
+      treat unsigned events as legacy/best-effort.
 
-What's deferred to v1 (follow-up):
-    * Ed25519 signing (``signature_b64u`` is NULL in alpha; column
-      already exists in the schema so signing lands without another
-      migration).
+What's deferred to v1-real (follow-up):
     * Daily Merkle root publish to the directory.
-    * Sibling-L2 chain leader lease (single-L2 enterprise only in
-      alpha — chain hash is per-enterprise but writes are
-      single-writer).
+    * Sibling-L2 chain leader lease (single-L2 enterprise only —
+      chain hash is per-enterprise but writes are single-writer).
+    * Bilateral countersigning of reputation roots by peer Enterprises
+      (decision 13 shape B).
 
 Callers hook ``record_event`` at the three event sites called out in
 decision 13: consult-close, KU lifecycle transitions, AIGRP peer
@@ -39,12 +47,16 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
+from .crypto import sign_raw
+from .forward_sign import get_l2_privkey, self_public_key_b64u
+
 __all__ = [
     "GENESIS_PREV_HASH",
     "canonical_payload_bytes",
     "compute_payload_hash",
     "make_event_id",
     "record_event",
+    "sign_canonical_bytes",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,6 +102,30 @@ def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
 def compute_payload_hash(canonical_bytes: bytes) -> str:
     """Return ``sha256:<hex>`` for the canonical bytes."""
     return "sha256:" + hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def sign_canonical_bytes(canonical: bytes) -> tuple[str | None, str | None]:
+    """Sign canonical event bytes with this L2's Ed25519 forward-sign key.
+
+    Returns ``(signature_b64u, signing_key_id)`` on success. The signing
+    key id is the L2's base64url-encoded public key — self-describing, so
+    verifiers don't have to query ``aigrp_peers`` to learn which key
+    signed (though they can re-verify against ``aigrp_peers`` for trust
+    anchoring).
+
+    Returns ``(None, None)`` when signing is disabled (no key on disk).
+    Callers in this case write NULL signature columns; verifiers treat
+    unsigned rows as legacy/best-effort. This matches the rollout-window
+    pattern used for ``X-8L-Forwarder-Sig`` (see ``forward_sign``).
+    """
+    pk = get_l2_privkey()
+    if pk is None:
+        return None, None
+    pub = self_public_key_b64u()
+    if pub is None:
+        return None, None
+    signature = sign_raw(pk, canonical)
+    return signature, pub
 
 
 def _self_l2_id() -> str:
@@ -205,6 +241,7 @@ def record_event(
         }
         canonical = canonical_payload_bytes(payload)
         payload_hash = compute_payload_hash(canonical)
+        signature_b64u, signing_key_id = sign_canonical_bytes(canonical)
 
         conn.execute(
             """
@@ -212,7 +249,7 @@ def record_event(
                 (event_id, event_type, enterprise_id, l2_id, ts,
                  prev_event_hash, payload_canonical, payload_hash,
                  signature_b64u, signing_key_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
@@ -223,6 +260,8 @@ def record_event(
                 prev_event_hash,
                 canonical.decode("utf-8"),
                 payload_hash,
+                signature_b64u,
+                signing_key_id,
                 _utc_now_iso(),
             ),
         )
