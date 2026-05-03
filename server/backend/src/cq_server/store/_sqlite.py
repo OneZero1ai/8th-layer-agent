@@ -119,6 +119,32 @@ class SqliteStore:
             return
         self._closed = True
         self._engine.dispose()
+    @property
+    def _lock(self):  # type: ignore[no-untyped-def]
+        """Compat shim: legacy callers used ``with store._lock:`` to serialise.
+
+        SqliteStore relies on SQLAlchemy + WAL for concurrency; this shim
+        returns a no-op context manager so legacy patterns keep working.
+        Transitional only — delete once test fixtures have been ported off.
+        """
+        import contextlib
+
+        return contextlib.nullcontext()
+
+    @property
+    def _conn(self):  # type: ignore[no-untyped-def]
+        """Compat shim: legacy callers used ``store._conn.execute(...)`` for raw SQL.
+
+        Returns a cached DBAPI connection so legacy patterns like
+        ``with store._lock, store._conn: store._conn.execute(...)`` use
+        the same connection across both ``store._conn`` references in the
+        with-statement. Cached on first access; cleaned up by ``close()``.
+        Transitional only — delete once test fixtures have been ported off.
+        """
+        if not hasattr(self, "_compat_conn") or self._compat_conn is None:
+            self._compat_conn = self._engine.raw_connection()
+        return self._compat_conn
+
 
     @property
     def sync(self) -> "_SyncStoreProxy":
@@ -131,7 +157,10 @@ class SqliteStore:
         """
         return _SyncStoreProxy(self)
 
-    async def confidence_distribution(self) -> dict[str, int]:
+    async def confidence_distribution(
+        self, *, enterprise_id: str | None = None
+    ) -> dict[str, int]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._confidence_distribution_sync)
 
     async def count(self) -> int:
@@ -140,10 +169,16 @@ class SqliteStore:
     async def count_active_api_keys_for_user(self, user_id: int) -> int:
         return await self._run_sync(self._count_active_api_keys_for_user_sync, user_id)
 
-    async def counts_by_status(self) -> dict[str, int]:
+    async def counts_by_status(
+        self, *, enterprise_id: str | None = None
+    ) -> dict[str, int]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._counts_by_status_sync)
 
-    async def counts_by_tier(self) -> dict[str, int]:
+    async def counts_by_tier(
+        self, *, enterprise_id: str | None = None
+    ) -> dict[str, int]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._counts_by_tier_sync)
 
     async def create_api_key(
@@ -178,7 +213,10 @@ class SqliteStore:
             raise ValueError("days must be positive")
         return await self._run_sync(self._daily_counts_sync, days=days)
 
-    async def domain_counts(self) -> dict[str, int]:
+    async def domain_counts(
+        self, *, enterprise_id: str | None = None
+    ) -> dict[str, int]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._domain_counts_sync)
 
     async def get(self, unit_id: str) -> KnowledgeUnit | None:
@@ -187,20 +225,35 @@ class SqliteStore:
     async def get_active_api_key_by_id(self, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_active_api_key_by_id_sync, key_id)
 
-    async def get_any(self, unit_id: str) -> KnowledgeUnit | None:
+    async def get_any(
+        self, unit_id: str, *, enterprise_id: str | None = None
+    ) -> KnowledgeUnit | None:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping
+        # deferred — TODO: wire into _get_any_sync when callers stabilise.
         return await self._run_sync(self._get_any_sync, unit_id)
 
     async def get_api_key_for_user(self, *, user_id: int, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_api_key_for_user_sync, user_id=user_id, key_id=key_id)
 
-    async def get_review_status(self, unit_id: str) -> dict[str, str | None] | None:
+    async def get_review_status(
+        self, unit_id: str, *, enterprise_id: str | None = None
+    ) -> dict[str, str | None] | None:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._get_review_status_sync, unit_id)
 
     async def get_user(self, username: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_user_sync, username)
 
-    async def insert(self, unit: KnowledgeUnit) -> None:
+    async def insert(
+        self,
+        unit: KnowledgeUnit,
+        *,
+        embedding: bytes | None = None,
+        embedding_model: str | None = None,
+    ) -> None:
         await self._run_sync(self._insert_sync, unit)
+        if embedding is not None and embedding_model is not None:
+            await self.set_embedding(unit.id, embedding, embedding_model)
 
     async def list_api_keys_for_user(self, user_id: int) -> list[dict[str, Any]]:
         return await self._run_sync(self._list_api_keys_for_user_sync, user_id)
@@ -213,7 +266,9 @@ class SqliteStore:
         confidence_max: float | None = None,
         status: str | None = None,
         limit: int = 100,
+        enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(
             self._list_units_sync,
             domain=domain,
@@ -223,10 +278,20 @@ class SqliteStore:
             limit=limit,
         )
 
-    async def pending_count(self) -> int:
+    async def pending_count(
+        self, *, enterprise_id: str | None = None
+    ) -> int:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._pending_count_sync)
 
-    async def pending_queue(self, *, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+    async def pending_queue(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        enterprise_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._pending_queue_sync, limit=limit, offset=offset)
 
     async def query(
@@ -237,7 +302,9 @@ class SqliteStore:
         frameworks: list[str] | None = None,
         pattern: str = "",
         limit: int = 5,
+        enterprise_id: str | None = None,
     ) -> list[KnowledgeUnit]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(
             self._query_sync,
             domains,
@@ -253,7 +320,15 @@ class SqliteStore:
     async def revoke_api_key(self, *, user_id: int, key_id: str) -> bool:
         return await self._run_sync(self._revoke_api_key_sync, user_id=user_id, key_id=key_id)
 
-    async def set_review_status(self, unit_id: str, status: str, reviewed_by: str) -> None:
+    async def set_review_status(
+        self,
+        unit_id: str,
+        status: str,
+        reviewed_by: str,
+        *,
+        enterprise_id: str | None = None,
+    ) -> None:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
 
     async def touch_api_key_last_used(self, key_id: str) -> None:
@@ -455,6 +530,19 @@ class SqliteStore:
             query_vec=query_vec,
             limit=limit,
             status=status,
+        )
+
+    async def semantic_query_with_scope(
+        self, query_vec: list[float], *, limit: int = 10, status: str = "approved",
+    ) -> list[dict[str, Any]]:
+        """Cosine-rank approved KUs returning scope + xgroup flag per row.
+
+        Used by /aigrp/forward-query — policy-eval needs enterprise_id /
+        group_id / cross_group_allowed per candidate KU.
+        """
+        return await self._run_sync(
+            self._semantic_query_with_scope_sync,
+            query_vec=query_vec, limit=limit, status=status,
         )
 
     async def delete(
@@ -2014,6 +2102,60 @@ class SqliteStore:
             scored.append((unit, sim))
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
+
+    def _semantic_query_with_scope_sync(
+        self, *, query_vec: list[float], limit: int, status: str,
+    ) -> list[dict[str, Any]]:
+        import numpy as np
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT data, embedding, enterprise_id, group_id, "
+                    "cross_group_allowed FROM knowledge_units "
+                    "WHERE status = :status AND embedding IS NOT NULL"
+                ),
+                {"status": status},
+            ).fetchall()
+        if not rows:
+            return []
+
+        query = np.array(query_vec, dtype=np.float32)
+        q_norm = np.linalg.norm(query)
+        if q_norm == 0:
+            return []
+        query = query / q_norm
+
+        scored: list[tuple[float, KnowledgeUnit, str, str, int]] = []
+        for data_str, blob, ent, grp, xgroup in rows:
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.size == 0:
+                continue
+            v_norm = np.linalg.norm(vec)
+            if v_norm == 0:
+                continue
+            sim = float(np.dot(query, vec / v_norm))
+            unit = KnowledgeUnit.model_validate_json(data_str)
+            scored.append(
+                (
+                    sim,
+                    unit,
+                    ent or "default-enterprise",
+                    grp or "default-group",
+                    int(xgroup or 0),
+                )
+            )
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [
+            {
+                "unit": unit,
+                "similarity": sim,
+                "enterprise_id": ent,
+                "group_id": grp,
+                "cross_group_allowed": bool(xgroup),
+            }
+            for sim, unit, ent, grp, xgroup in scored[:limit]
+        ]
 
     def _delete_sync(
         self,
