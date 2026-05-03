@@ -223,6 +223,20 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                         embedding_model=sig.get("embedding_model"),
                         signature_received=True,
                     )
+                    # Reputation hook (#108 sub-task 5). Convergence event:
+                    # we successfully fetched + stored a fresh signature from
+                    # the peer. Body shape per reputation-v1.md §"peer.heartbeat".
+                    from .reputation import record_event as _record_event
+                    _record_event(
+                        store._conn,
+                        event_type="peer.heartbeat",
+                        body={
+                            "peer_l2_id": sig["l2_id"],
+                            "peer_enterprise": sig["enterprise"],
+                            "ku_count": sig.get("ku_count", 0),
+                            "domain_count": sig.get("domain_count", 0),
+                        },
+                    )
                 except Exception:
                     log.warning("aigrp poll of peer %s failed", p["l2_id"])
         except asyncio.CancelledError:

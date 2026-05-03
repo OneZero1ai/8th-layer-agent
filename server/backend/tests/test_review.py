@@ -15,7 +15,7 @@ from cq_server.deps import require_api_key
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides[require_api_key] = lambda: "test-user"
     with TestClient(app) as c:

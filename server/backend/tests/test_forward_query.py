@@ -55,7 +55,7 @@ def aigrp_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
     request body to drive the policy matrix.
     """
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "fwdq.db"))
-    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     monkeypatch.setenv("CQ_AIGRP_PEER_KEY", PEER_KEY)
     monkeypatch.setenv("CQ_ENTERPRISE", "acme")

@@ -653,6 +653,22 @@ def close_consult(
         logger.info("close_consult on already-closed thread_id=%s", thread_id)
     row = store.get_consult(thread_id)
     assert row is not None
+    if closed:
+        # Reputation hook (#108 sub-task 5). Best-effort — record_event
+        # swallows on failure so a flaky reputation chain never blocks
+        # consult-close. Body shape per reputation-v1.md §"consult.closed".
+        from .reputation import record_event as _record_event
+        _record_event(
+            store._conn,
+            event_type="consult.closed",
+            body={
+                "thread_id": thread_id,
+                "from_l2_id": row["from_l2_id"],
+                "to_l2_id": row["to_l2_id"],
+                "csat": row.get("csat"),
+                "resolution_summary": body.resolution_summary,
+            },
+        )
     return _to_thread_out(row)
 
 
