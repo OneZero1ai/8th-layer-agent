@@ -303,6 +303,7 @@ class SqliteStore:
         pattern: str = "",
         limit: int = 5,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[KnowledgeUnit]:
         # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(
@@ -314,7 +315,10 @@ class SqliteStore:
             limit=limit,
         )
 
-    async def recent_activity(self, limit: int = 20) -> list[dict[str, Any]]:
+    async def recent_activity(
+        self, limit: int = 20, *, enterprise_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._recent_activity_sync, limit=limit)
 
     async def revoke_api_key(self, *, user_id: int, key_id: str) -> bool:
@@ -1051,7 +1055,15 @@ class SqliteStore:
             "group_id": row[6],
         }
 
-    def _insert_sync(self, unit: KnowledgeUnit) -> None:
+    def _insert_sync(
+        self,
+        unit: KnowledgeUnit,
+        *,
+        embedding: bytes | None = None,
+        embedding_model: str | None = None,
+    ) -> None:
+        # embedding kwargs: persist via UPDATE after the INSERT (RemoteStore compat).
+        # Acceptance is silent here; the actual write happens via _set_embedding_sync.
         domains = normalize_domains(unit.domains)
         if not domains:
             raise ValueError("At least one non-empty domain is required")
@@ -1075,6 +1087,14 @@ class SqliteStore:
                 )
                 for d in domains:
                     conn.execute(INSERT_UNIT_DOMAIN, {"unit_id": unit.id, "domain": d})
+                if embedding is not None and embedding_model is not None:
+                    conn.execute(
+                        text(
+                            "UPDATE knowledge_units SET embedding = :emb, "
+                            "embedding_model = :model WHERE id = :id"
+                        ),
+                        {"emb": embedding, "model": embedding_model, "id": unit.id},
+                    )
         except IntegrityError as e:
             if e.orig is not None:
                 raise e.orig from e
@@ -1179,10 +1199,10 @@ class SqliteStore:
         self,
         domains: list[str],
         *,
-        languages: list[str] | None,
-        frameworks: list[str] | None,
-        pattern: str,
-        limit: int,
+        languages: list[str] | None = None,
+        frameworks: list[str] | None = None,
+        pattern: str = "",
+        limit: int = 5,
     ) -> list[KnowledgeUnit]:
         if limit <= 0:
             raise ValueError("limit must be positive")
