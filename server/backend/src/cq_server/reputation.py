@@ -202,8 +202,12 @@ def record_event(
         event_type: One of ``consult.closed``, ``ku.event``,
             ``peer.heartbeat``. Validated lightly here.
         body: Event-type-specific body. See ``reputation-v1.md``.
-        enterprise_id, l2_id, ts: Optional overrides. Default to
-            this L2's identity + UTC now.
+        enterprise_id: Override for the Enterprise this event belongs
+            to. Defaults to ``CQ_ENTERPRISE`` env (this L2's tenant).
+        l2_id: Override for the writing L2's id. Defaults to
+            ``CQ_ENTERPRISE/CQ_GROUP``.
+        ts: Override for the event timestamp (RFC 3339 / UTC).
+            Defaults to the current UTC time.
 
     Returns:
         The new event_id on success, or ``None`` if recording was

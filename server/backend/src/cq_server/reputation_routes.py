@@ -36,6 +36,8 @@ router = APIRouter(prefix="/reputation", tags=["reputation"])
 
 
 class EventOut(BaseModel):
+    """One row of the reputation event log surfaced to authenticated readers."""
+
     event_id: str
     event_type: str
     enterprise_id: str
@@ -50,6 +52,8 @@ class EventOut(BaseModel):
 
 
 class EventsResponse(BaseModel):
+    """Paginated response for ``GET /reputation/events``."""
+
     events: list[EventOut]
     total: int
     limit: int
@@ -57,6 +61,8 @@ class EventsResponse(BaseModel):
 
 
 class RootOut(BaseModel):
+    """One persisted daily Merkle root surfaced to authenticated readers."""
+
     enterprise_id: str
     root_date: str
     event_count: int
@@ -70,6 +76,8 @@ class RootOut(BaseModel):
 
 
 class RootsResponse(BaseModel):
+    """Response for ``GET /reputation/roots`` — newest-first list of daily roots."""
+
     roots: list[RootOut]
     total: int
 
@@ -196,6 +204,8 @@ def list_reputation_roots(
 
 
 class ComputeRootRequest(BaseModel):
+    """Request body for the admin-only ``POST /reputation/roots/compute`` trigger."""
+
     root_date: str  # YYYY-MM-DD
 
 
