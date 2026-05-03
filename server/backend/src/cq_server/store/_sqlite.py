@@ -1365,7 +1365,7 @@ class SqliteStore:
         domain_count: int,
         embedding_model: str | None,
         signature_received: bool,
-        public_key_ed25519: str | None,
+        public_key_ed25519: str | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._engine.begin() as conn:
