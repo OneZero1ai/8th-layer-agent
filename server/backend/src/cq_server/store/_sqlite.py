@@ -393,6 +393,38 @@ class SqliteStore:
         """Flip the per-KU cross-group sharing flag; True if updated."""
         return await self._run_sync(self._set_ku_cross_group_allowed_sync, unit_id, allowed)
 
+    # ------------------------------------------------------------------
+    # Fork-delta: cross-Enterprise consents (#105 PR-A increment 3)
+    # Backed by ``cross_enterprise_consents`` (Alembic migration 0002).
+    # ------------------------------------------------------------------
+
+    async def list_cross_enterprise_consents(
+        self,
+        *,
+        include_expired: bool = False,
+        now_iso: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return cross-Enterprise consent rows, newest first."""
+        return await self._run_sync(
+            self._list_cross_enterprise_consents_sync,
+            include_expired=include_expired,
+            now_iso=now_iso,
+            limit=limit,
+        )
+
+    async def get_cross_enterprise_consent(self, consent_id: str) -> dict[str, Any] | None:
+        """Return one consent record by id, or None if absent."""
+        return await self._run_sync(self._get_cross_enterprise_consent_sync, consent_id)
+
+    async def revoke_cross_enterprise_consent(self, *, consent_id: str, revoked_at: str) -> bool:
+        """Soft-revoke by setting ``expires_at = revoked_at``; True if updated."""
+        return await self._run_sync(
+            self._revoke_cross_enterprise_consent_sync,
+            consent_id=consent_id,
+            revoked_at=revoked_at,
+        )
+
     def _confidence_distribution_sync(self) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
@@ -1177,6 +1209,61 @@ class SqliteStore:
             cur = conn.execute(
                 text("UPDATE knowledge_units SET cross_group_allowed = :v WHERE id = :id"),
                 {"v": 1 if allowed else 0, "id": unit_id},
+            )
+        return cur.rowcount > 0
+
+    _CONSENT_COLS = (
+        "consent_id, requester_enterprise, responder_enterprise, "
+        "requester_group, responder_group, policy, signed_by_admin, "
+        "signed_at, expires_at, audit_log_id"
+    )
+
+    @staticmethod
+    def _consent_row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "consent_id": row[0],
+            "requester_enterprise": row[1],
+            "responder_enterprise": row[2],
+            "requester_group": row[3],
+            "responder_group": row[4],
+            "policy": row[5],
+            "signed_by_admin": row[6],
+            "signed_at": row[7],
+            "expires_at": row[8],
+            "audit_log_id": row[9],
+        }
+
+    def _list_cross_enterprise_consents_sync(
+        self,
+        *,
+        include_expired: bool,
+        now_iso: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        sql = f"SELECT {self._CONSENT_COLS} FROM cross_enterprise_consents"
+        params: dict[str, Any] = {}
+        if not include_expired:
+            sql += " WHERE expires_at IS NULL OR expires_at > :now"
+            params["now"] = now_iso
+        sql += " ORDER BY signed_at DESC LIMIT :limit"
+        params["limit"] = limit
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [self._consent_row_to_dict(r) for r in rows]
+
+    def _get_cross_enterprise_consent_sync(self, consent_id: str) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(f"SELECT {self._CONSENT_COLS} FROM cross_enterprise_consents WHERE consent_id = :cid"),
+                {"cid": consent_id},
+            ).fetchone()
+        return self._consent_row_to_dict(row) if row else None
+
+    def _revoke_cross_enterprise_consent_sync(self, *, consent_id: str, revoked_at: str) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text("UPDATE cross_enterprise_consents SET expires_at = :rt WHERE consent_id = :cid"),
+                {"rt": revoked_at, "cid": consent_id},
             )
         return cur.rowcount > 0
 
