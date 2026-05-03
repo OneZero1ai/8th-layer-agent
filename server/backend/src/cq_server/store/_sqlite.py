@@ -373,6 +373,26 @@ class SqliteStore:
         """Return distinct domains across approved KUs (Bloom filter input)."""
         return await self._run_sync(self._approved_domains_sync)
 
+    # ------------------------------------------------------------------
+    # Fork-delta: tenancy + xgroup helpers (#105 PR-A increment 2)
+    # ------------------------------------------------------------------
+
+    async def count_in_enterprise(self, enterprise_id: str) -> int:
+        """Return total KU count scoped to one Enterprise.
+
+        Used by /api/v1/stats so global cardinality stops leaking across
+        tenants (security finding #39).
+        """
+        return await self._run_sync(self._count_in_enterprise_sync, enterprise_id)
+
+    async def set_user_role(self, username: str, role: str) -> bool:
+        """Set the role on a user; True if a row was updated."""
+        return await self._run_sync(self._set_user_role_sync, username, role)
+
+    async def set_ku_cross_group_allowed(self, unit_id: str, allowed: bool) -> bool:
+        """Flip the per-KU cross-group sharing flag; True if updated."""
+        return await self._run_sync(self._set_ku_cross_group_allowed_sync, unit_id, allowed)
+
     def _confidence_distribution_sync(self) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
@@ -1135,6 +1155,30 @@ class SqliteStore:
                 text("SELECT embedding FROM knowledge_units WHERE status = 'approved' AND embedding IS NOT NULL")
             ).fetchall()
         return [r[0] for r in rows if r[0]]
+
+    def _count_in_enterprise_sync(self, enterprise_id: str) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM knowledge_units WHERE enterprise_id = :eid"),
+                {"eid": enterprise_id},
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _set_user_role_sync(self, username: str, role: str) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text("UPDATE users SET role = :role WHERE username = :u"),
+                {"role": role, "u": username},
+            )
+        return cur.rowcount > 0
+
+    def _set_ku_cross_group_allowed_sync(self, unit_id: str, allowed: bool) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text("UPDATE knowledge_units SET cross_group_allowed = :v WHERE id = :id"),
+                {"v": 1 if allowed else 0, "id": unit_id},
+            )
+        return cur.rowcount > 0
 
     def _approved_domains_sync(self) -> set[str]:
         with self._engine.connect() as conn:
