@@ -244,6 +244,135 @@ class SqliteStore:
     async def update(self, unit: KnowledgeUnit) -> None:
         await self._run_sync(self._update_sync, unit)
 
+    # ------------------------------------------------------------------
+    # Fork-delta: directory peerings (#105 PR-A)
+    # Mirrors the synchronous methods on RemoteStore. Backed by the
+    # ``aigrp_directory_peerings`` table (Alembic migration 0006).
+    # ------------------------------------------------------------------
+
+    async def upsert_directory_peering(
+        self,
+        *,
+        offer_id: str,
+        from_enterprise: str,
+        to_enterprise: str,
+        status: str,
+        content_policy: str,
+        consult_logging_policy: str,
+        topic_filters_json: str,
+        active_from: str | None,
+        expires_at: str,
+        offer_payload_canonical: str,
+        offer_signature_b64u: str,
+        offer_signing_key_id: str,
+        accept_payload_canonical: str,
+        accept_signature_b64u: str,
+        accept_signing_key_id: str,
+        last_synced_at: str,
+        to_l2_endpoints_json: str = "[]",
+    ) -> None:
+        """Mirror one verified peering record from the directory pull loop."""
+        await self._run_sync(
+            self._upsert_directory_peering_sync,
+            offer_id=offer_id,
+            from_enterprise=from_enterprise,
+            to_enterprise=to_enterprise,
+            status=status,
+            content_policy=content_policy,
+            consult_logging_policy=consult_logging_policy,
+            topic_filters_json=topic_filters_json,
+            active_from=active_from,
+            expires_at=expires_at,
+            offer_payload_canonical=offer_payload_canonical,
+            offer_signature_b64u=offer_signature_b64u,
+            offer_signing_key_id=offer_signing_key_id,
+            accept_payload_canonical=accept_payload_canonical,
+            accept_signature_b64u=accept_signature_b64u,
+            accept_signing_key_id=accept_signing_key_id,
+            last_synced_at=last_synced_at,
+            to_l2_endpoints_json=to_l2_endpoints_json,
+        )
+
+    async def find_active_directory_peering(
+        self,
+        *,
+        from_enterprise: str,
+        to_enterprise: str,
+        now_iso: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return an active, unexpired peering between two specific enterprises."""
+        return await self._run_sync(
+            self._find_active_directory_peering_sync,
+            from_enterprise=from_enterprise,
+            to_enterprise=to_enterprise,
+            now_iso=now_iso,
+        )
+
+    async def list_directory_peerings(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return mirrored directory peering rows."""
+        return await self._run_sync(
+            self._list_directory_peerings_sync,
+            enterprise_id=enterprise_id,
+            status=status,
+        )
+
+    # ------------------------------------------------------------------
+    # Fork-delta: AIGRP peer mesh (#105 PR-A)
+    # Backed by ``aigrp_peers`` (Alembic migration 0005).
+    # ------------------------------------------------------------------
+
+    async def upsert_aigrp_peer(
+        self,
+        *,
+        l2_id: str,
+        enterprise: str,
+        group: str,
+        endpoint_url: str,
+        embedding_centroid: bytes | None,
+        domain_bloom: bytes | None,
+        ku_count: int,
+        domain_count: int,
+        embedding_model: str | None,
+        signature_received: bool,
+        public_key_ed25519: str | None = None,
+    ) -> None:
+        """Insert or update an AIGRP peer record."""
+        await self._run_sync(
+            self._upsert_aigrp_peer_sync,
+            l2_id=l2_id,
+            enterprise=enterprise,
+            group=group,
+            endpoint_url=endpoint_url,
+            embedding_centroid=embedding_centroid,
+            domain_bloom=domain_bloom,
+            ku_count=ku_count,
+            domain_count=domain_count,
+            embedding_model=embedding_model,
+            signature_received=signature_received,
+            public_key_ed25519=public_key_ed25519,
+        )
+
+    async def get_aigrp_peer_pubkey(self, l2_id: str) -> str | None:
+        """Return the base64url-encoded Ed25519 public key for ``l2_id``."""
+        return await self._run_sync(self._get_aigrp_peer_pubkey_sync, l2_id)
+
+    async def list_aigrp_peers(self, enterprise: str) -> list[dict[str, Any]]:
+        """Return every known peer in the given Enterprise."""
+        return await self._run_sync(self._list_aigrp_peers_sync, enterprise)
+
+    async def approved_embeddings_iter(self) -> list[bytes]:
+        """Return all non-null approved KU embedding blobs."""
+        return await self._run_sync(self._approved_embeddings_iter_sync)
+
+    async def approved_domains(self) -> set[str]:
+        """Return distinct domains across approved KUs (Bloom filter input)."""
+        return await self._run_sync(self._approved_domains_sync)
+
     def _confidence_distribution_sync(self) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
@@ -708,3 +837,316 @@ class SqliteStore:
             if e.orig is not None:
                 raise e.orig from e
             raise
+
+    # ------------------------------------------------------------------
+    # Sync impls for fork-delta methods (#105 PR-A)
+    # SQLAlchemy text() + named-binding versions of the RemoteStore code.
+    # ------------------------------------------------------------------
+
+    def _upsert_directory_peering_sync(
+        self,
+        *,
+        offer_id: str,
+        from_enterprise: str,
+        to_enterprise: str,
+        status: str,
+        content_policy: str,
+        consult_logging_policy: str,
+        topic_filters_json: str,
+        active_from: str | None,
+        expires_at: str,
+        offer_payload_canonical: str,
+        offer_signature_b64u: str,
+        offer_signing_key_id: str,
+        accept_payload_canonical: str,
+        accept_signature_b64u: str,
+        accept_signing_key_id: str,
+        last_synced_at: str,
+        to_l2_endpoints_json: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO aigrp_directory_peerings (
+                        offer_id, from_enterprise, to_enterprise, status,
+                        content_policy, consult_logging_policy, topic_filters_json,
+                        active_from, expires_at,
+                        offer_payload_canonical, offer_signature_b64u, offer_signing_key_id,
+                        accept_payload_canonical, accept_signature_b64u, accept_signing_key_id,
+                        last_synced_at, to_l2_endpoints_json
+                    ) VALUES (
+                        :offer_id, :from_enterprise, :to_enterprise, :status,
+                        :content_policy, :consult_logging_policy, :topic_filters_json,
+                        :active_from, :expires_at,
+                        :offer_payload_canonical, :offer_signature_b64u, :offer_signing_key_id,
+                        :accept_payload_canonical, :accept_signature_b64u, :accept_signing_key_id,
+                        :last_synced_at, :to_l2_endpoints_json
+                    )
+                    ON CONFLICT(offer_id) DO UPDATE SET
+                        status = excluded.status,
+                        content_policy = excluded.content_policy,
+                        consult_logging_policy = excluded.consult_logging_policy,
+                        topic_filters_json = excluded.topic_filters_json,
+                        active_from = excluded.active_from,
+                        expires_at = excluded.expires_at,
+                        offer_payload_canonical = excluded.offer_payload_canonical,
+                        offer_signature_b64u = excluded.offer_signature_b64u,
+                        offer_signing_key_id = excluded.offer_signing_key_id,
+                        accept_payload_canonical = excluded.accept_payload_canonical,
+                        accept_signature_b64u = excluded.accept_signature_b64u,
+                        accept_signing_key_id = excluded.accept_signing_key_id,
+                        last_synced_at = excluded.last_synced_at,
+                        to_l2_endpoints_json = excluded.to_l2_endpoints_json
+                    """
+                ),
+                {
+                    "offer_id": offer_id,
+                    "from_enterprise": from_enterprise,
+                    "to_enterprise": to_enterprise,
+                    "status": status,
+                    "content_policy": content_policy,
+                    "consult_logging_policy": consult_logging_policy,
+                    "topic_filters_json": topic_filters_json,
+                    "active_from": active_from,
+                    "expires_at": expires_at,
+                    "offer_payload_canonical": offer_payload_canonical,
+                    "offer_signature_b64u": offer_signature_b64u,
+                    "offer_signing_key_id": offer_signing_key_id,
+                    "accept_payload_canonical": accept_payload_canonical,
+                    "accept_signature_b64u": accept_signature_b64u,
+                    "accept_signing_key_id": accept_signing_key_id,
+                    "last_synced_at": last_synced_at,
+                    "to_l2_endpoints_json": to_l2_endpoints_json,
+                },
+            )
+
+    def _find_active_directory_peering_sync(
+        self,
+        *,
+        from_enterprise: str,
+        to_enterprise: str,
+        now_iso: str | None,
+    ) -> dict[str, Any] | None:
+        if now_iso is None:
+            now_iso = datetime.now(UTC).isoformat()
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT * FROM aigrp_directory_peerings
+                    WHERE status = 'active'
+                      AND ((from_enterprise = :a AND to_enterprise = :b)
+                        OR (from_enterprise = :b AND to_enterprise = :a))
+                      AND expires_at > :now
+                    ORDER BY active_from DESC
+                    LIMIT 1
+                    """
+                ),
+                {"a": from_enterprise, "b": to_enterprise, "now": now_iso},
+            ).mappings().fetchone()
+        return dict(row) if row else None
+
+    def _list_directory_peerings_sync(
+        self,
+        *,
+        enterprise_id: str | None,
+        status: str | None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM aigrp_directory_peerings"
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if enterprise_id is not None:
+            clauses.append("(from_enterprise = :eid OR to_enterprise = :eid)")
+            params["eid"] = enterprise_id
+        if status is not None:
+            clauses.append("status = :status")
+            params["status"] = status
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY active_from DESC NULLS LAST, last_synced_at DESC"
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().fetchall()
+        return [dict(r) for r in rows]
+
+    def _upsert_aigrp_peer_sync(
+        self,
+        *,
+        l2_id: str,
+        enterprise: str,
+        group: str,
+        endpoint_url: str,
+        embedding_centroid: bytes | None,
+        domain_bloom: bytes | None,
+        ku_count: int,
+        domain_count: int,
+        embedding_model: str | None,
+        signature_received: bool,
+        public_key_ed25519: str | None,
+    ) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT 1 FROM aigrp_peers WHERE l2_id = :l2_id"),
+                {"l2_id": l2_id},
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO aigrp_peers (
+                            l2_id, enterprise, "group", endpoint_url,
+                            embedding_centroid, domain_bloom, ku_count, domain_count,
+                            embedding_model, first_seen_at, last_seen_at, last_signature_at,
+                            public_key_ed25519
+                        ) VALUES (
+                            :l2_id, :enterprise, :grp, :endpoint_url,
+                            :embedding_centroid, :domain_bloom, :ku_count, :domain_count,
+                            :embedding_model, :now, :now, :sig_at,
+                            :public_key_ed25519
+                        )
+                        """
+                    ),
+                    {
+                        "l2_id": l2_id,
+                        "enterprise": enterprise,
+                        "grp": group,
+                        "endpoint_url": endpoint_url,
+                        "embedding_centroid": embedding_centroid,
+                        "domain_bloom": domain_bloom,
+                        "ku_count": ku_count,
+                        "domain_count": domain_count,
+                        "embedding_model": embedding_model,
+                        "now": now,
+                        "sig_at": now if signature_received else None,
+                        "public_key_ed25519": public_key_ed25519,
+                    },
+                )
+            elif signature_received:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE aigrp_peers SET
+                            enterprise = :enterprise, "group" = :grp,
+                            endpoint_url = :endpoint_url,
+                            embedding_centroid = :embedding_centroid,
+                            domain_bloom = :domain_bloom,
+                            ku_count = :ku_count, domain_count = :domain_count,
+                            embedding_model = :embedding_model,
+                            last_seen_at = :now, last_signature_at = :now
+                        WHERE l2_id = :l2_id
+                        """
+                    ),
+                    {
+                        "l2_id": l2_id,
+                        "enterprise": enterprise,
+                        "grp": group,
+                        "endpoint_url": endpoint_url,
+                        "embedding_centroid": embedding_centroid,
+                        "domain_bloom": domain_bloom,
+                        "ku_count": ku_count,
+                        "domain_count": domain_count,
+                        "embedding_model": embedding_model,
+                        "now": now,
+                    },
+                )
+                if public_key_ed25519 is not None:
+                    conn.execute(
+                        text(
+                            "UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"
+                        ),
+                        {"pk": public_key_ed25519, "l2_id": l2_id},
+                    )
+            else:
+                # Touch last_seen but keep cached signature
+                conn.execute(
+                    text(
+                        """
+                        UPDATE aigrp_peers SET
+                            enterprise = :enterprise, "group" = :grp,
+                            endpoint_url = :endpoint_url,
+                            last_seen_at = :now
+                        WHERE l2_id = :l2_id
+                        """
+                    ),
+                    {
+                        "l2_id": l2_id,
+                        "enterprise": enterprise,
+                        "grp": group,
+                        "endpoint_url": endpoint_url,
+                        "now": now,
+                    },
+                )
+                if public_key_ed25519 is not None:
+                    conn.execute(
+                        text(
+                            "UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"
+                        ),
+                        {"pk": public_key_ed25519, "l2_id": l2_id},
+                    )
+
+    def _get_aigrp_peer_pubkey_sync(self, l2_id: str) -> str | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT public_key_ed25519 FROM aigrp_peers WHERE l2_id = :l2_id"),
+                {"l2_id": l2_id},
+            ).fetchone()
+        return row[0] if row else None
+
+    def _list_aigrp_peers_sync(self, enterprise: str) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT l2_id, enterprise, "group", endpoint_url,
+                           embedding_centroid, domain_bloom,
+                           ku_count, domain_count, embedding_model,
+                           first_seen_at, last_seen_at, last_signature_at,
+                           public_key_ed25519
+                    FROM aigrp_peers
+                    WHERE enterprise = :enterprise
+                    ORDER BY last_seen_at DESC
+                    """
+                ),
+                {"enterprise": enterprise},
+            ).fetchall()
+        return [
+            {
+                "l2_id": r[0],
+                "enterprise": r[1],
+                "group": r[2],
+                "endpoint_url": r[3],
+                "embedding_centroid": r[4],
+                "domain_bloom": r[5],
+                "ku_count": r[6],
+                "domain_count": r[7],
+                "embedding_model": r[8],
+                "first_seen_at": r[9],
+                "last_seen_at": r[10],
+                "last_signature_at": r[11],
+                "public_key_ed25519": r[12],
+            }
+            for r in rows
+        ]
+
+    def _approved_embeddings_iter_sync(self) -> list[bytes]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT embedding FROM knowledge_units "
+                    "WHERE status = 'approved' AND embedding IS NOT NULL"
+                )
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
+
+    def _approved_domains_sync(self) -> set[str]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT DISTINCT d.domain "
+                    "FROM knowledge_unit_domains d "
+                    "JOIN knowledge_units ku ON ku.id = d.unit_id "
+                    "WHERE ku.status = 'approved'"
+                )
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
