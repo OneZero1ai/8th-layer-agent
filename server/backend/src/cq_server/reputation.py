@@ -64,12 +64,12 @@ def _utc_now_iso() -> str:
 
 
 def canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
-    """Return RFC-8785-canonicalised JSON bytes for the payload.
+    r"""Return RFC-8785-canonicalised JSON bytes for the payload.
 
     Stand-in implementation: ``json.dumps`` with ``sort_keys=True``,
     tight separators, and ``ensure_ascii=False`` so non-ASCII
     characters are emitted as raw UTF-8 (per RFC 8785 §3.2.2) instead
-    of ``\\uXXXX`` escapes. Without ``ensure_ascii=False``, a body
+    of ``\uXXXX`` escapes. Without ``ensure_ascii=False``, a body
     containing any accented character (persona name, summary fragment)
     would produce canonical bytes that differ from a conformant JCS
     verifier's output — once Ed25519 signing lands, signatures would
@@ -166,8 +166,12 @@ def record_event(
         event_type: One of ``consult.closed``, ``ku.event``,
             ``peer.heartbeat``. Validated lightly here.
         body: Event-type-specific body. See ``reputation-v1.md``.
-        enterprise_id, l2_id, ts: Optional overrides. Default to
-            this L2's identity + UTC now.
+        enterprise_id: Override for the Enterprise this event belongs
+            to. Defaults to ``CQ_ENTERPRISE`` env (this L2's tenant).
+        l2_id: Override for the writing L2's id. Defaults to
+            ``CQ_ENTERPRISE/CQ_GROUP``.
+        ts: Override for the event timestamp (RFC 3339 / UTC).
+            Defaults to the current UTC time.
 
     Returns:
         The new event_id on success, or ``None`` if recording was
@@ -238,8 +242,7 @@ def record_event(
                 # If even the rollback fails, the connection is in a
                 # weird place — but we still must not propagate.
                 logger.warning(
-                    "reputation: SAVEPOINT rollback failed; connection "
-                    "may be in inconsistent state",
+                    "reputation: SAVEPOINT rollback failed; connection may be in inconsistent state",
                     exc_info=True,
                 )
         logger.warning(
