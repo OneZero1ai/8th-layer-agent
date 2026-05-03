@@ -931,9 +931,10 @@ class SqliteStore:
         if now_iso is None:
             now_iso = datetime.now(UTC).isoformat()
         with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
+            row = (
+                conn.execute(
+                    text(
+                        """
                     SELECT * FROM aigrp_directory_peerings
                     WHERE status = 'active'
                       AND ((from_enterprise = :a AND to_enterprise = :b)
@@ -942,9 +943,12 @@ class SqliteStore:
                     ORDER BY active_from DESC
                     LIMIT 1
                     """
-                ),
-                {"a": from_enterprise, "b": to_enterprise, "now": now_iso},
-            ).mappings().fetchone()
+                    ),
+                    {"a": from_enterprise, "b": to_enterprise, "now": now_iso},
+                )
+                .mappings()
+                .fetchone()
+            )
         return dict(row) if row else None
 
     def _list_directory_peerings_sync(
@@ -1052,9 +1056,7 @@ class SqliteStore:
                 )
                 if public_key_ed25519 is not None:
                     conn.execute(
-                        text(
-                            "UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"
-                        ),
+                        text("UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"),
                         {"pk": public_key_ed25519, "l2_id": l2_id},
                     )
             else:
@@ -1079,9 +1081,7 @@ class SqliteStore:
                 )
                 if public_key_ed25519 is not None:
                     conn.execute(
-                        text(
-                            "UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"
-                        ),
+                        text("UPDATE aigrp_peers SET public_key_ed25519 = :pk WHERE l2_id = :l2_id"),
                         {"pk": public_key_ed25519, "l2_id": l2_id},
                     )
 
@@ -1132,10 +1132,7 @@ class SqliteStore:
     def _approved_embeddings_iter_sync(self) -> list[bytes]:
         with self._engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    "SELECT embedding FROM knowledge_units "
-                    "WHERE status = 'approved' AND embedding IS NOT NULL"
-                )
+                text("SELECT embedding FROM knowledge_units WHERE status = 'approved' AND embedding IS NOT NULL")
             ).fetchall()
         return [r[0] for r in rows if r[0]]
 
