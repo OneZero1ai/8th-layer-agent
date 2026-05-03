@@ -38,6 +38,8 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +73,8 @@ __all__ = [
     "directory_bootstrap_and_loop",
     "directory_enabled",
     "directory_url",
+    "publish_reputation_root",
+    "reputation_publish_loop",
     "fingerprint_sha256",
     "load_private_key",
     "now_iso",
@@ -409,6 +413,150 @@ def _load_endpoints_config() -> list[dict[str, Any]]:
             "groups": [group],
         }
     ]
+
+
+async def publish_reputation_root(
+    client: httpx.AsyncClient,
+    privkey: Ed25519PrivateKey,
+    *,
+    enterprise_id: str,
+    root_date: str,
+    event_count: int,
+    merkle_root_hash: str,
+    first_event_id: str | None,
+    last_event_id: str | None,
+) -> tuple[int, dict[str, Any] | None]:
+    """POST one daily Merkle root to the directory's /reputation/root.
+
+    Signed with the enterprise's AAISN root privkey (per directory v1
+    accept rule — see decision 21 + the directory route docstring).
+    Returns (status_code, response_body | None on error). 200/201 are
+    success; 400/401 indicate caller-side issues; 0 indicates network
+    failure.
+    """
+    payload = {
+        "enterprise_id": enterprise_id,
+        "root_date": root_date,
+        "event_count": event_count,
+        "merkle_root_hash": merkle_root_hash,
+        "first_event_id": first_event_id,
+        "last_event_id": last_event_id,
+    }
+    envelope = sign_envelope(privkey, payload)
+    url = f"{directory_url()}/api/v1/directory/reputation/root"
+    try:
+        r = await client.post(url, json=envelope, timeout=10.0)
+    except httpx.RequestError as e:
+        log.warning("directory: reputation/root publish failed (network) err=%s", e)
+        return 0, None
+    if r.status_code in (200, 201):
+        log.info(
+            "directory: reputation/root ok enterprise=%s day=%s status=%d",
+            enterprise_id,
+            root_date,
+            r.status_code,
+        )
+        return r.status_code, r.json()
+    log.warning(
+        "directory: reputation/root rejected enterprise=%s day=%s status=%d body=%s",
+        enterprise_id,
+        root_date,
+        r.status_code,
+        r.text[:200],
+    )
+    return r.status_code, None
+
+
+async def reputation_publish_loop(get_conn: Callable[[], sqlite3.Connection]) -> None:
+    """Periodically POST any unpublished daily roots to the directory.
+
+    Runs every ``CQ_DIRECTORY_PUBLISH_INTERVAL_SEC`` (default 5 min).
+    Polls ``reputation_roots WHERE published_to_directory_at IS NULL``
+    and publishes each. Updates ``published_to_directory_at`` on
+    success. Failures are logged and retried on the next tick — the
+    column stays NULL until success.
+
+    Decoupled from the daily-root computation loop on purpose: a
+    network blip during compute shouldn't lose the root, and a delayed
+    compute (recovered missed cron) shouldn't block other Enterprises'
+    publishing.
+    """
+    if not directory_enabled():
+        log.info("directory: reputation publish loop disabled (CQ_DIRECTORY_ENABLED!=true)")
+        return
+
+    if skip_announce():
+        # Skip-announce mode means no privkey on disk; we can't sign roots.
+        log.info("directory: reputation publish loop disabled (CQ_DIRECTORY_SKIP_ANNOUNCE=true)")
+        return
+
+    privkey_path = os.environ.get("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", "")
+    if not privkey_path:
+        log.info("directory: reputation publish loop disabled (CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset)")
+        return
+
+    try:
+        privkey = load_private_key(Path(privkey_path))
+    except (FileNotFoundError, ValueError) as e:
+        log.error(
+            "directory: reputation publish — cannot load privkey path=%s err=%s",
+            privkey_path,
+            e,
+        )
+        return
+
+    interval = int(os.environ.get("CQ_DIRECTORY_PUBLISH_INTERVAL_SEC", "300"))
+    log.info("directory: reputation publish loop starting (interval=%ds)", interval)
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                log.info("directory: reputation publish loop cancelled")
+                return
+
+            try:
+                conn = get_conn()
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT enterprise_id, root_date, event_count,
+                               merkle_root_hash, first_event_id, last_event_id
+                        FROM reputation_roots
+                        WHERE published_to_directory_at IS NULL
+                        ORDER BY root_date ASC
+                        LIMIT 50
+                        """
+                    ).fetchall()
+                    for row in rows:
+                        status, _body = await publish_reputation_root(
+                            client,
+                            privkey,
+                            enterprise_id=row[0],
+                            root_date=row[1],
+                            event_count=row[2],
+                            merkle_root_hash=row[3],
+                            first_event_id=row[4],
+                            last_event_id=row[5],
+                        )
+                        if status in (200, 201):
+                            conn.execute(
+                                """
+                                UPDATE reputation_roots
+                                SET published_to_directory_at = ?
+                                WHERE enterprise_id = ? AND root_date = ?
+                                """,
+                                (now_iso(), row[0], row[1]),
+                            )
+                            conn.commit()
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001 — never let this loop die
+                log.warning(
+                    "directory: reputation publish loop iteration crashed",
+                    exc_info=True,
+                )
 
 
 async def directory_bootstrap_and_loop(store: RemoteStore) -> None:
