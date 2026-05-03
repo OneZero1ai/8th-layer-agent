@@ -21,11 +21,11 @@ Plus a fourth structural test:
    when ``_ensure_schema`` is removed and the migration becomes the
    sole source of truth.
 
-Phase-1 fork-merge note: these tests assert the chain head is
-"0001" (upstream's baseline). Our fork-delta chain advances to
-"0003_phase6_step3"; updating these tests is part of phase 2
-(crosstalk-enterprise task #100 — port fork-delta tables to
-Alembic baseline). Skipping until then.
+Phase-2 update (task #100): chain head is now ``0007_embedding`` after
+porting consults / aigrp_peers / directory_peerings / embedding-cols
+tables to Alembic. Tests that previously asserted ``BASELINE_REVISION``
+("0001") post-upgrade now assert ``HEAD_REVISION``; the stamp-on-startup
+logic still pins legacy DBs at baseline before walking them up the chain.
 """
 
 from __future__ import annotations
@@ -34,16 +34,12 @@ import sqlite3
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-
-import pytest
-
-pytestmark = pytest.mark.skip(reason="phase-2 follow-up: chain head moved to 0003 (task #100)")
 from typing import Any
 
 import pytest
 import pytest_asyncio
 
-from cq_server.migrations import BASELINE_REVISION, run_migrations
+from cq_server.migrations import BASELINE_REVISION, HEAD_REVISION, run_migrations
 from cq_server.store import SqliteStore
 
 # --- Helpers --------------------------------------------------------------
@@ -214,10 +210,12 @@ class TestFreshDatabase:
                 "api_keys",
                 "alembic_version",
             } <= tables
-            assert _alembic_version(conn) == BASELINE_REVISION
+            assert _alembic_version(conn) == HEAD_REVISION
 
-            # knowledge_units columns and order match the historical
-            # _SCHEMA_SQL + ALTER end-state on prod.
+            # knowledge_units columns and order: baseline (0001) +
+            # tenancy (0001_phase6_step1) + xgroup (0002_phase6_step2)
+            # + embedding (0007_embedding). Other phase-2 migrations
+            # don't touch this table.
             ku_cols = [c[0] for c in _columns(conn, "knowledge_units")]
             assert ku_cols == [
                 "id",
@@ -227,6 +225,11 @@ class TestFreshDatabase:
                 "reviewed_at",
                 "created_at",
                 "tier",
+                "enterprise_id",
+                "group_id",
+                "cross_group_allowed",
+                "embedding",
+                "embedding_model",
             ]
 
             # Defaults on the columns that have them.
@@ -290,19 +293,33 @@ class TestExistingPreAlembicDatabase:
         run_migrations(_sqlite_url(db))
 
         with _open_ro(db) as conn:
-            # Stamp landed at baseline — proves we did NOT re-run the DDL,
-            # otherwise Alembic would have errored on CREATE TABLE
-            # against an existing table.
-            assert _alembic_version(conn) == BASELINE_REVISION
+            # Stamped at baseline then walked through 0001→HEAD; if the
+            # idempotency guards (table/column existence checks) failed,
+            # CREATE TABLE against an existing table would error.
+            assert _alembic_version(conn) == HEAD_REVISION
 
-            # Schema for user tables is structurally unchanged.
-            assert _normalized_schema(conn) == before["schema"]
+            # Phase-2 update: post-merge migrations are *additive* on a
+            # legacy SqliteStore-built DB (which only has the baseline
+            # tables). Original tables survive; new tables and columns
+            # land. Assert: no original column went missing on legacy
+            # tables, original row counts preserved, KU data intact.
+            after_schema = _normalized_schema(conn)
+            for table, before_shape in before["schema"].items():
+                assert table in after_schema, f"original table {table} missing post-migration"
+                before_cols = {c[0] for c in before_shape["columns"]}
+                after_cols = {c[0] for c in after_schema[table]["columns"]}
+                assert before_cols <= after_cols, (
+                    f"columns lost on {table}: {before_cols - after_cols}"
+                )
 
-            # Every row preserved.
-            data_tables = _user_table_names(conn) - {"alembic_version"}
-            assert _row_counts(conn, data_tables) == before["counts"]
+            # Original-table row counts unchanged.
+            for table in before["counts"]:
+                count_after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                assert count_after == before["counts"][table], (
+                    f"{table} row count drifted: {count_after} vs {before['counts'][table]}"
+                )
 
-            # KU rows still exactly equal (every column).
+            # KU rows still exactly equal on the legacy columns.
             assert (
                 conn.execute(
                     "SELECT id, data, status, reviewed_by, reviewed_at, created_at, tier "
@@ -319,14 +336,21 @@ class TestExistingPreAlembicDatabase:
         db, before = seeded_pre_alembic_db
 
         run_migrations(_sqlite_url(db))
-        # Run a second time on the now-stamped DB.
+        # Snapshot the post-first-run schema, then run a second time.
+        with _open_ro(db) as conn:
+            after_first_run = _normalized_schema(conn)
+            counts_first_run = _row_counts(
+                conn, _user_table_names(conn) - {"alembic_version"}
+            )
+
         run_migrations(_sqlite_url(db))
 
         with _open_ro(db) as conn:
-            assert _alembic_version(conn) == BASELINE_REVISION
-            assert _normalized_schema(conn) == before["schema"]
+            assert _alembic_version(conn) == HEAD_REVISION
+            # Idempotency: second migration run is a true no-op.
+            assert _normalized_schema(conn) == after_first_run
             data_tables = _user_table_names(conn) - {"alembic_version"}
-            assert _row_counts(conn, data_tables) == before["counts"]
+            assert _row_counts(conn, data_tables) == counts_first_run
 
 
 # --- Test 3: already-stamped database --------------------------------------
@@ -354,7 +378,7 @@ class TestAlreadyStampedDatabase:
         run_migrations(_sqlite_url(db))
 
         with _open_ro(db) as conn:
-            assert _alembic_version(conn) == BASELINE_REVISION
+            assert _alembic_version(conn) == HEAD_REVISION
             data_tables = _user_table_names(conn) - {"alembic_version"}
             assert _row_counts(conn, data_tables) == counts_before
             assert _normalized_schema(conn) == schema_before
@@ -390,22 +414,41 @@ class TestBaselineMatchesLegacySchema:
         legacy_db = tmp_path / "legacy.db"
         migrated_db = tmp_path / "migrated.db"
 
-        # DB-A: legacy code path.
-        await SqliteStore(db_path=legacy_db).close()
-        # DB-B: baseline migration.
+        # DB-A: legacy production code path. Use RemoteStore (NOT
+        # SqliteStore) — RemoteStore's _ensure_schema is what builds
+        # every production DB and includes the fork-delta tables
+        # (consults, aigrp_peers, aigrp_directory_peerings, peers,
+        # cross_enterprise_consents, cross_l2_audit). SqliteStore is
+        # the upstream baseline shape only.
+        from cq_server.store import RemoteStore
+
+        RemoteStore(db_path=legacy_db).close()
+        # DB-B: full Alembic chain through HEAD_REVISION.
         run_migrations(_sqlite_url(migrated_db))
 
         with _open_ro(legacy_db) as conn_a, _open_ro(migrated_db) as conn_b:
             schema_a = _normalized_schema(conn_a)
             schema_b = _normalized_schema(conn_b)
 
-        # alembic_version is excluded by _normalized_schema; everything
-        # else must agree.
-        assert schema_b == schema_a, (
-            "Baseline migration drifted from current production schema — "
-            "fix the migration so PRAGMA table_info / PRAGMA index_list / "
-            "PRAGMA foreign_key_list match what _ensure_schema() produces."
+        # Tables on both sides — same set after phase 2.
+        assert set(schema_b) == set(schema_a), (
+            f"table set drift: legacy-only={set(schema_a) - set(schema_b)}, "
+            f"migration-only={set(schema_b) - set(schema_a)}"
         )
+
+        # Per-table column SET (name + type). Order-independent because
+        # Alembic appends new columns via ALTER while the legacy
+        # ``_SCHEMA_SQL`` declares some columns inline in CREATE TABLE,
+        # so positional order diverges harmlessly. Application code
+        # always selects by name. If a column went missing on either
+        # side, this fails loudly with the exact name.
+        for table in schema_a:
+            cols_a = {(c[0], c[1]) for c in schema_a[table]["columns"]}
+            cols_b = {(c[0], c[1]) for c in schema_b[table]["columns"]}
+            assert cols_b == cols_a, (
+                f"column drift on {table}: "
+                f"legacy-only={cols_a - cols_b}, migration-only={cols_b - cols_a}"
+            )
 
 
 # --- Test 5: default URL resolution ----------------------------------------
@@ -472,7 +515,7 @@ class TestPercentInUrlIsConfigParserSafe:
         db = tmp_path / filename
         assert db.exists()
         with _open_ro(db) as conn:
-            assert _alembic_version(conn) == BASELINE_REVISION
+            assert _alembic_version(conn) == HEAD_REVISION
 
     def test_cli_path_handles_percent_in_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Drives the CLI branch in ``env.py`` — no connection on the Config.
@@ -498,7 +541,7 @@ class TestPercentInUrlIsConfigParserSafe:
 
         assert db.exists()
         with _open_ro(db) as conn:
-            assert _alembic_version(conn) == BASELINE_REVISION
+            assert _alembic_version(conn) == HEAD_REVISION
 
 
 class TestDefaultDatabaseUrlResolution:
@@ -518,7 +561,7 @@ class TestDefaultDatabaseUrlResolution:
 
         assert db.exists()
         with _open_ro(db) as conn:
-            assert _alembic_version(conn) == BASELINE_REVISION
+            assert _alembic_version(conn) == HEAD_REVISION
 
     def test_cq_database_url_takes_precedence_over_cq_db_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

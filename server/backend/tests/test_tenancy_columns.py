@@ -173,7 +173,6 @@ class TestLegacyBackfill:
 # --- alembic upgrade / downgrade ---------------------------------------
 
 
-@pytest.mark.skip(reason="phase-2 follow-up: migration chain rewiring shifts fixtures (task #100)")
 class TestAlembicMigration:
     """End-to-end: run the Alembic migration on an empty DB and on a
     DB that already has rows. Both upgrade and downgrade must complete
@@ -227,8 +226,10 @@ class TestAlembicMigration:
         conn.commit()
         conn.close()
 
-        up = self._run_alembic(db, "upgrade")
-        assert up.returncode == 0, f"upgrade failed: {up.stderr}\n{up.stdout}"
+        # Use the python runtime path so the legacy DB is stamped at
+        # baseline before the upgrade walks the chain.
+        from cq_server.migrations import run_migrations
+        run_migrations(f"sqlite:///{db}")
 
         # Inspect the row scope post-migration.
         check = sqlite3.connect(str(db))

@@ -78,7 +78,6 @@ class TestUpgradeDowngradeEmpty:
             check.close()
 
 
-@pytest.mark.skip(reason="phase-2 follow-up: migration chain rewiring shifts fixtures (task #100)")
 class TestUpgradeOnLegacyDb:
     def test_upgrade_on_populated_legacy_db_adds_role_and_peers(
         self, tmp_path: Path
@@ -104,8 +103,10 @@ class TestUpgradeOnLegacyDb:
         conn.commit()
         conn.close()
 
-        up = _run_alembic(db, "upgrade", "head")
-        assert up.returncode == 0, f"upgrade failed:\n{up.stderr}\n{up.stdout}"
+        # Use the python runtime path so the legacy DB is stamped at
+        # baseline before the chain walks; the bare CLI doesn't stamp.
+        from cq_server.migrations import run_migrations
+        run_migrations(f"sqlite:///{db}")
 
         check = sqlite3.connect(str(db))
         try:

@@ -77,7 +77,6 @@ class TestUpgradeDowngradeEmpty:
             check.close()
 
 
-@pytest.mark.skip(reason="phase-2 follow-up: migration chain rewiring shifts fixtures (task #100)")
 class TestUpgradeOnLegacyDb:
     def test_upgrade_on_populated_legacy_db_adds_column_and_tables(
         self, tmp_path: Path
@@ -105,8 +104,12 @@ class TestUpgradeOnLegacyDb:
         conn.commit()
         conn.close()
 
-        up = _run_alembic(db, "upgrade", "head")
-        assert up.returncode == 0, f"upgrade failed:\n{up.stderr}\n{up.stdout}"
+        # Use the python runtime path (run_migrations) so the legacy DB
+        # is stamped at baseline before the upgrade walks the chain.
+        # The bare CLI path doesn't stamp, so it errors trying to
+        # create knowledge_units a second time.
+        from cq_server.migrations import run_migrations
+        run_migrations(f"sqlite:///{db}")
 
         check = sqlite3.connect(str(db))
         try:
