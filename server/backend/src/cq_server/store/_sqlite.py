@@ -374,6 +374,113 @@ class SqliteStore:
         return await self._run_sync(self._approved_domains_sync)
 
     # ------------------------------------------------------------------
+    # Fork-delta: embedding helpers + KU delete (#105 PR-A inc. 6)
+    # ------------------------------------------------------------------
+
+    async def set_embedding(
+        self,
+        unit_id: str,
+        embedding: bytes,
+        embedding_model: str,
+    ) -> bool:
+        """Update the embedding for an existing KU (backfill script). True on success."""
+        return await self._run_sync(
+            self._set_embedding_sync,
+            unit_id=unit_id,
+            embedding=embedding,
+            embedding_model=embedding_model,
+        )
+
+    async def iter_unembedded(
+        self,
+        *,
+        status: str = "approved",
+        limit: int = 1000,
+    ) -> list[tuple[str, str]]:
+        """Return (id, data) for KUs with NULL embedding (backfill source)."""
+        return await self._run_sync(
+            self._iter_unembedded_sync,
+            status=status,
+            limit=limit,
+        )
+
+    async def semantic_query(
+        self,
+        query_vec: list[float],
+        *,
+        limit: int = 10,
+        status: str = "approved",
+    ) -> list[tuple[KnowledgeUnit, float]]:
+        """Brute-force cosine similarity over KUs with embeddings (numpy)."""
+        return await self._run_sync(
+            self._semantic_query_sync,
+            query_vec=query_vec,
+            limit=limit,
+            status=status,
+        )
+
+    async def delete(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+    ) -> bool:
+        """Hard-delete a KU; tenant-scoped when enterprise_id provided."""
+        return await self._run_sync(
+            self._delete_sync,
+            unit_id=unit_id,
+            enterprise_id=enterprise_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Fork-delta: peer presence (#105 PR-A inc. 6)
+    # ------------------------------------------------------------------
+
+    async def upsert_peer(
+        self,
+        *,
+        persona: str,
+        user_id: int | None,
+        enterprise_id: str,
+        group_id: str,
+        last_seen_at: str,
+        expertise_domains: list[str] | None,
+        discoverable: bool,
+        working_dir_hint: str | None,
+        metadata_json: str | None = None,
+    ) -> None:
+        """UPSERT a presence row keyed by ``persona``."""
+        await self._run_sync(
+            self._upsert_peer_sync,
+            persona=persona,
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+            last_seen_at=last_seen_at,
+            expertise_domains=expertise_domains,
+            discoverable=discoverable,
+            working_dir_hint=working_dir_hint,
+            metadata_json=metadata_json,
+        )
+
+    async def list_active_peers(
+        self,
+        *,
+        enterprise_id: str,
+        since_iso: str,
+        group_id: str | None = None,
+        exclude_persona: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return discoverable peers seen at or after ``since_iso``."""
+        return await self._run_sync(
+            self._list_active_peers_sync,
+            enterprise_id=enterprise_id,
+            since_iso=since_iso,
+            group_id=group_id,
+            exclude_persona=exclude_persona,
+        )
+
+    # ------------------------------------------------------------------
     # Fork-delta: L3 consults (#105 PR-A increment 5)
     # Backed by ``consults`` + ``consult_messages`` (Alembic 0004).
     # ------------------------------------------------------------------
@@ -1432,6 +1539,185 @@ class SqliteStore:
         with self._engine.connect() as conn:
             rows = conn.execute(text(sql), params).fetchall()
         return [self._consult_row_to_dict(r) for r in rows]
+
+    def _set_embedding_sync(
+        self,
+        *,
+        unit_id: str,
+        embedding: bytes,
+        embedding_model: str,
+    ) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text("UPDATE knowledge_units SET embedding = :emb, embedding_model = :model WHERE id = :id"),
+                {"emb": embedding, "model": embedding_model, "id": unit_id},
+            )
+        return cur.rowcount > 0
+
+    def _iter_unembedded_sync(
+        self,
+        *,
+        status: str,
+        limit: int,
+    ) -> list[tuple[str, str]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, data FROM knowledge_units WHERE embedding IS NULL AND status = :status LIMIT :limit"),
+                {"status": status, "limit": limit},
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def _semantic_query_sync(
+        self,
+        *,
+        query_vec: list[float],
+        limit: int,
+        status: str,
+    ) -> list[tuple[KnowledgeUnit, float]]:
+        import numpy as np
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT data, embedding FROM knowledge_units WHERE status = :status AND embedding IS NOT NULL"),
+                {"status": status},
+            ).fetchall()
+        if not rows:
+            return []
+
+        query = np.array(query_vec, dtype=np.float32)
+        q_norm = np.linalg.norm(query)
+        if q_norm == 0:
+            return []
+        query = query / q_norm
+
+        scored: list[tuple[KnowledgeUnit, float]] = []
+        for data_str, blob in rows:
+            vec = np.frombuffer(blob, dtype=np.float32)
+            if vec.size == 0:
+                continue
+            v_norm = np.linalg.norm(vec)
+            if v_norm == 0:
+                continue
+            sim = float(np.dot(query, vec / v_norm))
+            unit = KnowledgeUnit.model_validate_json(data_str)
+            scored.append((unit, sim))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:limit]
+
+    def _delete_sync(
+        self,
+        *,
+        unit_id: str,
+        enterprise_id: str | None,
+    ) -> bool:
+        with self._engine.begin() as conn:
+            if enterprise_id is not None:
+                row = conn.execute(
+                    text("SELECT 1 FROM knowledge_units WHERE id = :id AND enterprise_id = :eid"),
+                    {"id": unit_id, "eid": enterprise_id},
+                ).fetchone()
+                if row is None:
+                    return False
+            conn.execute(
+                text("DELETE FROM knowledge_unit_domains WHERE unit_id = :id"),
+                {"id": unit_id},
+            )
+            cur = conn.execute(
+                text("DELETE FROM knowledge_units WHERE id = :id"),
+                {"id": unit_id},
+            )
+        return cur.rowcount > 0
+
+    def _upsert_peer_sync(
+        self,
+        *,
+        persona: str,
+        user_id: int | None,
+        enterprise_id: str,
+        group_id: str,
+        last_seen_at: str,
+        expertise_domains: list[str] | None,
+        discoverable: bool,
+        working_dir_hint: str | None,
+        metadata_json: str | None,
+    ) -> None:
+        domains_json = json.dumps(expertise_domains) if expertise_domains is not None else None
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO peers (
+                        persona, user_id, enterprise_id, group_id, last_seen_at,
+                        expertise_domains, discoverable, working_dir_hint,
+                        metadata_json
+                    ) VALUES (
+                        :persona, :user_id, :enterprise_id, :group_id, :last_seen_at,
+                        :expertise_domains, :discoverable, :working_dir_hint,
+                        :metadata_json
+                    )
+                    ON CONFLICT(persona) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        enterprise_id = excluded.enterprise_id,
+                        group_id = excluded.group_id,
+                        last_seen_at = excluded.last_seen_at,
+                        expertise_domains = excluded.expertise_domains,
+                        discoverable = excluded.discoverable,
+                        working_dir_hint = excluded.working_dir_hint,
+                        metadata_json = excluded.metadata_json
+                    """
+                ),
+                {
+                    "persona": persona,
+                    "user_id": user_id,
+                    "enterprise_id": enterprise_id,
+                    "group_id": group_id,
+                    "last_seen_at": last_seen_at,
+                    "expertise_domains": domains_json,
+                    "discoverable": 1 if discoverable else 0,
+                    "working_dir_hint": working_dir_hint,
+                    "metadata_json": metadata_json,
+                },
+            )
+
+    def _list_active_peers_sync(
+        self,
+        *,
+        enterprise_id: str,
+        since_iso: str,
+        group_id: str | None,
+        exclude_persona: str | None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT persona, user_id, enterprise_id, group_id, last_seen_at, "
+            "expertise_domains, discoverable, working_dir_hint, metadata_json "
+            "FROM peers "
+            "WHERE enterprise_id = :eid AND last_seen_at >= :since "
+            "AND discoverable = 1"
+        )
+        params: dict[str, Any] = {"eid": enterprise_id, "since": since_iso}
+        if group_id is not None:
+            sql += " AND group_id = :gid"
+            params["gid"] = group_id
+        if exclude_persona is not None:
+            sql += " AND persona != :ex"
+            params["ex"] = exclude_persona
+        sql += " ORDER BY last_seen_at DESC"
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [
+            {
+                "persona": r[0],
+                "user_id": r[1],
+                "enterprise_id": r[2],
+                "group_id": r[3],
+                "last_seen_at": r[4],
+                "expertise_domains": json.loads(r[5]) if r[5] else None,
+                "discoverable": bool(r[6]),
+                "working_dir_hint": r[7],
+                "metadata_json": r[8],
+            }
+            for r in rows
+        ]
 
     def _approved_domains_sync(self) -> set[str]:
         with self._engine.connect() as conn:
