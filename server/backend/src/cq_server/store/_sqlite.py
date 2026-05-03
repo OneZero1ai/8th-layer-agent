@@ -208,7 +208,10 @@ class SqliteStore:
     async def create_user(self, username: str, password_hash: str) -> None:
         await self._run_sync(self._create_user_sync, username, password_hash)
 
-    async def daily_counts(self, *, days: int = 30) -> list[dict[str, Any]]:
+    async def daily_counts(
+        self, *, days: int = 30, enterprise_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         if days <= 0:
             raise ValueError("days must be positive")
         return await self._run_sync(self._daily_counts_sync, days=days)
@@ -1349,7 +1352,7 @@ class SqliteStore:
         accept_signature_b64u: str,
         accept_signing_key_id: str,
         last_synced_at: str,
-        to_l2_endpoints_json: str,
+        to_l2_endpoints_json: str = "[]",
     ) -> None:
         with self._engine.begin() as conn:
             conn.execute(
@@ -1441,8 +1444,8 @@ class SqliteStore:
     def _list_directory_peerings_sync(
         self,
         *,
-        enterprise_id: str | None,
-        status: str | None,
+        enterprise_id: str | None = None,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM aigrp_directory_peerings"
         clauses: list[str] = []
