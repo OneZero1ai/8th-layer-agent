@@ -21,11 +21,12 @@ Plus a fourth structural test:
    when ``_ensure_schema`` is removed and the migration becomes the
    sole source of truth.
 
-Phase-2 update (task #100): chain head is now ``0007_embedding`` after
-porting consults / aigrp_peers / directory_peerings / embedding-cols
-tables to Alembic. Tests that previously asserted ``BASELINE_REVISION``
-("0001") post-upgrade now assert ``HEAD_REVISION``; the stamp-on-startup
-logic still pins legacy DBs at baseline before walking them up the chain.
+Phase-2 update (tasks #99/#100): chain head is now ``0008_reputation``
+after porting consults / aigrp_peers / directory_peerings / embedding-cols
+tables to Alembic and adding the reputation log tables. Tests that
+previously asserted ``BASELINE_REVISION`` ("0001") post-upgrade now
+assert ``HEAD_REVISION``; the stamp-on-startup logic still pins legacy
+DBs at baseline before walking them up the chain.
 """
 
 from __future__ import annotations
@@ -430,10 +431,15 @@ class TestBaselineMatchesLegacySchema:
             schema_a = _normalized_schema(conn_a)
             schema_b = _normalized_schema(conn_b)
 
-        # Tables on both sides — same set after phase 2.
-        assert set(schema_b) == set(schema_a), (
-            f"table set drift: legacy-only={set(schema_a) - set(schema_b)}, "
-            f"migration-only={set(schema_b) - set(schema_a)}"
+        # Tables on both sides — same set after phase 2, modulo
+        # tables that only Alembic creates (RemoteStore.ensure_* path
+        # doesn't create them at startup; migrations do).
+        migration_only_expected = {"reputation_events", "reputation_chain_meta"}
+        legacy_tables = set(schema_a)
+        migration_tables = set(schema_b) - migration_only_expected
+        assert migration_tables == legacy_tables, (
+            f"table set drift: legacy-only={legacy_tables - migration_tables}, "
+            f"migration-only={migration_tables - legacy_tables}"
         )
 
         # Per-table column SET (name + type). Order-independent because
