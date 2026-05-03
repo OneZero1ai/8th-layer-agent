@@ -436,7 +436,10 @@ class TestReceiverVerification:
         )
         assert r.status_code == 403
 
-    @pytest.mark.skip(reason="phase-2 follow-up: log-capture interaction shifted post-merge (task #100)")
+    @pytest.mark.skip(
+        reason="caplog isn't capturing the aigrp warning under FastAPI TestClient; "
+        "200-status behavior is covered. Log-side coverage tracked separately."
+    )
     def test_legacy_no_pubkey_accepted_with_warning(
         self, aigrp_client: TestClient, caplog: pytest.LogCaptureFixture
     ) -> None:

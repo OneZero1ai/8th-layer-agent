@@ -28,11 +28,15 @@ from sqlalchemy.engine import make_url
 
 from .db_url import resolve_database_url
 
-__all__ = ["BASELINE_REVISION", "run_migrations"]
+__all__ = ["BASELINE_REVISION", "HEAD_REVISION", "run_migrations"]
 
 _logger = logging.getLogger(__name__)
 
 BASELINE_REVISION = "0001"
+# Phase 2 (task #100) — chain head after porting fork-delta tables to
+# Alembic. Update this string when adding a new migration so test
+# assertions and ops scripts stay in sync with the actual chain head.
+HEAD_REVISION = "0007_embedding"
 
 
 def _find_alembic_ini() -> Path:
