@@ -393,6 +393,142 @@ class SqliteStore:
         """Flip the per-KU cross-group sharing flag; True if updated."""
         return await self._run_sync(self._set_ku_cross_group_allowed_sync, unit_id, allowed)
 
+    # ------------------------------------------------------------------
+    # Fork-delta: cross-Enterprise consents + audit (#105 PR-A inc. 4)
+    # ------------------------------------------------------------------
+
+    async def list_cross_enterprise_consents(
+        self,
+        *,
+        include_expired: bool = False,
+        now_iso: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return cross-Enterprise consent rows, newest first."""
+        return await self._run_sync(
+            self._list_cross_enterprise_consents_sync,
+            include_expired=include_expired,
+            now_iso=now_iso,
+            limit=limit,
+        )
+
+    async def get_cross_enterprise_consent(self, consent_id: str) -> dict[str, Any] | None:
+        """Return one consent record by id, or None if absent."""
+        return await self._run_sync(self._get_cross_enterprise_consent_sync, consent_id)
+
+    async def revoke_cross_enterprise_consent(
+        self,
+        *,
+        consent_id: str,
+        revoked_at: str,
+    ) -> bool:
+        """Soft-revoke by setting ``expires_at = revoked_at``; True if updated."""
+        return await self._run_sync(
+            self._revoke_cross_enterprise_consent_sync,
+            consent_id=consent_id,
+            revoked_at=revoked_at,
+        )
+
+    async def find_cross_enterprise_consent(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        """Score-based lookup of an active consent for a (req-ent, resp-ent) pair."""
+        return await self._run_sync(
+            self._find_cross_enterprise_consent_sync,
+            requester_enterprise=requester_enterprise,
+            responder_enterprise=responder_enterprise,
+            requester_group=requester_group,
+            responder_group=responder_group,
+            now_iso=now_iso,
+        )
+
+    async def find_active_consent_for_pair(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        """Exact-tuple lookup for the duplicate-detection guard."""
+        return await self._run_sync(
+            self._find_active_consent_for_pair_sync,
+            requester_enterprise=requester_enterprise,
+            responder_enterprise=responder_enterprise,
+            requester_group=requester_group,
+            responder_group=responder_group,
+            now_iso=now_iso,
+        )
+
+    async def insert_cross_enterprise_consent(
+        self,
+        *,
+        consent_id: str,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        policy: str,
+        signed_by_admin: str,
+        signed_at: str,
+        expires_at: str | None,
+        audit_log_id: str,
+    ) -> None:
+        """Insert a consent record."""
+        await self._run_sync(
+            self._insert_cross_enterprise_consent_sync,
+            consent_id=consent_id,
+            requester_enterprise=requester_enterprise,
+            responder_enterprise=responder_enterprise,
+            requester_group=requester_group,
+            responder_group=responder_group,
+            policy=policy,
+            signed_by_admin=signed_by_admin,
+            signed_at=signed_at,
+            expires_at=expires_at,
+            audit_log_id=audit_log_id,
+        )
+
+    async def record_cross_l2_audit(
+        self,
+        *,
+        audit_id: str,
+        ts: str,
+        requester_l2_id: str | None,
+        requester_enterprise: str | None,
+        requester_group: str | None,
+        requester_persona: str | None,
+        responder_l2_id: str | None,
+        responder_enterprise: str | None,
+        responder_group: str | None,
+        policy_applied: str,
+        result_count: int,
+        consent_id: str | None,
+    ) -> None:
+        """Append a row to ``cross_l2_audit`` for a forward-query call."""
+        await self._run_sync(
+            self._record_cross_l2_audit_sync,
+            audit_id=audit_id,
+            ts=ts,
+            requester_l2_id=requester_l2_id,
+            requester_enterprise=requester_enterprise,
+            requester_group=requester_group,
+            requester_persona=requester_persona,
+            responder_l2_id=responder_l2_id,
+            responder_enterprise=responder_enterprise,
+            responder_group=responder_group,
+            policy_applied=policy_applied,
+            result_count=result_count,
+            consent_id=consent_id,
+        )
+
     def _confidence_distribution_sync(self) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
@@ -1179,6 +1315,254 @@ class SqliteStore:
                 {"v": 1 if allowed else 0, "id": unit_id},
             )
         return cur.rowcount > 0
+
+    _CONSENT_COLS = (
+        "consent_id, requester_enterprise, responder_enterprise, "
+        "requester_group, responder_group, policy, signed_by_admin, "
+        "signed_at, expires_at, audit_log_id"
+    )
+
+    @staticmethod
+    def _consent_row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "consent_id": row[0],
+            "requester_enterprise": row[1],
+            "responder_enterprise": row[2],
+            "requester_group": row[3],
+            "responder_group": row[4],
+            "policy": row[5],
+            "signed_by_admin": row[6],
+            "signed_at": row[7],
+            "expires_at": row[8],
+            "audit_log_id": row[9],
+        }
+
+    def _list_cross_enterprise_consents_sync(
+        self,
+        *,
+        include_expired: bool,
+        now_iso: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        sql = f"SELECT {self._CONSENT_COLS} FROM cross_enterprise_consents"
+        params: dict[str, Any] = {}
+        if not include_expired:
+            sql += " WHERE expires_at IS NULL OR expires_at > :now"
+            params["now"] = now_iso
+        sql += " ORDER BY signed_at DESC LIMIT :limit"
+        params["limit"] = limit
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [self._consent_row_to_dict(r) for r in rows]
+
+    def _get_cross_enterprise_consent_sync(self, consent_id: str) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(f"SELECT {self._CONSENT_COLS} FROM cross_enterprise_consents WHERE consent_id = :cid"),
+                {"cid": consent_id},
+            ).fetchone()
+        return self._consent_row_to_dict(row) if row else None
+
+    def _revoke_cross_enterprise_consent_sync(
+        self,
+        *,
+        consent_id: str,
+        revoked_at: str,
+    ) -> bool:
+        with self._engine.begin() as conn:
+            cur = conn.execute(
+                text("UPDATE cross_enterprise_consents SET expires_at = :rt WHERE consent_id = :cid"),
+                {"rt": revoked_at, "cid": consent_id},
+            )
+        return cur.rowcount > 0
+
+    def _find_cross_enterprise_consent_sync(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT consent_id, requester_group, responder_group,
+                           policy, signed_by_admin, signed_at, expires_at,
+                           audit_log_id
+                    FROM cross_enterprise_consents
+                    WHERE requester_enterprise = :req
+                      AND responder_enterprise = :resp
+                      AND (expires_at IS NULL OR expires_at > :now)
+                    """
+                ),
+                {"req": requester_enterprise, "resp": responder_enterprise, "now": now_iso},
+            ).fetchall()
+        if not rows:
+            return None
+
+        def _score(req_g: str | None, resp_g: str | None) -> int:
+            return (
+                (2 if req_g == requester_group and req_g is not None else 0)
+                + (2 if resp_g == responder_group and resp_g is not None else 0)
+                + (1 if req_g is None else 0)
+                + (1 if resp_g is None else 0)
+            )
+
+        best = None
+        best_score = -1
+        for r in rows:
+            req_g, resp_g = r[1], r[2]
+            if req_g is not None and req_g != requester_group:
+                continue
+            if resp_g is not None and resp_g != responder_group:
+                continue
+            score = _score(req_g, resp_g)
+            if score > best_score:
+                best_score = score
+                best = r
+        if best is None:
+            return None
+        return {
+            "consent_id": best[0],
+            "requester_group": best[1],
+            "responder_group": best[2],
+            "policy": best[3],
+            "signed_by_admin": best[4],
+            "signed_at": best[5],
+            "expires_at": best[6],
+            "audit_log_id": best[7],
+        }
+
+    def _find_active_consent_for_pair_sync(
+        self,
+        *,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        now_iso: str,
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT consent_id FROM cross_enterprise_consents
+                    WHERE requester_enterprise = :req
+                      AND responder_enterprise = :resp
+                      AND ((requester_group IS NULL AND :rg IS NULL)
+                           OR requester_group = :rg)
+                      AND ((responder_group IS NULL AND :sg IS NULL)
+                           OR responder_group = :sg)
+                      AND (expires_at IS NULL OR expires_at > :now)
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "req": requester_enterprise,
+                    "resp": responder_enterprise,
+                    "rg": requester_group,
+                    "sg": responder_group,
+                    "now": now_iso,
+                },
+            ).fetchone()
+        if row is None:
+            return None
+        return self._get_cross_enterprise_consent_sync(row[0])
+
+    def _insert_cross_enterprise_consent_sync(
+        self,
+        *,
+        consent_id: str,
+        requester_enterprise: str,
+        responder_enterprise: str,
+        requester_group: str | None,
+        responder_group: str | None,
+        policy: str,
+        signed_by_admin: str,
+        signed_at: str,
+        expires_at: str | None,
+        audit_log_id: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO cross_enterprise_consents (
+                        consent_id, requester_enterprise, responder_enterprise,
+                        requester_group, responder_group, policy,
+                        signed_by_admin, signed_at, expires_at, audit_log_id
+                    ) VALUES (
+                        :consent_id, :requester_enterprise, :responder_enterprise,
+                        :requester_group, :responder_group, :policy,
+                        :signed_by_admin, :signed_at, :expires_at, :audit_log_id
+                    )
+                    """
+                ),
+                {
+                    "consent_id": consent_id,
+                    "requester_enterprise": requester_enterprise,
+                    "responder_enterprise": responder_enterprise,
+                    "requester_group": requester_group,
+                    "responder_group": responder_group,
+                    "policy": policy,
+                    "signed_by_admin": signed_by_admin,
+                    "signed_at": signed_at,
+                    "expires_at": expires_at,
+                    "audit_log_id": audit_log_id,
+                },
+            )
+
+    def _record_cross_l2_audit_sync(
+        self,
+        *,
+        audit_id: str,
+        ts: str,
+        requester_l2_id: str | None,
+        requester_enterprise: str | None,
+        requester_group: str | None,
+        requester_persona: str | None,
+        responder_l2_id: str | None,
+        responder_enterprise: str | None,
+        responder_group: str | None,
+        policy_applied: str,
+        result_count: int,
+        consent_id: str | None,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO cross_l2_audit (
+                        audit_id, ts, requester_l2_id, requester_enterprise,
+                        requester_group, requester_persona,
+                        responder_l2_id, responder_enterprise, responder_group,
+                        policy_applied, result_count, consent_id
+                    ) VALUES (
+                        :audit_id, :ts, :requester_l2_id, :requester_enterprise,
+                        :requester_group, :requester_persona,
+                        :responder_l2_id, :responder_enterprise, :responder_group,
+                        :policy_applied, :result_count, :consent_id
+                    )
+                    """
+                ),
+                {
+                    "audit_id": audit_id,
+                    "ts": ts,
+                    "requester_l2_id": requester_l2_id,
+                    "requester_enterprise": requester_enterprise,
+                    "requester_group": requester_group,
+                    "requester_persona": requester_persona,
+                    "responder_l2_id": responder_l2_id,
+                    "responder_enterprise": responder_enterprise,
+                    "responder_group": responder_group,
+                    "policy_applied": policy_applied,
+                    "result_count": result_count,
+                    "consent_id": consent_id,
+                },
+            )
 
     def _approved_domains_sync(self) -> set[str]:
         with self._engine.connect() as conn:
