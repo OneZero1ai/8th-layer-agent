@@ -28,6 +28,7 @@ day skips its own write (idempotent + race-safe under SQLite WAL).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -252,10 +253,8 @@ async def daily_root_loop(get_conn: Callable[[], sqlite3.Connection]) -> None:
                             yesterday,
                             exc_info=True,
                         )
-                        try:
+                        with contextlib.suppress(sqlite3.Error):
                             conn.rollback()
-                        except sqlite3.Error:
-                            pass
             finally:
                 conn.close()
         except Exception:  # noqa: BLE001 — never let this loop die
