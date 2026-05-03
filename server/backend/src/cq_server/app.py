@@ -854,7 +854,7 @@ async def aigrp_forward_query(
     # Sprint 4 (#44) — when the peer has a pubkey on file, also verifies
     # the Ed25519 signature over JCS(body) || requester_l2_id.
     store = _get_store()
-    aigrp.require_forwarder_identity(
+    await aigrp.require_forwarder_identity(
         request,
         body.requester_l2_id,
         same_enterprise_only=False,

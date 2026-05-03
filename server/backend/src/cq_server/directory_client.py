@@ -344,7 +344,7 @@ async def _pull_and_persist_once(
                 )
                 continue
 
-            store.upsert_directory_peering(
+            await store.upsert_directory_peering(
                 offer_id=rec["offer_id"],
                 from_enterprise=rec["from_enterprise"],
                 to_enterprise=rec["to_enterprise"],
