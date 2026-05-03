@@ -90,7 +90,7 @@ class TestSignHappyPath:
         consent_id = resp.json()["consent_id"]
         store = _get_store()
         with store._lock:
-            rows = store._conn.execute(
+            rows = store._engine.connect().exec_driver_sql(
                 "SELECT policy_applied, consent_id FROM cross_l2_audit "
                 "WHERE consent_id = ?",
                 (consent_id,),
@@ -272,8 +272,8 @@ class TestList:
         )
         cid = signed.json()["consent_id"]
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE cross_enterprise_consents SET expires_at = ? WHERE consent_id = ?",
                 ("2020-01-01T00:00:00+00:00", cid),
             )

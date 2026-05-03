@@ -412,7 +412,7 @@ async def request_consult(
     Drops the opening message into ``consult_messages`` immediately so
     a single round-trip is sufficient for the asker.
     """
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     self_enterprise = aigrp_mod.enterprise()
 
     thread_id = f"th_{uuid4().hex[:16]}"
@@ -530,7 +530,7 @@ async def post_consult_message(
     The caller must be one of the two participants (from_persona or
     to_persona on the matching L2). Closed threads reject with 409.
     """
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
@@ -611,7 +611,7 @@ async def get_consult_messages(
     username: str = Depends(get_current_user),
 ) -> MessagesResponse:
     """Read every message on a thread the caller participates in."""
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
@@ -634,7 +634,7 @@ async def close_consult(
     username: str = Depends(get_current_user),
 ) -> ConsultThreadOut:
     """Mark the thread closed. Either participant can close."""
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
@@ -949,7 +949,7 @@ async def x_enterprise_forward_consult_request(
     Idempotent on ``(thread_id, message_id)`` like the same-Enterprise
     forward path. Body shape matches ForwardRequestBody for consistency.
     """
-    peering = _require_x_enterprise_auth(request, body, store)
+    peering = await _require_x_enterprise_auth(request, body, store)
     policy = peering["consult_logging_policy"]
 
     # Thread row: always created (audit point: cross-Enterprise consult
@@ -1000,7 +1000,7 @@ async def get_inbox(
     Default excludes closed threads. `include_closed=true` returns the
     audit view (all threads, sorted by created_at DESC).
     """
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     rows = await store.list_inbox(
         to_l2_id=self_l2_id,
         to_persona=self_persona,

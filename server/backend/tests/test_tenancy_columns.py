@@ -82,7 +82,7 @@ class TestNewRowDefaults:
     def test_columns_are_not_null(self, store: SqliteStore) -> None:
         # Prove the schema rejects an explicit NULL.
         with pytest.raises(sqlite3.IntegrityError):
-            store._conn.execute(
+            store._engine.connect().exec_driver_sql(
                 "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
                 "VALUES (?, ?, ?, ?)",
                 ("ku_null", "{}", None, "default-group"),

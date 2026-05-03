@@ -95,8 +95,8 @@ def _seed_ku(
     # Approve so semantic_query picks it up.
     store.sync.set_review_status(unit.id, "approved", "test-reviewer")
     # Set tenancy scope + xgroup flag explicitly.
-    with store._lock, store._conn:
-        store._conn.execute(
+    with store._engine.begin() as _c:
+        _c.exec_driver_sql(
             "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
             "cross_group_allowed = ? WHERE id = ?",
             (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit.id),
@@ -276,7 +276,7 @@ class TestAuditLog:
     def _audit_rows(self) -> list[tuple[Any, ...]]:
         store = _get_store()
         with store._lock:
-            return store._conn.execute(
+            return store._engine.connect().exec_driver_sql(
                 "SELECT requester_enterprise, requester_group, "
                 "responder_enterprise, responder_group, policy_applied, "
                 "result_count, consent_id "
@@ -464,7 +464,7 @@ class TestSchemaConstraints:
     def test_cross_group_allowed_column_is_not_null(self, aigrp_client: TestClient) -> None:
         store = _get_store()
         with pytest.raises(sqlite3.IntegrityError), store._lock, store._conn:
-            store._conn.execute(
+            store._engine.connect().exec_driver_sql(
                 "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
                 "VALUES (?, ?, ?)",
                 ("ku_null_xgroup", "{}", None),

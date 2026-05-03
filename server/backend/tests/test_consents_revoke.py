@@ -88,7 +88,7 @@ class TestRevokeHappyPath:
         )
         store = _get_store()
         with store._lock:
-            rows = store._conn.execute(
+            rows = store._engine.connect().exec_driver_sql(
                 "SELECT policy_applied FROM cross_l2_audit "
                 "WHERE consent_id = ? ORDER BY ts ASC",
                 (cid,),

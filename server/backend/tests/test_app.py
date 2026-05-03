@@ -268,8 +268,8 @@ class TestQueryTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
                 "cross_group_allowed = ? WHERE id = ?",
                 (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit_id),
@@ -279,8 +279,8 @@ class TestQueryTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
                 (enterprise_id, group_id, username),
             )
@@ -334,8 +334,8 @@ class TestStatsTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
                 (enterprise_id, unit_id),
             )
@@ -344,8 +344,8 @@ class TestStatsTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ? WHERE username = ?",
                 (enterprise_id, username),
             )

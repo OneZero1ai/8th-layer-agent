@@ -39,8 +39,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         store.sync.create_user(ALICE, pw)
         store.sync.create_user(BOB, pw)
         # Promote Alice to a foreign tenancy scope. Bob stays default.
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'acme', group_id = 'engineering' "
                 "WHERE username = ?",
                 (ALICE,),
@@ -95,7 +95,7 @@ class TestHeartbeatUpsert:
             # And there should be exactly one row in the DB.
             store = _get_store()
             with store._lock:
-                count = store._conn.execute(
+                count = store._engine.connect().exec_driver_sql(
                     "SELECT COUNT(*) FROM peers WHERE persona = 'persona-x'"
                 ).fetchone()[0]
             assert count == 1
@@ -115,7 +115,7 @@ class TestTenancyResolvedFromAuth:
             _clear_override()
         store = _get_store()
         with store._lock:
-            row = store._conn.execute(
+            row = store._engine.connect().exec_driver_sql(
                 "SELECT enterprise_id, group_id FROM peers WHERE persona = ?",
                 ("persona-alice",),
             ).fetchone()
@@ -143,7 +143,7 @@ class TestTenancyResolvedFromAuth:
             _clear_override()
         store = _get_store()
         with store._lock:
-            row = store._conn.execute(
+            row = store._engine.connect().exec_driver_sql(
                 "SELECT enterprise_id, group_id FROM peers WHERE persona = ?",
                 ("persona-shared",),
             ).fetchone()
@@ -167,7 +167,7 @@ class TestExpertiseDomainsRoundtrip:
             _clear_override()
         store = _get_store()
         with store._lock:
-            row = store._conn.execute(
+            row = store._engine.connect().exec_driver_sql(
                 "SELECT expertise_domains FROM peers WHERE persona = ?",
                 ("persona-domains",),
             ).fetchone()
@@ -184,7 +184,7 @@ class TestExpertiseDomainsRoundtrip:
             _clear_override()
         store = _get_store()
         with store._lock:
-            row = store._conn.execute(
+            row = store._engine.connect().exec_driver_sql(
                 "SELECT expertise_domains FROM peers WHERE persona = ?",
                 ("persona-no-domains",),
             ).fetchone()

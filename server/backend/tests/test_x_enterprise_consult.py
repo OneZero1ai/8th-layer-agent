@@ -62,8 +62,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         # Seed alice as a real user
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
         store.sync.create_user(ALICE, pw)
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
                 ("acme", "engineering", ALICE),
             )

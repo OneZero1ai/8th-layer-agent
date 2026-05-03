@@ -53,8 +53,8 @@ def _login(
     if role != "user":
         store.sync.set_user_role(username, role)
     if enterprise_id is not None:
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ? WHERE username = ?",
                 (enterprise_id, username),
             )
@@ -376,8 +376,8 @@ class TestReviewTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
                 (enterprise_id, unit_id),
             )
