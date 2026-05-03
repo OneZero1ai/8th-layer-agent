@@ -181,3 +181,112 @@ class TestRecordEvent:
         # raw UTF-8 'ë' is 0xC3 0xAB; the escaped form would be 6 ASCII bytes
         assert b"\xc3\xab" in b
         assert b"\\u" not in b
+
+
+class TestSigning:
+    """v1 Ed25519 signing — task #108. Reuses the L2 forward-sign key."""
+
+    def test_signed_event_populates_signature_columns(
+        self,
+        conn: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When an L2 forward-sign key is on disk, ``record_event`` writes
+        non-NULL ``signature_b64u`` and ``signing_key_id`` columns."""
+        from cq_server import forward_sign
+
+        key_path = tmp_path / "l2_key.bin"
+        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(key_path))
+        forward_sign.reload_l2_privkey()  # picks up the new path
+
+        try:
+            eid = reputation.record_event(
+                conn, event_type="consult.closed", body={"thread_id": "th_signed"}
+            )
+            conn.commit()
+            assert eid is not None
+
+            row = conn.execute(
+                "SELECT signature_b64u, signing_key_id FROM reputation_events WHERE event_id = ?",
+                (eid,),
+            ).fetchone()
+            sig, kid = row
+            assert sig is not None and len(sig) > 0, "signature should be populated"
+            assert kid is not None and len(kid) > 0, "signing_key_id should be populated"
+            # signing_key_id is the L2's b64url public key — 43 chars (32-byte key, no padding)
+            assert len(kid) == 43, f"signing_key_id should be 43-char b64url, got {len(kid)}"
+        finally:
+            forward_sign.reload_l2_privkey()  # reset cache to avoid pollution
+
+    def test_signature_verifies_against_canonical_payload(
+        self,
+        conn: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end signing → verification. A valid signature against the
+        canonical payload bytes round-trips through ``crypto.verify_raw``."""
+        from cq_server import forward_sign
+        from cq_server.crypto import verify_raw
+
+        key_path = tmp_path / "l2_key.bin"
+        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(key_path))
+        forward_sign.reload_l2_privkey()
+
+        try:
+            eid = reputation.record_event(
+                conn, event_type="ku.event", body={"unit_id": "ku_42", "verb": "approve"}
+            )
+            conn.commit()
+            assert eid is not None
+
+            row = conn.execute(
+                "SELECT payload_canonical, signature_b64u, signing_key_id "
+                "FROM reputation_events WHERE event_id = ?",
+                (eid,),
+            ).fetchone()
+            canonical_str, sig, kid = row
+            ok = verify_raw(kid, canonical_str.encode("utf-8"), sig)
+            assert ok is True, "signature must verify against the persisted canonical bytes"
+        finally:
+            forward_sign.reload_l2_privkey()
+
+    def test_unsigned_event_when_no_key_available(
+        self,
+        conn: sqlite3.Connection,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When signing is disabled (key load fails / unavailable), event
+        rows persist with NULL signature columns. Caller's operation is
+        unaffected — preserves the v1-alpha behaviour for legacy deploys."""
+        from cq_server import forward_sign
+
+        # Point at a directory we can't write to, then force a reload —
+        # load_or_create_l2_privkey returns None on OSError.
+        bad_path = tmp_path / "no_perm" / "key.bin"
+        bad_path.parent.mkdir(mode=0o000)
+        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(bad_path))
+        forward_sign.reload_l2_privkey()
+
+        try:
+            eid = reputation.record_event(
+                conn, event_type="consult.closed", body={"thread_id": "th_unsigned"}
+            )
+            conn.commit()
+            if eid is None:
+                # If load_or_create_l2_privkey raised (ran on a system that
+                # couldn't enforce the chmod 000), the test isn't meaningful.
+                pytest.skip("filesystem allowed key creation despite chmod 000")
+
+            row = conn.execute(
+                "SELECT signature_b64u, signing_key_id FROM reputation_events WHERE event_id = ?",
+                (eid,),
+            ).fetchone()
+            sig, kid = row
+            assert sig is None, "expected NULL signature when key unavailable"
+            assert kid is None, "expected NULL signing_key_id when key unavailable"
+        finally:
+            bad_path.parent.chmod(0o755)  # let pytest clean up the tmpdir
+            forward_sign.reload_l2_privkey()

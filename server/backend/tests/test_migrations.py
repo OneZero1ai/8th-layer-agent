@@ -434,7 +434,11 @@ class TestBaselineMatchesLegacySchema:
         # Tables on both sides — same set after phase 2, modulo
         # tables that only Alembic creates (RemoteStore.ensure_* path
         # doesn't create them at startup; migrations do).
-        migration_only_expected = {"reputation_events", "reputation_chain_meta"}
+        migration_only_expected = {
+            "reputation_events",
+            "reputation_chain_meta",
+            "reputation_roots",
+        }
         legacy_tables = set(schema_a)
         migration_tables = set(schema_b) - migration_only_expected
         assert migration_tables == legacy_tables, (

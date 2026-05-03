@@ -128,6 +128,28 @@ def review_queue(
     )
 
 
+def _hook_ku_event(store: "RemoteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
+    """Reputation hook for KU lifecycle transitions (#108 sub-task 5).
+
+    Best-effort: ``record_event`` swallows on failure so a flaky
+    reputation chain never blocks the underlying review action. Body
+    shape per ``reputation-v1.md`` §"ku.event".
+    """
+    from .reputation import record_event as _record_event
+
+    _record_event(
+        store._conn,
+        event_type="ku.event",
+        body={
+            "unit_id": unit_id,
+            "verb": verb,
+            "enterprise_id": enterprise_id,
+            "by": by,
+        },
+        enterprise_id=enterprise_id,
+    )
+
+
 @router.post("/{unit_id}/approve")
 def approve_unit(
     unit_id: str,
@@ -144,6 +166,7 @@ def approve_unit(
     store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
     updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
+    _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 
@@ -163,6 +186,7 @@ def reject_unit(
     store.set_review_status(unit_id, "rejected", username, enterprise_id=enterprise_id)
     updated = store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
+    _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
     return _build_decision(unit_id, updated)
 
 

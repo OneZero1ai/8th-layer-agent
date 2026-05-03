@@ -2,6 +2,7 @@
 
 import json
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -32,6 +33,7 @@ from .embed import model_id as embed_model_id
 from .migrations import run_migrations
 from .network import router as network_router
 from .quality import check_propose_quality
+from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import RemoteStore, normalize_domains
@@ -223,6 +225,21 @@ async def _aigrp_bootstrap_and_poll(store: RemoteStore) -> None:
                         embedding_model=sig.get("embedding_model"),
                         signature_received=True,
                     )
+                    # Reputation hook (#108 sub-task 5). Convergence event:
+                    # we successfully fetched + stored a fresh signature from
+                    # the peer. Body shape per reputation-v1.md §"peer.heartbeat".
+                    from .reputation import record_event as _record_event
+
+                    _record_event(
+                        store._conn,
+                        event_type="peer.heartbeat",
+                        body={
+                            "peer_l2_id": sig["l2_id"],
+                            "peer_enterprise": sig["enterprise"],
+                            "ku_count": sig.get("ku_count", 0),
+                            "domain_count": sig.get("domain_count", 0),
+                        },
+                    )
                 except Exception:
                     log.warning("aigrp poll of peer %s failed", p["l2_id"])
         except asyncio.CancelledError:
@@ -285,10 +302,37 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     directory_task = asyncio.create_task(directory_bootstrap_and_loop(_store))
 
+    # Task #108 sub-task 3 — daily Merkle root computation. Sleeps until
+    # next UTC midnight, then rolls up the prior day's reputation_events
+    # per Enterprise. Skipped when reputation activity hasn't started
+    # (the helper checks reputation_chain_meta).
+    from .daily_root import daily_root_loop
+
+    def _fresh_conn() -> sqlite3.Connection:
+        # Inline sqlite3.connect against the same DB path the store uses
+        # — keeps the loop's connection lifecycle independent so a
+        # long-running task can't pin the store's primary connection.
+        return sqlite3.connect(str(db_path), timeout=10)
+
+    daily_root_task = asyncio.create_task(daily_root_loop(_fresh_conn))
+
+    # Task #108 sub-task 4 (publish side) — periodically POSTs any
+    # unpublished daily roots to the directory. Self-disables in
+    # skip-announce mode or when CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset.
+    from .directory_client import reputation_publish_loop
+
+    reputation_publish_task = asyncio.create_task(reputation_publish_loop(_fresh_conn))
+
     try:
         yield
     finally:
-        for task in (aigrp_task, dsn_cache_task, directory_task):
+        for task in (
+            aigrp_task,
+            dsn_cache_task,
+            directory_task,
+            daily_root_task,
+            reputation_publish_task,
+        ):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -303,6 +347,7 @@ api_router.include_router(auth_router)
 api_router.include_router(review_router)
 api_router.include_router(network_router)
 api_router.include_router(consults_router)
+api_router.include_router(reputation_router)
 
 
 @api_router.get("/health")

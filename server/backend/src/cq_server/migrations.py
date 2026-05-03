@@ -36,7 +36,7 @@ BASELINE_REVISION = "0001"
 # Phase 2 (task #100) — chain head after porting fork-delta tables to
 # Alembic. Update this string when adding a new migration so test
 # assertions and ops scripts stay in sync with the actual chain head.
-HEAD_REVISION = "0008_reputation"
+HEAD_REVISION = "0009_reputation_roots"
 
 
 def _find_alembic_ini() -> Path:
