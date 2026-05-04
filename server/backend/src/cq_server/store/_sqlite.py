@@ -807,6 +807,114 @@ class SqliteStore:
             consent_id=consent_id,
         )
 
+    # --- reflect_submissions (#67) ---------------------------------------
+    #
+    # Persistence layer for the batch-reflect contract. The router layer
+    # calls these via the async wrappers; the worker (separate process,
+    # not in this PR) will use the same surface to drive Anthropic Batch
+    # dispatch and ingest results.
+
+    async def create_reflect_submission(
+        self,
+        *,
+        submission_id: str,
+        session_id: str,
+        user_id: int,
+        enterprise_id: str,
+        group_id: str | None,
+        context_hash: str,
+        mode: str,
+        max_candidates: int,
+        since_ts: str | None,
+        submitted_at: str,
+    ) -> None:
+        await self._run_sync(
+            self._create_reflect_submission_sync,
+            submission_id=submission_id,
+            session_id=session_id,
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+            context_hash=context_hash,
+            mode=mode,
+            max_candidates=max_candidates,
+            since_ts=since_ts,
+            submitted_at=submitted_at,
+        )
+
+    async def get_reflect_submission(
+        self, submission_id: str
+    ) -> dict[str, Any] | None:
+        return await self._run_sync(
+            self._get_reflect_submission_sync, submission_id
+        )
+
+    async def find_recent_reflect_dedup(
+        self,
+        *,
+        session_id: str,
+        context_hash: str,
+        window_start_iso: str,
+    ) -> dict[str, Any] | None:
+        """Return the most recent submission with matching (session, hash) within the dedup window."""
+        return await self._run_sync(
+            self._find_recent_reflect_dedup_sync,
+            session_id=session_id,
+            context_hash=context_hash,
+            window_start_iso=window_start_iso,
+        )
+
+    async def count_recent_reflect_submissions(
+        self,
+        *,
+        session_id: str,
+        window_start_iso: str,
+    ) -> int:
+        return await self._run_sync(
+            self._count_recent_reflect_submissions_sync,
+            session_id=session_id,
+            window_start_iso=window_start_iso,
+        )
+
+    async def get_oldest_reflect_in_window(
+        self,
+        *,
+        session_id: str,
+        window_start_iso: str,
+    ) -> str | None:
+        """Return ``submitted_at`` of the oldest submission for this session within the rate-limit window."""
+        return await self._run_sync(
+            self._get_oldest_reflect_in_window_sync,
+            session_id=session_id,
+            window_start_iso=window_start_iso,
+        )
+
+    async def get_last_reflect_for_session(
+        self,
+        *,
+        session_id: str,
+        enterprise_id: str,
+    ) -> dict[str, Any] | None:
+        return await self._run_sync(
+            self._get_last_reflect_for_session_sync,
+            session_id=session_id,
+            enterprise_id=enterprise_id,
+        )
+
+    async def list_reflect_submissions_for_recovery(
+        self, *, lookback_iso: str
+    ) -> list[dict[str, Any]]:
+        """Return non-terminal submissions with non-null ``anthropic_batch_id`` newer than ``lookback_iso``.
+
+        Used by the worker's R6 startup recovery scan; not exercised by
+        the contract surface this PR ships, but the store method lives
+        with its peers.
+        """
+        return await self._run_sync(
+            self._list_reflect_submissions_for_recovery_sync,
+            lookback_iso=lookback_iso,
+        )
+
     def _confidence_distribution_sync(self) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
@@ -2343,6 +2451,181 @@ class SqliteStore:
                 )
             ).fetchall()
         return {r[0] for r in rows if r[0]}
+
+    # --- reflect_submissions (#67) sync impls ----------------------------
+
+    _REFLECT_COLUMNS = (
+        "id, session_id, user_id, enterprise_id, group_id, context_hash, "
+        "state, anthropic_batch_id, model, input_tokens, output_tokens, "
+        "candidates_proposed, candidates_confirmed, candidates_excluded, "
+        "candidates_deduped, error, mode, max_candidates, since_ts, "
+        "submitted_at, started_at, completed_at"
+    )
+
+    @staticmethod
+    def _reflect_row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "session_id": row[1],
+            "user_id": row[2],
+            "enterprise_id": row[3],
+            "group_id": row[4],
+            "context_hash": row[5],
+            "state": row[6],
+            "anthropic_batch_id": row[7],
+            "model": row[8],
+            "input_tokens": row[9],
+            "output_tokens": row[10],
+            "candidates_proposed": int(row[11]),
+            "candidates_confirmed": int(row[12]),
+            "candidates_excluded": int(row[13]),
+            "candidates_deduped": int(row[14]),
+            "error": row[15],
+            "mode": row[16],
+            "max_candidates": int(row[17]) if row[17] is not None else 10,
+            "since_ts": row[18],
+            "submitted_at": row[19],
+            "started_at": row[20],
+            "completed_at": row[21],
+        }
+
+    def _create_reflect_submission_sync(
+        self,
+        *,
+        submission_id: str,
+        session_id: str,
+        user_id: int,
+        enterprise_id: str,
+        group_id: str | None,
+        context_hash: str,
+        mode: str,
+        max_candidates: int,
+        since_ts: str | None,
+        submitted_at: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO reflect_submissions "
+                    "(id, session_id, user_id, enterprise_id, group_id, "
+                    " context_hash, state, mode, max_candidates, since_ts, "
+                    " submitted_at, candidates_proposed, candidates_confirmed, "
+                    " candidates_excluded, candidates_deduped) "
+                    "VALUES (:id, :session_id, :user_id, :enterprise_id, :group_id, "
+                    " :context_hash, 'queued', :mode, :max_candidates, :since_ts, "
+                    " :submitted_at, 0, 0, 0, 0)"
+                ),
+                {
+                    "id": submission_id,
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "enterprise_id": enterprise_id,
+                    "group_id": group_id,
+                    "context_hash": context_hash,
+                    "mode": mode,
+                    "max_candidates": max_candidates,
+                    "since_ts": since_ts,
+                    "submitted_at": submitted_at,
+                },
+            )
+
+    def _get_reflect_submission_sync(
+        self, submission_id: str
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions "
+                    "WHERE id = :id"
+                ),
+                {"id": submission_id},
+            ).fetchone()
+        return None if row is None else self._reflect_row_to_dict(row)
+
+    def _find_recent_reflect_dedup_sync(
+        self,
+        *,
+        session_id: str,
+        context_hash: str,
+        window_start_iso: str,
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions "
+                    "WHERE session_id = :sid AND context_hash = :ch "
+                    "AND submitted_at >= :since "
+                    "ORDER BY submitted_at DESC LIMIT 1"
+                ),
+                {"sid": session_id, "ch": context_hash, "since": window_start_iso},
+            ).fetchone()
+        return None if row is None else self._reflect_row_to_dict(row)
+
+    def _count_recent_reflect_submissions_sync(
+        self,
+        *,
+        session_id: str,
+        window_start_iso: str,
+    ) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM reflect_submissions "
+                    "WHERE session_id = :sid AND submitted_at >= :since"
+                ),
+                {"sid": session_id, "since": window_start_iso},
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _get_oldest_reflect_in_window_sync(
+        self,
+        *,
+        session_id: str,
+        window_start_iso: str,
+    ) -> str | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT submitted_at FROM reflect_submissions "
+                    "WHERE session_id = :sid AND submitted_at >= :since "
+                    "ORDER BY submitted_at ASC LIMIT 1"
+                ),
+                {"sid": session_id, "since": window_start_iso},
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def _get_last_reflect_for_session_sync(
+        self,
+        *,
+        session_id: str,
+        enterprise_id: str,
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions "
+                    "WHERE session_id = :sid AND enterprise_id = :eid "
+                    "ORDER BY submitted_at DESC LIMIT 1"
+                ),
+                {"sid": session_id, "eid": enterprise_id},
+            ).fetchone()
+        return None if row is None else self._reflect_row_to_dict(row)
+
+    def _list_reflect_submissions_for_recovery_sync(
+        self, *, lookback_iso: str
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions "
+                    "WHERE state IN ('queued','batching','polling') "
+                    "AND anthropic_batch_id IS NOT NULL "
+                    "AND submitted_at >= :since "
+                    "ORDER BY submitted_at ASC"
+                ),
+                {"since": lookback_iso},
+            ).fetchall()
+        return [self._reflect_row_to_dict(r) for r in rows]
 
 
 class _SyncStoreProxy:

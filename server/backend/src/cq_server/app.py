@@ -33,6 +33,7 @@ from .embed import model_id as embed_model_id
 from .migrations import run_migrations
 from .network import router as network_router
 from .quality import check_propose_quality
+from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
@@ -349,6 +350,7 @@ api_router.include_router(review_router)
 api_router.include_router(network_router)
 api_router.include_router(consults_router)
 api_router.include_router(reputation_router)
+api_router.include_router(reflect_router, prefix="/reflect", tags=["reflect"])
 
 
 @api_router.get("/health")
