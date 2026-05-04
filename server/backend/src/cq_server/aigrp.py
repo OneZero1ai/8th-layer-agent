@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException, Request
 
 if TYPE_CHECKING:
-    from .store import RemoteStore
+    from .store._sqlite import SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +138,13 @@ def require_peer_key(request: Request) -> None:
 FORWARDER_HEADER = "x-8l-forwarder-l2-id"
 
 
-def require_forwarder_identity(
+async def require_forwarder_identity(
     request: Request,
     claimed_l2_id: str,
     *,
     same_enterprise_only: bool = True,
     body_for_sig: dict | None = None,
-    store: RemoteStore | None = None,
+    store: SqliteStore | None = None,
 ) -> str:
     """Validate the forwarder's declared identity on a /forward-* endpoint.
 
@@ -167,7 +167,7 @@ def require_forwarder_identity(
             ``X-8L-Forwarder-Sig`` header against the peer's recorded
             Ed25519 public key. ``None`` skips signature verification —
             used by legacy callers that haven't been migrated yet.
-        store: ``RemoteStore`` instance for pubkey lookup. Pass alongside
+        store: ``SqliteStore`` instance for pubkey lookup. Pass alongside
             ``body_for_sig``. Typed as ``object`` to avoid an import
             cycle with ``cq_server.store``.
 
@@ -223,7 +223,7 @@ def require_forwarder_identity(
 
         peer_pubkey = None
         try:
-            peer_pubkey = store.get_aigrp_peer_pubkey(declared)  # type: ignore[attr-defined]
+            peer_pubkey = await store.get_aigrp_peer_pubkey(declared)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             # Defensive: a borked store call shouldn't 500 a forward path.
             logger.exception("forward-sign: pubkey lookup failed for peer=%s", declared)

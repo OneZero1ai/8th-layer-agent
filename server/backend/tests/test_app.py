@@ -28,8 +28,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         from cq_server.auth import hash_password
 
         store = _get_store()
-        if store.get_user(TEST_USERNAME) is None:
-            store.create_user(TEST_USERNAME, hash_password("test-pw"))
+        if store.sync.get_user(TEST_USERNAME) is None:
+            store.sync.create_user(TEST_USERNAME, hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
 
@@ -53,7 +53,7 @@ def _seed_user_and_login(
     from cq_server.app import _get_store
     from cq_server.auth import hash_password
 
-    _get_store().create_user(username, hash_password(password))
+    _get_store().sync.create_user(username, hash_password(password))
     resp = client.post("/auth/login", json={"username": username, "password": password})
     assert resp.status_code == 200
     return resp.json()["token"]
@@ -86,7 +86,7 @@ def _approve_unit(client: TestClient, unit_id: str) -> None:
     from cq_server.app import _get_store
 
     store = _get_store()
-    store.set_review_status(unit_id, "approved", "test-reviewer")
+    store.sync.set_review_status(unit_id, "approved", "test-reviewer")
 
 
 class TestHealth:
@@ -268,8 +268,8 @@ class TestQueryTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
                 "cross_group_allowed = ? WHERE id = ?",
                 (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit_id),
@@ -279,8 +279,8 @@ class TestQueryTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
                 (enterprise_id, group_id, username),
             )
@@ -334,8 +334,8 @@ class TestStatsTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
                 (enterprise_id, unit_id),
             )
@@ -344,8 +344,8 @@ class TestStatsTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ? WHERE username = ?",
                 (enterprise_id, username),
             )
@@ -448,8 +448,8 @@ class TestStats:
         r1 = client.post("/propose", json=_propose_payload(domains=["api", "auth"]))
         r2 = client.post("/propose", json=_propose_payload(domains=["api", "payments"]))
         store = _get_store()
-        store.set_review_status(r1.json()["id"], "approved", "tester")
-        store.set_review_status(r2.json()["id"], "approved", "tester")
+        store.sync.set_review_status(r1.json()["id"], "approved", "tester")
+        store.sync.set_review_status(r2.json()["id"], "approved", "tester")
         resp = client.get("/stats")
         assert resp.status_code == 200
         body = resp.json()
@@ -468,8 +468,8 @@ class TestReviewLifecycleEndToEnd:
         from cq_server.auth import hash_password
 
         store = _get_store()
-        store.create_user("reviewer", hash_password("pass123"))
-        store.set_user_role("reviewer", "admin")  # /review/* requires admin
+        store.sync.create_user("reviewer", hash_password("pass123"))
+        store.sync.set_user_role("reviewer", "admin")  # /review/* requires admin
 
         # Log in.
         login_resp = client.post(

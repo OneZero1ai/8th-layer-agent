@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from cq_server.app import app
 
 
-@pytest.mark.skip(reason="phase-2 follow-up: app.state.store still RemoteStore, async SqliteStore not wired (task #100)")
+@pytest.mark.skip(reason="phase-2 follow-up: app.state.store still SqliteStore, async SqliteStore not wired (task #100)")
 def test_e2e_propose_via_store_query_via_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "smoke.db"
     monkeypatch.setenv("CQ_DB_PATH", str(db))
@@ -37,8 +37,8 @@ def test_e2e_propose_via_store_query_via_api(tmp_path: Path, monkeypatch: pytest
             tier=Tier.PRIVATE,
             created_by="smoke",
         )
-        asyncio.run(store.insert(unit))
-        asyncio.run(store.set_review_status(unit.id, "approved", "smoke-reviewer"))
+        asyncio.run(store.sync.insert(unit))
+        asyncio.run(store.sync.set_review_status(unit.id, "approved", "smoke-reviewer"))
 
         resp = client.get("/query", params={"domains": "smoke"})
         assert resp.status_code == 200

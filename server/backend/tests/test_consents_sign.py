@@ -31,9 +31,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as c:
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ADMIN, pw)
-        store.create_user(USER, pw)
-        store.set_user_role(ADMIN, "admin")
+        store.sync.create_user(ADMIN, pw)
+        store.sync.create_user(USER, pw)
+        store.sync.set_user_role(ADMIN, "admin")
         yield c
 
 
@@ -68,7 +68,7 @@ class TestSignHappyPath:
         assert body["audit_log_id"].startswith("aud_")
         # Row landed.
         store = _get_store()
-        row = store.get_cross_enterprise_consent(body["consent_id"])
+        row = store.sync.get_cross_enterprise_consent(body["consent_id"])
         assert row is not None
         assert row["requester_enterprise"] == "initech"
         assert row["responder_enterprise"] == "acme"
@@ -89,8 +89,8 @@ class TestSignHappyPath:
         assert resp.status_code == 201
         consent_id = resp.json()["consent_id"]
         store = _get_store()
-        with store._lock:
-            rows = store._conn.execute(
+        with store._engine.begin() as _c:
+            rows = _c.exec_driver_sql(
                 "SELECT policy_applied, consent_id FROM cross_l2_audit "
                 "WHERE consent_id = ?",
                 (consent_id,),
@@ -272,8 +272,8 @@ class TestList:
         )
         cid = signed.json()["consent_id"]
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE cross_enterprise_consents SET expires_at = ? WHERE consent_id = ?",
                 ("2020-01-01T00:00:00+00:00", cid),
             )

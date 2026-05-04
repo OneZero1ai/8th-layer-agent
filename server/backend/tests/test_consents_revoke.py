@@ -31,9 +31,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as c:
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ADMIN, pw)
-        store.create_user(USER, pw)
-        store.set_user_role(ADMIN, "admin")
+        store.sync.create_user(ADMIN, pw)
+        store.sync.create_user(USER, pw)
+        store.sync.set_user_role(ADMIN, "admin")
         yield c
 
 
@@ -75,7 +75,7 @@ class TestRevokeHappyPath:
         assert body["revoked_by_admin"] == ADMIN
         # Row still exists; expires_at advanced.
         store = _get_store()
-        row = store.get_cross_enterprise_consent(cid)
+        row = store.sync.get_cross_enterprise_consent(cid)
         assert row is not None
         assert row["expires_at"] == body["revoked_at"]
 
@@ -87,8 +87,8 @@ class TestRevokeHappyPath:
             headers={"Authorization": f"Bearer {jwt}"},
         )
         store = _get_store()
-        with store._lock:
-            rows = store._conn.execute(
+        with store._engine.begin() as _c:
+            rows = _c.exec_driver_sql(
                 "SELECT policy_applied FROM cross_l2_audit "
                 "WHERE consent_id = ? ORDER BY ts ASC",
                 (cid,),

@@ -5,12 +5,12 @@ import hmac
 from fastapi import BackgroundTasks, Depends, HTTPException, Request
 
 from .api_keys import decode_token, hash_secret
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 API_KEY_PEPPER_ENV = "CQ_API_KEY_PEPPER"  # pragma: allowlist secret
 
 
-def get_store(request: Request) -> RemoteStore:
+def get_store(request: Request) -> SqliteStore:
     """FastAPI dependency that returns the store from app state.
 
     Args:
@@ -37,7 +37,7 @@ def get_api_key_pepper(request: Request) -> str:
 async def require_api_key(
     request: Request,
     background_tasks: BackgroundTasks,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> str:
     """Authenticate an API key and return the owning user's username.
 
@@ -67,7 +67,7 @@ async def require_api_key(
     except ValueError as exc:
         raise HTTPException(status_code=401, detail="Invalid API key") from exc
     pepper = get_api_key_pepper(request)
-    row = store.get_active_api_key_by_id(key_id.hex)
+    row = await store.get_active_api_key_by_id(key_id.hex)
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid API key")
     if not hmac.compare_digest(row["key_hash"], hash_secret(secret, pepper=pepper)):

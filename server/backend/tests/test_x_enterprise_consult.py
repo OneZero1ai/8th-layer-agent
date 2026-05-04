@@ -61,9 +61,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         store = _get_store()
         # Seed alice as a real user
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ALICE, pw)
-        with store._lock, store._conn:
-            store._conn.execute(
+        store.sync.create_user(ALICE, pw)
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
                 ("acme", "engineering", ALICE),
             )
@@ -95,7 +95,7 @@ def _seed_peering(
             }
         ]
     store = _get_store()
-    store.upsert_directory_peering(
+    store.sync.upsert_directory_peering(
         offer_id=offer_id,
         from_enterprise=from_ent,
         to_enterprise=to_ent,
@@ -178,7 +178,7 @@ def test_bearer_swap_yields_different_bearer() -> None:
 
 def test_find_active_peering_returns_match(client: TestClient) -> None:
     _seed_peering(offer_id="off_a")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is not None
@@ -188,7 +188,7 @@ def test_find_active_peering_returns_match(client: TestClient) -> None:
 def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
     """Peering from A→B is also queryable as B→A."""
     _seed_peering(offer_id="off_b", from_ent="acme", to_ent="globex")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="globex", to_enterprise="acme"
     )
     assert p is not None
@@ -198,7 +198,7 @@ def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
 def test_find_active_peering_skips_expired(client: TestClient) -> None:
     """Past expires_at = no row."""
     _seed_peering(offer_id="off_old", expires_at="2020-01-01T00:00:00Z")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is None
@@ -206,7 +206,7 @@ def test_find_active_peering_skips_expired(client: TestClient) -> None:
 
 def test_find_active_peering_skips_non_active(client: TestClient) -> None:
     _seed_peering(offer_id="off_pending", status="pending")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is None
@@ -418,7 +418,7 @@ def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
 
     monkeypatch.setattr(consults.httpx, "Client", _FakeClient)
 
-    peering = _get_store().find_active_directory_peering(
+    peering = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert peering is not None
@@ -600,7 +600,7 @@ def test_x_enterprise_receiver_logging_policy_summary_only_redacts(
     assert r.json()["logging_policy_applied"] == "summary_only_log"
 
     # Verify the receiver-side message row is redacted.
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert len(msg_rows) == 1
     assert msg_rows[0]["content"] == "<redacted: summary_only_log>"
 
@@ -624,9 +624,9 @@ def test_x_enterprise_receiver_logging_policy_no_log_skips_message(
     assert r.json()["logging_policy_applied"] == "no_log_consults"
 
     # Thread row exists (audit point) but no message row.
-    thread = _get_store().get_consult("th_recv_1")
+    thread = _get_store().sync.get_consult("th_recv_1")
     assert thread is not None
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert msg_rows == []
 
 
@@ -642,7 +642,7 @@ def test_x_enterprise_receiver_idempotent_on_redelivery(client: TestClient) -> N
     assert r1.status_code == 201
     assert r2.status_code == 201
 
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert len(msg_rows) == 1
 
 

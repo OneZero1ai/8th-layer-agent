@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from cq.models import Insight, KnowledgeUnit, create_knowledge_unit
 
-from cq_server.store import RemoteStore
+from cq_server.store import SqliteStore
 from cq_server.tables import (
     DEFAULT_ENTERPRISE_ID,
     DEFAULT_GROUP_ID,
@@ -47,10 +47,13 @@ def _make_unit(**overrides: Any) -> KnowledgeUnit:
 
 
 @pytest.fixture()
-def store(tmp_path: Path) -> Iterator[RemoteStore]:
-    s = RemoteStore(db_path=tmp_path / "tenancy.db")
+def store(tmp_path: Path) -> Iterator[SqliteStore]:
+    from cq_server.migrations import run_migrations
+    db = tmp_path / "tenancy.db"
+    run_migrations(f"sqlite:///{db}")
+    s = SqliteStore(db_path=db)
     yield s
-    s.close()
+    s.close_sync()
 
 
 def _scope(conn: sqlite3.Connection, table: str, key_col: str, key: str) -> tuple[str, str]:
@@ -66,27 +69,30 @@ def _scope(conn: sqlite3.Connection, table: str, key_col: str, key: str) -> tupl
 
 
 class TestNewRowDefaults:
-    def test_inserted_ku_lands_in_default_scope(self, store: RemoteStore) -> None:
+    def test_inserted_ku_lands_in_default_scope(self, store: SqliteStore) -> None:
         unit = _make_unit()
-        store.insert(unit)
+        store.sync.insert(unit)
         ent, grp = _scope(store._conn, "knowledge_units", "id", unit.id)
         assert ent == DEFAULT_ENTERPRISE_ID
         assert grp == DEFAULT_GROUP_ID
 
-    def test_created_user_lands_in_default_scope(self, store: RemoteStore) -> None:
-        store.create_user("alice", "pwhash")
+    def test_created_user_lands_in_default_scope(self, store: SqliteStore) -> None:
+        store.sync.create_user("alice", "pwhash")
         ent, grp = _scope(store._conn, "users", "username", "alice")
         assert ent == DEFAULT_ENTERPRISE_ID
         assert grp == DEFAULT_GROUP_ID
 
-    def test_columns_are_not_null(self, store: RemoteStore) -> None:
+    def test_columns_are_not_null(self, store: SqliteStore) -> None:
+        import sqlalchemy.exc
+
         # Prove the schema rejects an explicit NULL.
-        with pytest.raises(sqlite3.IntegrityError):
-            store._conn.execute(
-                "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
-                "VALUES (?, ?, ?, ?)",
-                ("ku_null", "{}", None, "default-group"),
-            )
+        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
+            with store._engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("ku_null", "{}", None, "default-group"),
+                )
 
 
 # --- legacy-row backfill ------------------------------------------------
@@ -96,7 +102,7 @@ class TestLegacyBackfill:
     """Simulate the production DB shape (pre-migration) and confirm that
     ``ensure_tenancy_columns`` adds the columns AND backfills the rows.
 
-    This mirrors what RemoteStore() does on startup (via _ensure_schema),
+    This mirrors what SqliteStore() does on startup (via _ensure_schema),
     and is also what the Alembic migration achieves through its own
     backfill path. Both code paths converge on the same default scope.
     """

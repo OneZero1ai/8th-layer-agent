@@ -34,19 +34,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as c:
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ALICE, pw)
-        store.create_user(BOB, pw)
-        store.create_user(CARLA, pw)
-        with store._lock, store._conn:
-            store._conn.execute(
+        store.sync.create_user(ALICE, pw)
+        store.sync.create_user(BOB, pw)
+        store.sync.create_user(CARLA, pw)
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'acme', group_id = 'engineering' WHERE username = ?",
                 (ALICE,),
             )
-            store._conn.execute(
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'acme', group_id = 'solutions' WHERE username = ?",
                 (BOB,),
             )
-            store._conn.execute(
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'initech', group_id = 'r-and-d' WHERE username = ?",
                 (CARLA,),
             )
@@ -67,8 +67,8 @@ def _heartbeat(client: TestClient, *, as_user: str, persona: str, discoverable: 
 def _set_last_seen(persona: str, when: datetime) -> None:
     """Manually rewind a row's ``last_seen_at`` to test the since filter."""
     store = _get_store()
-    with store._lock, store._conn:
-        store._conn.execute(
+    with store._engine.begin() as _c:
+        _c.exec_driver_sql(
             "UPDATE peers SET last_seen_at = ? WHERE persona = ?",
             (when.isoformat(), persona),
         )

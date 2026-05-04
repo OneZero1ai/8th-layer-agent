@@ -1,7 +1,7 @@
 """Tests for fork-delta methods ported to async SqliteStore (#105 PR-A).
 
 Covers the first slice: directory peerings + AIGRP peers. The full
-collapse (cutover of ``app.state.store`` from RemoteStore → SqliteStore,
+collapse (cutover of ``app.state.store`` from SqliteStore → SqliteStore,
 remaining method ports, ensure_* deletion, ruff cleanup) lands across
 PR-B/C/D per the plan in
 ``crosstalk-enterprise/docs/plans/14-alembic-phase-2b-remotestore-collapse.md``.
@@ -30,7 +30,7 @@ async def store(tmp_path: Path):
 class TestDirectoryPeerings:
     @pytest.mark.asyncio
     async def test_upsert_then_find_active(self, store: SqliteStore) -> None:
-        await store.upsert_directory_peering(
+        store.sync.upsert_directory_peering(
             offer_id="ofr_1",
             from_enterprise="acme",
             to_enterprise="globex",
@@ -49,10 +49,10 @@ class TestDirectoryPeerings:
             last_synced_at="2026-05-03T00:00:00Z",
         )
         # Bidirectional lookup
-        a_to_b = await store.find_active_directory_peering(
+        a_to_b = store.sync.find_active_directory_peering(
             from_enterprise="acme", to_enterprise="globex"
         )
-        b_to_a = await store.find_active_directory_peering(
+        b_to_a = store.sync.find_active_directory_peering(
             from_enterprise="globex", to_enterprise="acme"
         )
         assert a_to_b is not None
@@ -61,7 +61,7 @@ class TestDirectoryPeerings:
 
     @pytest.mark.asyncio
     async def test_expired_peering_not_returned(self, store: SqliteStore) -> None:
-        await store.upsert_directory_peering(
+        store.sync.upsert_directory_peering(
             offer_id="ofr_old",
             from_enterprise="acme",
             to_enterprise="globex",
@@ -79,7 +79,7 @@ class TestDirectoryPeerings:
             accept_signing_key_id="X",
             last_synced_at="2026-05-03T00:00:00Z",
         )
-        result = await store.find_active_directory_peering(
+        result = store.sync.find_active_directory_peering(
             from_enterprise="acme", to_enterprise="globex"
         )
         assert result is None
@@ -87,7 +87,7 @@ class TestDirectoryPeerings:
     @pytest.mark.asyncio
     async def test_list_with_filters(self, store: SqliteStore) -> None:
         for offer_id, status in [("a", "active"), ("p", "pending"), ("a2", "active")]:
-            await store.upsert_directory_peering(
+            store.sync.upsert_directory_peering(
                 offer_id=offer_id,
                 from_enterprise="acme",
                 to_enterprise="globex",
@@ -105,16 +105,16 @@ class TestDirectoryPeerings:
                 accept_signing_key_id="X",
                 last_synced_at="2026-05-03T00:00:00Z",
             )
-        active = await store.list_directory_peerings(status="active")
+        active = store.sync.list_directory_peerings(status="active")
         assert len(active) == 2
-        all_acme = await store.list_directory_peerings(enterprise_id="acme")
+        all_acme = store.sync.list_directory_peerings(enterprise_id="acme")
         assert len(all_acme) == 3
 
 
 class TestAigrpPeers:
     @pytest.mark.asyncio
     async def test_upsert_first_signature(self, store: SqliteStore) -> None:
-        await store.upsert_aigrp_peer(
+        store.sync.upsert_aigrp_peer(
             l2_id="acme/eng",
             enterprise="acme",
             group="engineering",
@@ -127,7 +127,7 @@ class TestAigrpPeers:
             signature_received=True,
             public_key_ed25519="ACME_PK",
         )
-        peers = await store.list_aigrp_peers("acme")
+        peers = store.sync.list_aigrp_peers("acme")
         assert len(peers) == 1
         peer = peers[0]
         assert peer["l2_id"] == "acme/eng"
@@ -139,7 +139,7 @@ class TestAigrpPeers:
         self, store: SqliteStore
     ) -> None:
         # First upsert with signature
-        await store.upsert_aigrp_peer(
+        store.sync.upsert_aigrp_peer(
             l2_id="acme/eng",
             enterprise="acme",
             group="engineering",
@@ -152,10 +152,10 @@ class TestAigrpPeers:
             signature_received=True,
             public_key_ed25519="ACME_PK",
         )
-        first = (await store.list_aigrp_peers("acme"))[0]
+        first = (store.sync.list_aigrp_peers("acme"))[0]
 
         # Second upsert without signature (just /aigrp/hello refresh) — last_signature_at stays
-        await store.upsert_aigrp_peer(
+        store.sync.upsert_aigrp_peer(
             l2_id="acme/eng",
             enterprise="acme",
             group="engineering",
@@ -167,7 +167,7 @@ class TestAigrpPeers:
             embedding_model=None,
             signature_received=False,
         )
-        second = (await store.list_aigrp_peers("acme"))[0]
+        second = (store.sync.list_aigrp_peers("acme"))[0]
         assert second["last_signature_at"] == first["last_signature_at"]
         # endpoint_url did update + last_seen advanced
         assert second["endpoint_url"] == "https://acme.example/eng-v2"
@@ -176,4 +176,4 @@ class TestAigrpPeers:
     async def test_get_pubkey_returns_none_for_unknown(
         self, store: SqliteStore
     ) -> None:
-        assert await store.get_aigrp_peer_pubkey("ghost/eng") is None
+        assert store.sync.get_aigrp_peer_pubkey("ghost/eng") is None

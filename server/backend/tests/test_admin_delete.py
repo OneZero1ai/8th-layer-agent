@@ -26,8 +26,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         from cq_server.auth import hash_password
 
         store = _get_store()
-        if store.get_user(TEST_USERNAME) is None:
-            store.create_user(TEST_USERNAME, hash_password("test-pw"))
+        if store.sync.get_user(TEST_USERNAME) is None:
+            store.sync.create_user(TEST_USERNAME, hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
 
@@ -51,10 +51,10 @@ def _admin_jwt(client: TestClient) -> str:
     store = _get_store()
     pw_hash = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode()
     try:
-        store.create_user("admin", pw_hash)
+        store.sync.create_user("admin", pw_hash)
     except Exception:
         pass  # already exists
-    store.set_user_role("admin", "admin")
+    store.sync.set_user_role("admin", "admin")
     resp = client.post("/auth/login", json={"username": "admin", "password": "admin"})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
@@ -96,11 +96,11 @@ class TestAdminDelete:
         proposed = client.post("/propose", json=_propose_payload()).json()
         ku_id = proposed["id"]
         store = _get_store()
-        assert store.get_any(ku_id) is not None
+        assert store.sync.get_any(ku_id) is not None
 
         jwt = _admin_jwt(client)
         client.delete(f"/review/{ku_id}", headers={"Authorization": f"Bearer {jwt}"})
-        assert store.get_any(ku_id) is None
+        assert store.sync.get_any(ku_id) is None
 
     def test_store_delete_returns_false_for_missing_id(self, client: TestClient) -> None:
         # The fixture initializes the store via app startup; need it to exist
@@ -109,4 +109,4 @@ class TestAdminDelete:
 
         _ = client  # pull fixture so app is initialized
         store = _get_store()
-        assert store.delete("ku_definitelynotreal") is False
+        assert store.sync.delete("ku_definitelynotreal") is False

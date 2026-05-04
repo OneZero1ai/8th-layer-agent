@@ -23,8 +23,8 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         from cq_server.auth import hash_password
 
         store = _get_store()
-        if store.get_user("test-user") is None:
-            store.create_user("test-user", hash_password("test-pw"))
+        if store.sync.get_user("test-user") is None:
+            store.sync.create_user("test-user", hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
 
@@ -49,12 +49,12 @@ def _login(
 
     store = _get_store()
     with contextlib.suppress(Exception):
-        store.create_user(username, hash_password(password))
+        store.sync.create_user(username, hash_password(password))
     if role != "user":
-        store.set_user_role(username, role)
+        store.sync.set_user_role(username, role)
     if enterprise_id is not None:
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = ? WHERE username = ?",
                 (enterprise_id, username),
             )
@@ -376,8 +376,8 @@ class TestReviewTenantScope:
         from cq_server.app import _get_store
 
         store = _get_store()
-        with store._lock, store._conn:
-            store._conn.execute(
+        with store._engine.begin() as _c:
+            _c.exec_driver_sql(
                 "UPDATE knowledge_units SET enterprise_id = ? WHERE id = ?",
                 (enterprise_id, unit_id),
             )

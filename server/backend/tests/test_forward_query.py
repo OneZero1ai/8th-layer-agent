@@ -91,12 +91,12 @@ def _seed_ku(
         insight=Insight(summary=summary, detail=detail, action=action),
     )
     embedding = _pack_vec(_unit_vec(axis=embedding_axis))
-    store.insert(unit, embedding=embedding, embedding_model="amazon.titan-embed-text-v2:0")
+    store.sync.insert(unit, embedding=embedding, embedding_model="amazon.titan-embed-text-v2:0")
     # Approve so semantic_query picks it up.
-    store.set_review_status(unit.id, "approved", "test-reviewer")
+    store.sync.set_review_status(unit.id, "approved", "test-reviewer")
     # Set tenancy scope + xgroup flag explicitly.
-    with store._lock, store._conn:
-        store._conn.execute(
+    with store._engine.begin() as _c:
+        _c.exec_driver_sql(
             "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
             "cross_group_allowed = ? WHERE id = ?",
             (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit.id),
@@ -239,7 +239,7 @@ class TestCrossEnterpriseWithConsent:
         )
         # Sign a consent: initech -> acme, summary_only.
         store = _get_store()
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id="cons_" + uuid.uuid4().hex[:12],
             requester_enterprise="initech",
             responder_enterprise="acme",
@@ -275,8 +275,8 @@ class TestCrossEnterpriseWithConsent:
 class TestAuditLog:
     def _audit_rows(self) -> list[tuple[Any, ...]]:
         store = _get_store()
-        with store._lock:
-            return store._conn.execute(
+        with store._engine.begin() as _c:
+            return _c.exec_driver_sql(
                 "SELECT requester_enterprise, requester_group, "
                 "responder_enterprise, responder_group, policy_applied, "
                 "result_count, consent_id "
@@ -319,7 +319,7 @@ class TestAuditLog:
         _seed_ku(enterprise_id="acme", group_id="solutions")
         store = _get_store()
         consent_id = "cons_" + uuid.uuid4().hex[:12]
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id=consent_id,
             requester_enterprise="initech",
             responder_enterprise="acme",
@@ -407,7 +407,7 @@ class TestConsentLookup:
     def test_expired_consent_is_ignored(self, aigrp_client: TestClient) -> None:
         _seed_ku(enterprise_id="acme", group_id="solutions")
         store = _get_store()
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id="cons_expired",
             requester_enterprise="initech",
             responder_enterprise="acme",
@@ -462,10 +462,13 @@ class TestRouteMounts:
 
 class TestSchemaConstraints:
     def test_cross_group_allowed_column_is_not_null(self, aigrp_client: TestClient) -> None:
+        import sqlalchemy.exc
+
         store = _get_store()
-        with pytest.raises(sqlite3.IntegrityError), store._lock, store._conn:
-            store._conn.execute(
-                "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
-                "VALUES (?, ?, ?)",
-                ("ku_null_xgroup", "{}", None),
-            )
+        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
+            with store._engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
+                    "VALUES (?, ?, ?)",
+                    ("ku_null_xgroup", "{}", None),
+                )

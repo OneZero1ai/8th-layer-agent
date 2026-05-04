@@ -34,7 +34,7 @@ from . import aigrp as aigrp_mod
 from . import forward_sign
 from .auth import get_current_user
 from .deps import get_store
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _self_identity(store: RemoteStore, username: str) -> tuple[str, str]:
+async def _self_identity(store: SqliteStore, username: str) -> tuple[str, str]:
     """Map the JWT subject to ``(l2_id, persona)``.
 
     L2 id is ``{enterprise}/{group}`` (same shape as everywhere else
@@ -123,7 +123,7 @@ def _self_identity(store: RemoteStore, username: str) -> tuple[str, str]:
     add per-user persona aliasing if needed (e.g. multiple personas
     per human operator).
     """
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="user not found")
     enterprise = str(user.get("enterprise_id") or "default-enterprise")
@@ -140,13 +140,13 @@ def _self_identity(store: RemoteStore, username: str) -> tuple[str, str]:
 L2_FORWARD_TIMEOUT = float(os.environ.get("L3_FORWARD_TIMEOUT_SECS", "8"))
 
 
-def _resolve_peer(store: RemoteStore, l2_id: str) -> dict[str, Any] | None:
+async def _resolve_peer(store: SqliteStore, l2_id: str) -> dict[str, Any] | None:
     """Find a peer's row in this L2's AIGRP peer table by ``l2_id``."""
     try:
         ent, _grp = l2_id.split("/", 1)
     except ValueError:
         return None
-    for row in store.list_aigrp_peers(ent):
+    for row in await store.list_aigrp_peers(ent):
         if row["l2_id"] == l2_id:
             return row
     return None
@@ -257,8 +257,8 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
         raise HTTPException(status_code=502, detail="peer unreachable") from e
 
 
-def _resolve_x_enterprise_target(
-    store: RemoteStore, to_l2_id: str, self_enterprise: str
+async def _resolve_x_enterprise_target(
+    store: SqliteStore, to_l2_id: str, self_enterprise: str
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Resolve a cross-Enterprise consult target via the directory peering mirror.
 
@@ -279,7 +279,7 @@ def _resolve_x_enterprise_target(
     if target_enterprise == self_enterprise:
         # Caller should have routed this as same-Enterprise — defensive guard.
         return None
-    peering = store.find_active_directory_peering(
+    peering = await store.find_active_directory_peering(
         from_enterprise=self_enterprise,
         to_enterprise=target_enterprise,
     )
@@ -400,9 +400,9 @@ def _to_thread_out(row: dict[str, Any]) -> ConsultThreadOut:
 
 
 @router.post("/request", response_model=ConsultThreadOut, status_code=201)
-def request_consult(
+async def request_consult(
     body: ConsultRequest,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultThreadOut:
     """Open a new consult thread. Caller becomes the ``from_*`` side.
@@ -412,7 +412,7 @@ def request_consult(
     Drops the opening message into ``consult_messages`` immediately so
     a single round-trip is sufficient for the asker.
     """
-    self_l2_id, self_persona = _self_identity(store, username)
+    self_l2_id, self_persona = await _self_identity(store, username)
     self_enterprise = aigrp_mod.enterprise()
 
     thread_id = f"th_{uuid4().hex[:16]}"
@@ -442,7 +442,7 @@ def request_consult(
 
         if target_enterprise == self_enterprise:
             # Same-Enterprise — must be in AIGRP peer table.
-            target_peer = _resolve_peer(store, body.to_l2_id)
+            target_peer = await _resolve_peer(store, body.to_l2_id)
             if target_peer is None:
                 raise HTTPException(
                     status_code=404,
@@ -454,7 +454,7 @@ def request_consult(
                 )
         else:
             # Cross-Enterprise — must have an active directory peering.
-            x_enterprise = _resolve_x_enterprise_target(store, body.to_l2_id, self_enterprise)
+            x_enterprise = await _resolve_x_enterprise_target(store, body.to_l2_id, self_enterprise)
             if x_enterprise is None:
                 raise HTTPException(
                     status_code=403,
@@ -473,7 +473,7 @@ def request_consult(
     # L2 has a durable record of "I tried to consult X on Y at T".
     # Logging-policy applies to the asker side too — for symmetry — so
     # both ends honor the same policy on what gets persisted.
-    store.create_consult(
+    await store.create_consult(
         thread_id=thread_id,
         from_l2_id=self_l2_id,
         from_persona=self_persona,
@@ -483,7 +483,7 @@ def request_consult(
         created_at=now,
     )
     if target_logging_policy != "no_log_consults":
-        store.append_consult_message(
+        await store.append_consult_message(
             message_id=msg_id,
             thread_id=thread_id,
             from_l2_id=self_l2_id,
@@ -513,16 +513,16 @@ def request_consult(
         peering_row, target_endpoint = x_enterprise
         _x_enterprise_forward_request(peering_row, target_endpoint, forward_payload)
 
-    row = store.get_consult(thread_id)
+    row = await store.get_consult(thread_id)
     assert row is not None  # just inserted
     return _to_thread_out(row)
 
 
 @router.post("/{thread_id}/messages", response_model=ConsultMessageOut, status_code=201)
-def post_consult_message(
+async def post_consult_message(
     thread_id: str,
     body: ConsultMessage,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultMessageOut:
     """Append a message to an existing thread.
@@ -530,8 +530,8 @@ def post_consult_message(
     The caller must be one of the two participants (from_persona or
     to_persona on the matching L2). Closed threads reject with 409.
     """
-    self_l2_id, self_persona = _self_identity(store, username)
-    thread = store.get_consult(thread_id)
+    self_l2_id, self_persona = await _self_identity(store, username)
+    thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
 
@@ -554,14 +554,14 @@ def post_consult_message(
     other_persona = thread["to_persona"] if is_from else thread["from_persona"]
     target_peer = None
     if other_l2_id != self_l2_id:
-        target_peer = _resolve_peer(store, other_l2_id)
+        target_peer = await _resolve_peer(store, other_l2_id)
         if target_peer is None:
             raise HTTPException(
                 status_code=502,
                 detail=f"peer L2 {other_l2_id!r} not in AIGRP peer table",
             )
 
-    store.append_consult_message(
+    await store.append_consult_message(
         message_id=msg_id,
         thread_id=thread_id,
         from_l2_id=self_l2_id,
@@ -605,21 +605,21 @@ def post_consult_message(
 
 
 @router.get("/{thread_id}/messages", response_model=MessagesResponse)
-def get_consult_messages(
+async def get_consult_messages(
     thread_id: str,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> MessagesResponse:
     """Read every message on a thread the caller participates in."""
-    self_l2_id, self_persona = _self_identity(store, username)
-    thread = store.get_consult(thread_id)
+    self_l2_id, self_persona = await _self_identity(store, username)
+    thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
     is_from = thread["from_l2_id"] == self_l2_id and thread["from_persona"] == self_persona
     is_to = thread["to_l2_id"] == self_l2_id and thread["to_persona"] == self_persona
     if not (is_from or is_to):
         raise HTTPException(status_code=403, detail="not a participant in this thread")
-    msgs = store.list_consult_messages(thread_id)
+    msgs = await store.list_consult_messages(thread_id)
     return MessagesResponse(
         thread_id=thread_id,
         messages=[ConsultMessageOut(**m) for m in msgs],
@@ -627,15 +627,15 @@ def get_consult_messages(
 
 
 @router.post("/{thread_id}/close", response_model=ConsultThreadOut)
-def close_consult(
+async def close_consult(
     thread_id: str,
     body: CloseRequest,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultThreadOut:
     """Mark the thread closed. Either participant can close."""
-    self_l2_id, self_persona = _self_identity(store, username)
-    thread = store.get_consult(thread_id)
+    self_l2_id, self_persona = await _self_identity(store, username)
+    thread = await store.get_consult(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
     is_from = thread["from_l2_id"] == self_l2_id and thread["from_persona"] == self_persona
@@ -643,7 +643,7 @@ def close_consult(
     if not (is_from or is_to):
         raise HTTPException(status_code=403, detail="not a participant in this thread")
 
-    closed = store.close_consult(
+    closed = await store.close_consult(
         thread_id=thread_id,
         closed_at=_now_iso(),
         resolution_summary=body.resolution_summary,
@@ -651,7 +651,7 @@ def close_consult(
     if not closed:
         # Already closed; just return current state without erroring
         logger.info("close_consult on already-closed thread_id=%s", thread_id)
-    row = store.get_consult(thread_id)
+    row = await store.get_consult(thread_id)
     assert row is not None
     if closed:
         # Reputation hook (#108 sub-task 5). Best-effort — record_event
@@ -692,10 +692,10 @@ class ForwardRequestBody(BaseModel):
 
 
 @router.post("/forward-request", status_code=201)
-def forward_consult_request(
+async def forward_consult_request(
     body: ForwardRequestBody,
     request: Request,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     _peer: None = Depends(aigrp_mod.require_peer_key),
 ) -> dict[str, str]:
     """Mirror a remote consult request onto this L2.
@@ -715,14 +715,14 @@ def forward_consult_request(
     Sprint 4 (#44) — pubkey-on-file peers must also present a valid
     ``X-8L-Forwarder-Sig`` over JCS(body) || from_l2_id.
     """
-    aigrp_mod.require_forwarder_identity(
+    await aigrp_mod.require_forwarder_identity(
         request,
         body.from_l2_id,
         body_for_sig=body.model_dump(mode="json"),
         store=store,
     )
-    if store.get_consult(body.thread_id) is None:
-        store.create_consult(
+    if await store.get_consult(body.thread_id) is None:
+        await store.create_consult(
             thread_id=body.thread_id,
             from_l2_id=body.from_l2_id,
             from_persona=body.from_persona,
@@ -734,7 +734,7 @@ def forward_consult_request(
     # Idempotent on message_id via PRIMARY KEY; sqlite raises IntegrityError.
     # We swallow it because re-delivery should be a no-op, not a 500.
     try:
-        store.append_consult_message(
+        await store.append_consult_message(
             message_id=body.message_id,
             thread_id=body.thread_id,
             from_l2_id=body.from_l2_id,
@@ -767,10 +767,10 @@ class ForwardMessageBody(BaseModel):
 
 
 @router.post("/forward-message", status_code=201)
-def forward_consult_message(
+async def forward_consult_message(
     body: ForwardMessageBody,
     request: Request,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     _peer: None = Depends(aigrp_mod.require_peer_key),
 ) -> dict[str, str]:
     """Mirror a reply onto this L2.
@@ -784,13 +784,13 @@ def forward_consult_message(
     Sprint 4 (#44) — also requires Ed25519 forward signature for peers
     with a recorded pubkey.
     """
-    aigrp_mod.require_forwarder_identity(
+    await aigrp_mod.require_forwarder_identity(
         request,
         body.from_l2_id,
         body_for_sig=body.model_dump(mode="json"),
         store=store,
     )
-    existing = store.get_consult(body.thread_id)
+    existing = await store.get_consult(body.thread_id)
     if existing is None:
         if not (
             body.thread_to_l2_id
@@ -803,7 +803,7 @@ def forward_consult_message(
                 status_code=400,
                 detail="thread metadata missing and no existing thread to append to",
             )
-        store.create_consult(
+        await store.create_consult(
             thread_id=body.thread_id,
             from_l2_id=body.thread_from_l2_id,
             from_persona=body.thread_from_persona,
@@ -813,7 +813,7 @@ def forward_consult_message(
             created_at=body.thread_created_at,
         )
     try:
-        store.append_consult_message(
+        await store.append_consult_message(
             message_id=body.message_id,
             thread_id=body.thread_id,
             from_l2_id=body.from_l2_id,
@@ -839,10 +839,10 @@ def _hmac_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def _require_x_enterprise_auth(
+async def _require_x_enterprise_auth(
     request: Request,
     body: ForwardRequestBody,
-    store: RemoteStore,
+    store: SqliteStore,
 ) -> dict[str, Any]:
     """Validate a cross-Enterprise forward.
 
@@ -881,7 +881,7 @@ def _require_x_enterprise_auth(
         )
 
     # Peering lookup — by offer_id directly.
-    peerings = [p for p in store.list_directory_peerings(status="active") if p["offer_id"] == offer_id]
+    peerings = [p for p in await store.list_directory_peerings(status="active") if p["offer_id"] == offer_id]
     if not peerings:
         raise HTTPException(
             status_code=403,
@@ -927,10 +927,10 @@ def _require_x_enterprise_auth(
 
 
 @router.post("/x-enterprise-forward-request", status_code=201)
-def x_enterprise_forward_consult_request(
+async def x_enterprise_forward_consult_request(
     body: ForwardRequestBody,
     request: Request,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
 ) -> dict[str, str]:
     """Mirror a cross-Enterprise consult request onto this L2.
 
@@ -949,13 +949,13 @@ def x_enterprise_forward_consult_request(
     Idempotent on ``(thread_id, message_id)`` like the same-Enterprise
     forward path. Body shape matches ForwardRequestBody for consistency.
     """
-    peering = _require_x_enterprise_auth(request, body, store)
+    peering = await _require_x_enterprise_auth(request, body, store)
     policy = peering["consult_logging_policy"]
 
     # Thread row: always created (audit point: cross-Enterprise consult
     # was attempted, regardless of policy).
-    if store.get_consult(body.thread_id) is None:
-        store.create_consult(
+    if await store.get_consult(body.thread_id) is None:
+        await store.create_consult(
             thread_id=body.thread_id,
             from_l2_id=body.from_l2_id,
             from_persona=body.from_persona,
@@ -969,7 +969,7 @@ def x_enterprise_forward_consult_request(
     # summary_only_log (redacted). no_log_consults skips the row.
     if policy != "no_log_consults":
         try:
-            store.append_consult_message(
+            await store.append_consult_message(
                 message_id=body.message_id,
                 thread_id=body.thread_id,
                 from_l2_id=body.from_l2_id,
@@ -989,10 +989,10 @@ def x_enterprise_forward_consult_request(
 
 
 @router.get("/inbox", response_model=InboxResponse)
-def get_inbox(
+async def get_inbox(
     include_closed: bool = False,
     limit: int = 50,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> InboxResponse:
     """Threads addressed to the caller on this L2.
@@ -1000,8 +1000,8 @@ def get_inbox(
     Default excludes closed threads. `include_closed=true` returns the
     audit view (all threads, sorted by created_at DESC).
     """
-    self_l2_id, self_persona = _self_identity(store, username)
-    rows = store.list_inbox(
+    self_l2_id, self_persona = await _self_identity(store, username)
+    rows = await store.list_inbox(
         to_l2_id=self_l2_id,
         to_persona=self_persona,
         include_closed=include_closed,

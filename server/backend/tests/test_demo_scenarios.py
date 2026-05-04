@@ -61,7 +61,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     with TestClient(app) as c:
         store = _get_store()
         pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
-        store.create_user(ALICE, pw)
+        store.sync.create_user(ALICE, pw)
         yield c
 
 
@@ -254,7 +254,7 @@ class TestCrossEnterpriseConsentedPrecondition:
     ) -> None:
         # Seed a consent row from acme/eng -> orion/eng.
         store = _get_store()
-        store.insert_cross_enterprise_consent(
+        store.sync.insert_cross_enterprise_consent(
             consent_id="consent_test_xx",
             requester_enterprise="acme",
             responder_enterprise="orion",

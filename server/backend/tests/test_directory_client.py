@@ -133,12 +133,12 @@ class TestFeatureFlag:
             dc, "_announce_with_retries", lambda *a, **kw: called.append("announce")
         )
         # Should return immediately without any side effects.
-        from cq_server.store import RemoteStore
+        from cq_server.store import SqliteStore
 
-        store = RemoteStore(db_path=tmp_path / "x.db")
+        store = SqliteStore(db_path=tmp_path / "x.db")
         await dc.directory_bootstrap_and_loop(store)
         assert called == []
-        store.close()
+        store.sync.close()
 
     @pytest.mark.asyncio
     async def test_enabled_but_unconfigured_skips(
@@ -147,11 +147,11 @@ class TestFeatureFlag:
         # Enabled but no privkey path → graceful skip, not crash.
         monkeypatch.setenv("CQ_DIRECTORY_ENABLED", "true")
         monkeypatch.delenv("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", raising=False)
-        from cq_server.store import RemoteStore
+        from cq_server.store import SqliteStore
 
-        store = RemoteStore(db_path=tmp_path / "y.db")
+        store = SqliteStore(db_path=tmp_path / "y.db")
         await dc.directory_bootstrap_and_loop(store)  # should not raise
-        store.close()
+        store.sync.close()
 
     @pytest.mark.asyncio
     async def test_skip_announce_mode_runs_pull_loop_without_privkey(
@@ -181,11 +181,11 @@ class TestFeatureFlag:
 
         monkeypatch.setattr(dc, "_pull_loop", _stub_pull_loop)
 
-        from cq_server.store import RemoteStore
+        from cq_server.store import SqliteStore
 
-        store = RemoteStore(db_path=tmp_path / "skip.db")
+        store = SqliteStore(db_path=tmp_path / "skip.db")
         await dc.directory_bootstrap_and_loop(store)
-        store.close()
+        store.sync.close()
 
         assert announce_called == [], "skip-announce mode must NOT announce"
         assert len(pull_called) == 1, "skip-announce mode must run the pull loop"
@@ -408,7 +408,7 @@ class TestPullAndPersist:
         n = await dc._pull_and_persist_once(keypair, "acme", store)
         assert n == 1
 
-        rows = store.list_directory_peerings(enterprise_id="acme")
+        rows = store.sync.list_directory_peerings(enterprise_id="acme")
         assert len(rows) == 1
         assert rows[0]["offer_id"] == "off_test"
         assert rows[0]["from_enterprise"] == "acme"
@@ -460,7 +460,7 @@ class TestPullAndPersist:
 
         n = await dc._pull_and_persist_once(keypair, "acme", store)
         assert n == 0  # bad sig rejected
-        rows = store.list_directory_peerings(enterprise_id="acme")
+        rows = store.sync.list_directory_peerings(enterprise_id="acme")
         assert all(r["offer_id"] != "off_bad" for r in rows)
 
     @pytest.mark.asyncio
@@ -511,7 +511,7 @@ class TestSchema:
         self, app_client: TestClient
     ) -> None:
         store = _get_store()
-        store.upsert_directory_peering(
+        store.sync.upsert_directory_peering(
             offer_id="off_schema",
             from_enterprise="a",
             to_enterprise="b",
@@ -529,12 +529,12 @@ class TestSchema:
             accept_signing_key_id="J",
             last_synced_at="2026-05-01T21:00:00Z",
         )
-        rows = store.list_directory_peerings()
+        rows = store.sync.list_directory_peerings()
         assert len(rows) == 1
         assert rows[0]["offer_id"] == "off_schema"
 
         # Re-upsert with new status — same row, updated.
-        store.upsert_directory_peering(
+        store.sync.upsert_directory_peering(
             offer_id="off_schema",
             from_enterprise="a",
             to_enterprise="b",
@@ -552,6 +552,6 @@ class TestSchema:
             accept_signing_key_id="J",
             last_synced_at="2026-05-02T00:00:00Z",
         )
-        rows = store.list_directory_peerings()
+        rows = store.sync.list_directory_peerings()
         assert len(rows) == 1
         assert rows[0]["status"] == "expired"

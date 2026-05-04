@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from .auth import get_current_user, require_admin
 from .deps import get_store
-from .store import RemoteStore
+from .store._sqlite import SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class RootsResponse(BaseModel):
     total: int
 
 
-def _user_enterprise(username: str, store: RemoteStore) -> str:
+def _user_enterprise(username: str, store: SqliteStore) -> str:
     """Resolve the authenticated user's Enterprise id.
 
     Raises 403 if the user has no Enterprise (defensive — every user
@@ -103,7 +103,7 @@ def list_reputation_events(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     event_type: str | None = Query(default=None),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> EventsResponse:
     """Return reputation events for the caller's Enterprise.
@@ -161,7 +161,7 @@ def list_reputation_events(
 @router.get("/roots", response_model=RootsResponse)
 def list_reputation_roots(
     limit: int = Query(default=90, ge=1, le=365),
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> RootsResponse:
     """Return daily Merkle roots for the caller's Enterprise, newest first."""
@@ -212,7 +212,7 @@ class ComputeRootRequest(BaseModel):
 @router.post("/roots/compute", response_model=RootOut)
 def compute_root_now(
     body: ComputeRootRequest,
-    store: RemoteStore = Depends(get_store),
+    store: SqliteStore = Depends(get_store),
     username: str = Depends(require_admin),
 ) -> RootOut:
     """Admin trigger: compute the Merkle root for one specific UTC day.
