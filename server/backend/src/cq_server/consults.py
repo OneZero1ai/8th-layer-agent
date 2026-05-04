@@ -442,7 +442,7 @@ async def request_consult(
 
         if target_enterprise == self_enterprise:
             # Same-Enterprise — must be in AIGRP peer table.
-            target_peer = _resolve_peer(store, body.to_l2_id)
+            target_peer = await _resolve_peer(store, body.to_l2_id)
             if target_peer is None:
                 raise HTTPException(
                     status_code=404,
@@ -454,7 +454,7 @@ async def request_consult(
                 )
         else:
             # Cross-Enterprise — must have an active directory peering.
-            x_enterprise = _resolve_x_enterprise_target(store, body.to_l2_id, self_enterprise)
+            x_enterprise = await _resolve_x_enterprise_target(store, body.to_l2_id, self_enterprise)
             if x_enterprise is None:
                 raise HTTPException(
                     status_code=403,
@@ -554,7 +554,7 @@ async def post_consult_message(
     other_persona = thread["to_persona"] if is_from else thread["from_persona"]
     target_peer = None
     if other_l2_id != self_l2_id:
-        target_peer = _resolve_peer(store, other_l2_id)
+        target_peer = await _resolve_peer(store, other_l2_id)
         if target_peer is None:
             raise HTTPException(
                 status_code=502,

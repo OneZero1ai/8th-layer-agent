@@ -53,7 +53,7 @@ def _seed_user_and_login(
     from cq_server.app import _get_store
     from cq_server.auth import hash_password
 
-    _get_store().create_user(username, hash_password(password))
+    _get_store().sync.create_user(username, hash_password(password))
     resp = client.post("/auth/login", json={"username": username, "password": password})
     assert resp.status_code == 200
     return resp.json()["token"]

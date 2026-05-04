@@ -902,7 +902,7 @@ async def aigrp_forward_query(
                 result_count=0,
             )
 
-    raw_hits = store.semantic_query_with_scope(
+    raw_hits = await store.semantic_query_with_scope(
         body.query_vec,
         limit=body.max_results * 3,
     )

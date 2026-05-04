@@ -1130,11 +1130,12 @@ class SqliteStore:
     def _list_units_sync(
         self,
         *,
-        domain: str | None,
-        confidence_min: float | None,
-        confidence_max: float | None,
-        status: str | None,
-        limit: int,
+        domain: str | None = None,
+        confidence_min: float | None = None,
+        confidence_max: float | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from ._queries import select_list_units
 
@@ -1185,7 +1186,7 @@ class SqliteStore:
         with self._engine.connect() as conn:
             return int(conn.execute(SELECT_PENDING_COUNT).scalar() or 0)
 
-    def _pending_queue_sync(self, *, limit: int, offset: int) -> list[dict[str, Any]]:
+    def _pending_queue_sync(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(SELECT_PENDING_QUEUE, {"limit": limit, "offset": offset}).fetchall()
         return [
@@ -1416,7 +1417,7 @@ class SqliteStore:
         *,
         from_enterprise: str,
         to_enterprise: str,
-        now_iso: str | None,
+        now_iso: str | None = None,
     ) -> dict[str, Any] | None:
         if now_iso is None:
             now_iso = datetime.now(UTC).isoformat()
@@ -2182,10 +2183,13 @@ class SqliteStore:
 
     def _delete_sync(
         self,
+        unit_id: str | None = None,
         *,
-        unit_id: str,
-        enterprise_id: str | None,
+        enterprise_id: str | None = None,
+        **kwargs: Any,
     ) -> bool:
+        if unit_id is None:
+            unit_id = kwargs.get("unit_id")
         with self._engine.begin() as conn:
             if enterprise_id is not None:
                 row = conn.execute(
