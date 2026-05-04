@@ -596,7 +596,15 @@ class TestUserHelpers:
         with engine.connect() as conn:
             row = conn.execute(q.SELECT_USER_BY_USERNAME, {"username": "bob"}).fetchone()
         assert row is not None
-        assert {"id": row[0], "username": row[1], "password_hash": row[2], "created_at": row[3]} == user_via_store
+        assert {
+            "id": row[0],
+            "username": row[1],
+            "password_hash": row[2],
+            "created_at": row[3],
+            "role": "user",
+            "enterprise_id": "default-enterprise",
+            "group_id": "default-group",
+        } == user_via_store
 
     async def test_insert_user_duplicate_username_raises(self, db: tuple[SqliteStore, Engine]) -> None:
         """Pins the UNIQUE constraint on users.username."""

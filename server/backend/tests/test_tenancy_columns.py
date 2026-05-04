@@ -83,13 +83,16 @@ class TestNewRowDefaults:
         assert grp == DEFAULT_GROUP_ID
 
     def test_columns_are_not_null(self, store: SqliteStore) -> None:
+        import sqlalchemy.exc
+
         # Prove the schema rejects an explicit NULL.
-        with pytest.raises(sqlite3.IntegrityError):
-            store._engine.begin().__enter__().exec_driver_sql(
-                "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
-                "VALUES (?, ?, ?, ?)",
-                ("ku_null", "{}", None, "default-group"),
-            )
+        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
+            with store._engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("ku_null", "{}", None, "default-group"),
+                )
 
 
 # --- legacy-row backfill ------------------------------------------------

@@ -172,8 +172,7 @@ class SqliteStore:
     async def counts_by_status(
         self, *, enterprise_id: str | None = None
     ) -> dict[str, int]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
-        return await self._run_sync(self._counts_by_status_sync)
+        return await self._run_sync(self._counts_by_status_sync, enterprise_id=enterprise_id)
 
     async def counts_by_tier(
         self, *, enterprise_id: str | None = None
@@ -864,9 +863,16 @@ class SqliteStore:
         with self._engine.connect() as conn:
             return int(conn.execute(SELECT_TOTAL_COUNT).scalar() or 0)
 
-    def _counts_by_status_sync(self) -> dict[str, int]:
+    def _counts_by_status_sync(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         with self._engine.connect() as conn:
-            rows = conn.execute(SELECT_COUNTS_BY_STATUS).fetchall()
+            if enterprise_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT COALESCE(status, 'pending'), COUNT(*) FROM knowledge_units "
+                    "WHERE enterprise_id = ? GROUP BY status",
+                    (enterprise_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(SELECT_COUNTS_BY_STATUS).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def _counts_by_tier_sync(self) -> dict[str, int]:
