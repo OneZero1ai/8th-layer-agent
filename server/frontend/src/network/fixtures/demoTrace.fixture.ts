@@ -169,7 +169,7 @@ export const crossEnterpriseBlockedFixture: DemoTraceResponse = {
       summary: "[hidden — cross-Enterprise policy: blocked]",
       body: null,
       policy: "blocked",
-      reason: "no active consent record (orion ↔ acme)",
+      reason: "no active peering agreement (orion ↔ acme)",
     },
   ],
 }

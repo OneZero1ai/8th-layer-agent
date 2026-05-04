@@ -301,7 +301,7 @@ function KuResultCard({ r }: { r: RedactedKuResult }) {
           className="mt-2 text-[11px] leading-relaxed text-white/55"
           style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}
         >
-          {r.reason ?? "No active consent record. Boundary held."}
+          {r.reason ?? "No active peering agreement. Boundary held."}
         </p>
       </div>
     )

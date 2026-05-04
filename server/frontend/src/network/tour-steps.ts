@@ -46,7 +46,7 @@ export const TOUR_STEPS: TourStep[] = [
   },
   {
     title: "Sign a consent — open a redacted bridge.",
-    body: "A signed consent record opens a summary-only path. Edge solidifies in amber, particles begin flowing across it.",
+    body: "A signed peering agreement opens a summary-only path. Edge solidifies in amber, particles begin flowing across it.",
     highlightEdges: ["cross:acme/engineering--orion/engineering"],
     zoomTo: { cx: 800, cy: 450, scale: 0.95 },
   },
