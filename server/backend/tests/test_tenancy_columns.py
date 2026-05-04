@@ -48,9 +48,12 @@ def _make_unit(**overrides: Any) -> KnowledgeUnit:
 
 @pytest.fixture()
 def store(tmp_path: Path) -> Iterator[SqliteStore]:
-    s = SqliteStore(db_path=tmp_path / "tenancy.db")
+    from cq_server.migrations import run_migrations
+    db = tmp_path / "tenancy.db"
+    run_migrations(f"sqlite:///{db}")
+    s = SqliteStore(db_path=db)
     yield s
-    s.close()
+    s.close_sync()
 
 
 def _scope(conn: sqlite3.Connection, table: str, key_col: str, key: str) -> tuple[str, str]:

@@ -715,7 +715,7 @@ async def forward_consult_request(
     Sprint 4 (#44) — pubkey-on-file peers must also present a valid
     ``X-8L-Forwarder-Sig`` over JCS(body) || from_l2_id.
     """
-    aigrp_mod.require_forwarder_identity(
+    await aigrp_mod.require_forwarder_identity(
         request,
         body.from_l2_id,
         body_for_sig=body.model_dump(mode="json"),
@@ -784,7 +784,7 @@ async def forward_consult_message(
     Sprint 4 (#44) — also requires Ed25519 forward signature for peers
     with a recorded pubkey.
     """
-    aigrp_mod.require_forwarder_identity(
+    await aigrp_mod.require_forwarder_identity(
         request,
         body.from_l2_id,
         body_for_sig=body.model_dump(mode="json"),

@@ -305,7 +305,6 @@ class SqliteStore:
         enterprise_id: str | None = None,
         group_id: str | None = None,
     ) -> list[KnowledgeUnit]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(
             self._query_sync,
             domains,
@@ -313,6 +312,8 @@ class SqliteStore:
             frameworks=frameworks,
             pattern=pattern,
             limit=limit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
         )
 
     async def recent_activity(
@@ -1238,6 +1239,8 @@ class SqliteStore:
         frameworks: list[str] | None = None,
         pattern: str = "",
         limit: int = 5,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[KnowledgeUnit]:
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -1246,7 +1249,29 @@ class SqliteStore:
             return []
         with self._engine.connect() as conn:
             rows = conn.execute(SELECT_QUERY_UNITS, {"domains": normalized}).fetchall()
-        units = [KnowledgeUnit.model_validate_json(row[0]) for row in rows]
+        if enterprise_id is not None:
+            kus = [KnowledgeUnit.model_validate_json(r[0]) for r in rows]
+            ids = [k.id for k in kus]
+            scope_by_id: dict[str, tuple[str, str, int]] = {}
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                with self._engine.connect() as conn2:
+                    sc_rows = conn2.exec_driver_sql(
+                        f"SELECT id, enterprise_id, group_id, cross_group_allowed FROM knowledge_units WHERE id IN ({placeholders})",
+                        tuple(ids),
+                    ).fetchall()
+                scope_by_id = {sr[0]: (sr[1], sr[2], sr[3]) for sr in sc_rows}
+            filtered: list[KnowledgeUnit] = []
+            for k in kus:
+                ent, grp, xgrp = scope_by_id.get(k.id, ("", "", 0))
+                if ent != enterprise_id:
+                    continue
+                if group_id is not None and grp != group_id and not xgrp:
+                    continue
+                filtered.append(k)
+            units = filtered
+        else:
+            units = [KnowledgeUnit.model_validate_json(row[0]) for row in rows]
         scored = [
             (
                 calculate_relevance(
