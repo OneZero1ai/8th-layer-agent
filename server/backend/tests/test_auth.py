@@ -103,7 +103,17 @@ class TestAuthMe:
         token = login.json()["token"]
         resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
-        assert resp.json()["username"] == "peter"
+        body = resp.json()
+        assert body["username"] == "peter"
+        assert body["auth_kind"] == "jwt"
+        assert body["api_key_id"] is None
+        assert body["expires_at"] is None
+        assert body["issued_at"] is None
+        # Tenancy claims always populated (default values when user row lacks them).
+        assert body["enterprise_id"]
+        assert body["group_id"]
+        assert body["l2_id"] == f"{body['enterprise_id']}/{body['group_id']}"
+        assert body["role"]
 
     def test_me_without_token(self, client: TestClient) -> None:
         resp = client.get("/auth/me")
@@ -112,6 +122,30 @@ class TestAuthMe:
     def test_me_with_invalid_token(self, client: TestClient) -> None:
         resp = client.get("/auth/me", headers={"Authorization": "Bearer invalid"})
         assert resp.status_code == 401
+
+    def test_me_with_api_key(self, api_key_client: TestClient) -> None:
+        # Mint an API key via JWT, then call /me with the API key bearer.
+        jwt_token = _login(api_key_client)
+        created = api_key_client.post(
+            "/auth/api-keys",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            json={"name": "laptop", "ttl": "30d"},
+        )
+        assert created.status_code == 201
+        api_key_token = created.json()["token"]
+        api_key_id = created.json()["id"]
+
+        resp = api_key_client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {api_key_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["username"] == "peter"
+        assert body["auth_kind"] == "api_key"
+        assert body["api_key_id"] == api_key_id
+        assert body["expires_at"] is not None
+        assert body["issued_at"] is not None
 
 
 @pytest.fixture()

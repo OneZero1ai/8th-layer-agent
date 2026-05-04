@@ -14,8 +14,10 @@ with /aigrp/peers-active (peer-key gated) so the network proxy reads
 presence over the same trust channel as the rest of /aigrp/*.
 """
 
+import hmac
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,7 +27,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import aigrp
-from .api_keys import encode_token, generate_secret, hash_secret, secret_prefix
+from .api_keys import (
+    TOKEN_NAMESPACE,
+    TOKEN_VERSION,
+    decode_token,
+    encode_token,
+    generate_secret,
+    hash_secret,
+    secret_prefix,
+)
 from .deps import get_api_key_pepper, get_store
 from .store._sqlite import SqliteStore
 from .ttl import parse_ttl
@@ -97,10 +107,24 @@ class LoginResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    """Current user response body."""
+    """Current user response body — server's authoritative view of the caller.
+
+    The shape is the same regardless of auth method (JWT or API key); the
+    auth-method-specific fields (``api_key_id``, ``expires_at``,
+    ``issued_at``) are populated only when the caller used an API key.
+    """
 
     username: str
     created_at: str
+    enterprise_id: str
+    group_id: str
+    l2_id: str
+    role: str
+    persona: str | None = None
+    auth_kind: str
+    api_key_id: str | None = None
+    expires_at: str | None = None
+    issued_at: str | None = None
 
 
 class Message(BaseModel):
@@ -264,24 +288,81 @@ async def login(request: LoginRequest, store: SqliteStore = Depends(get_store)) 
     return LoginResponse(token=token, username=request.username)
 
 
-@router.get("/me")
-async def me(username: str = Depends(get_current_user), store: SqliteStore = Depends(get_store)) -> MeResponse:
-    """Return the current user's info.
+@dataclass
+class _CallerIdentity:
+    """Resolved caller identity, accepting either JWT or API-key tokens."""
 
-    Args:
-        username: The authenticated username from the JWT dependency.
-        store: The store dependency.
+    username: str
+    auth_kind: str  # "jwt" | "api_key"
+    api_key_id: str | None = None
+    expires_at: str | None = None
+    issued_at: str | None = None
 
-    Returns:
-        A MeResponse with the user's username and creation timestamp.
 
-    Raises:
-        HTTPException: With status 404 if the user no longer exists.
+async def _resolve_caller(request: Request, store: SqliteStore) -> _CallerIdentity:
+    """Authenticate the caller via either bearer-token shape and return identity.
+
+    Tokens prefixed with ``cqa.v1.`` are decoded as API keys; everything
+    else is verified as a JWT. 401 on either path's failure.
     """
-    user = await store.get_user(username)
+    header = request.headers.get("Authorization")
+    if not header or not header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    token = header.removeprefix("Bearer ")
+    if token.startswith(f"{TOKEN_NAMESPACE}.{TOKEN_VERSION}."):
+        try:
+            key_id, secret = decode_token(token)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="Invalid API key") from exc
+        pepper = get_api_key_pepper(request)
+        row = await store.get_active_api_key_by_id(key_id.hex)
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        if not hmac.compare_digest(row["key_hash"], hash_secret(secret, pepper=pepper)):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return _CallerIdentity(
+            username=row["username"],
+            auth_kind="api_key",
+            api_key_id=row["id"],
+            expires_at=row["expires_at"],
+            issued_at=row["created_at"],
+        )
+    secret = _get_jwt_secret()
+    try:
+        payload = verify_token(token, secret=secret)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
+    return _CallerIdentity(username=payload["sub"], auth_kind="jwt")
+
+
+@router.get("/me")
+async def me(request: Request, store: SqliteStore = Depends(get_store)) -> MeResponse:
+    """Return the server's authoritative view of the caller's identity.
+
+    Accepts either a JWT (from ``POST /auth/login``) or an API key (from
+    ``POST /auth/api-keys``). The response shape is identical for both;
+    the API-key-only fields (``api_key_id``, ``expires_at``,
+    ``issued_at``) are ``None`` for JWT callers.
+    """
+    caller = await _resolve_caller(request, store)
+    user = await store.get_user(caller.username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return MeResponse(username=user["username"], created_at=user["created_at"])
+    enterprise_id = user.get("enterprise_id") or "default-enterprise"
+    group_id = user.get("group_id") or "default-group"
+    return MeResponse(
+        username=user["username"],
+        created_at=user["created_at"],
+        enterprise_id=enterprise_id,
+        group_id=group_id,
+        l2_id=f"{enterprise_id}/{group_id}",
+        role=user.get("role") or "user",
+        persona=None,
+        auth_kind=caller.auth_kind,
+        api_key_id=caller.api_key_id,
+        expires_at=caller.expires_at,
+        issued_at=caller.issued_at,
+    )
 
 
 async def _require_user_id(store: SqliteStore, username: str) -> int:
