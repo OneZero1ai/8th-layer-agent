@@ -1,9 +1,8 @@
 """Tests for the propose-time content quality guards."""
 from __future__ import annotations
 
-from typing import Any
-
 from cq.models import Insight
+
 from cq_server.quality import check_propose_quality
 
 

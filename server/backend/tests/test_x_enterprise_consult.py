@@ -19,7 +19,6 @@ Phase 2 (receiver side) is a separate test file landing with that PR.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -404,7 +403,7 @@ def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-        def __enter__(self) -> "_FakeClient":
+        def __enter__(self) -> _FakeClient:
             return self
 
         def __exit__(self, *_a: Any) -> None:

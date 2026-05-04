@@ -281,7 +281,7 @@ class TestSenderSideSignatures:
             def __init__(self, **kw: Any) -> None:
                 pass
 
-            def __enter__(self) -> "StubClient":
+            def __enter__(self) -> StubClient:
                 return self
 
             def __exit__(self, *a: Any) -> None:

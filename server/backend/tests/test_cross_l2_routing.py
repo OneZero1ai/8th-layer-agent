@@ -133,7 +133,7 @@ def test_cross_l2_request_mirrors_local_and_forwards_to_peer(
         def __init__(self, **kwargs: Any) -> None:
             self.kwargs = kwargs
 
-        def __enter__(self) -> "StubClient":
+        def __enter__(self) -> StubClient:
             return self
 
         def __exit__(self, *a: Any) -> None:
@@ -185,7 +185,7 @@ def test_cross_l2_message_forwards_to_other_side(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        def __enter__(self) -> "StubClient":
+        def __enter__(self) -> StubClient:
             return self
 
         def __exit__(self, *a: Any) -> None:
