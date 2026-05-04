@@ -231,9 +231,7 @@ class SqliteStore:
     async def get_any(
         self, unit_id: str, *, enterprise_id: str | None = None
     ) -> KnowledgeUnit | None:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping
-        # deferred — TODO: wire into _get_any_sync when callers stabilise.
-        return await self._run_sync(self._get_any_sync, unit_id)
+        return await self._run_sync(self._get_any_sync, unit_id, enterprise_id=enterprise_id)
 
     async def get_api_key_for_user(self, *, user_id: int, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_api_key_for_user_sync, user_id=user_id, key_id=key_id)
@@ -241,8 +239,7 @@ class SqliteStore:
     async def get_review_status(
         self, unit_id: str, *, enterprise_id: str | None = None
     ) -> dict[str, str | None] | None:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
-        return await self._run_sync(self._get_review_status_sync, unit_id)
+        return await self._run_sync(self._get_review_status_sync, unit_id, enterprise_id=enterprise_id)
 
     async def get_user(self, username: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_user_sync, username)
@@ -284,8 +281,7 @@ class SqliteStore:
     async def pending_count(
         self, *, enterprise_id: str | None = None
     ) -> int:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
-        return await self._run_sync(self._pending_count_sync)
+        return await self._run_sync(self._pending_count_sync, enterprise_id=enterprise_id)
 
     async def pending_queue(
         self,
@@ -294,8 +290,9 @@ class SqliteStore:
         offset: int = 0,
         enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
-        return await self._run_sync(self._pending_queue_sync, limit=limit, offset=offset)
+        return await self._run_sync(
+            self._pending_queue_sync, limit=limit, offset=offset, enterprise_id=enterprise_id
+        )
 
     async def query(
         self,
@@ -939,7 +936,9 @@ class SqliteStore:
                 raise e.orig from e
             raise
 
-    def _daily_counts_sync(self, *, days: int) -> list[dict[str, Any]]:
+    def _daily_counts_sync(self, *, days: int = 30, enterprise_id: str | None = None) -> list[dict[str, Any]]:
+        if days <= 0:
+            raise ValueError("days must be positive")
         cutoff = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
         from ._queries import SELECT_APPROVED_DAILY, SELECT_PROPOSED_DAILY, SELECT_REJECTED_DAILY
 
@@ -1002,9 +1001,15 @@ class SqliteStore:
             "revoked_at": row[11],
         }
 
-    def _get_any_sync(self, unit_id: str) -> KnowledgeUnit | None:
+    def _get_any_sync(self, unit_id: str, *, enterprise_id: str | None = None) -> KnowledgeUnit | None:
         with self._engine.connect() as conn:
-            row = conn.execute(SELECT_BY_ID, {"id": unit_id}).fetchone()
+            if enterprise_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT data FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
+            else:
+                row = conn.execute(SELECT_BY_ID, {"id": unit_id}).fetchone()
         return KnowledgeUnit.model_validate_json(row[0]) if row is not None else None
 
     def _get_api_key_for_user_sync(self, *, user_id: int, key_id: str) -> dict[str, Any] | None:
@@ -1025,9 +1030,18 @@ class SqliteStore:
             "revoked_at": row[9],
         }
 
-    def _get_review_status_sync(self, unit_id: str) -> dict[str, str | None] | None:
+    def _get_review_status_sync(
+        self, unit_id: str, *, enterprise_id: str | None = None
+    ) -> dict[str, str | None] | None:
         with self._engine.connect() as conn:
-            row = conn.execute(SELECT_REVIEW_STATUS_BY_ID, {"id": unit_id}).fetchone()
+            if enterprise_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT status, reviewed_by, reviewed_at FROM knowledge_units "
+                    "WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
+            else:
+                row = conn.execute(SELECT_REVIEW_STATUS_BY_ID, {"id": unit_id}).fetchone()
         if row is None:
             return None
         return {"status": row[0], "reviewed_by": row[1], "reviewed_at": row[2]}
@@ -1182,13 +1196,30 @@ class SqliteStore:
                 break
         return results
 
-    def _pending_count_sync(self) -> int:
+    def _pending_count_sync(self, *, enterprise_id: str | None = None) -> int:
         with self._engine.connect() as conn:
+            if enterprise_id is not None:
+                return int(
+                    conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM knowledge_units WHERE status = 'pending' AND enterprise_id = ?",
+                        (enterprise_id,),
+                    ).scalar() or 0
+                )
             return int(conn.execute(SELECT_PENDING_COUNT).scalar() or 0)
 
-    def _pending_queue_sync(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    def _pending_queue_sync(
+        self, *, limit: int = 50, offset: int = 0, enterprise_id: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(SELECT_PENDING_QUEUE, {"limit": limit, "offset": offset}).fetchall()
+            if enterprise_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT data, status, reviewed_by, reviewed_at FROM knowledge_units "
+                    "WHERE status = 'pending' AND enterprise_id = ? "
+                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (enterprise_id, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.execute(SELECT_PENDING_QUEUE, {"limit": limit, "offset": offset}).fetchall()
         return [
             {
                 "knowledge_unit": KnowledgeUnit.model_validate_json(row[0]),

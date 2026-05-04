@@ -600,7 +600,7 @@ def test_x_enterprise_receiver_logging_policy_summary_only_redacts(
     assert r.json()["logging_policy_applied"] == "summary_only_log"
 
     # Verify the receiver-side message row is redacted.
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert len(msg_rows) == 1
     assert msg_rows[0]["content"] == "<redacted: summary_only_log>"
 
@@ -624,9 +624,9 @@ def test_x_enterprise_receiver_logging_policy_no_log_skips_message(
     assert r.json()["logging_policy_applied"] == "no_log_consults"
 
     # Thread row exists (audit point) but no message row.
-    thread = _get_store().get_consult("th_recv_1")
+    thread = _get_store().sync.get_consult("th_recv_1")
     assert thread is not None
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert msg_rows == []
 
 
@@ -642,7 +642,7 @@ def test_x_enterprise_receiver_idempotent_on_redelivery(client: TestClient) -> N
     assert r1.status_code == 201
     assert r2.status_code == 201
 
-    msg_rows = _get_store().list_consult_messages("th_recv_1")
+    msg_rows = _get_store().sync.list_consult_messages("th_recv_1")
     assert len(msg_rows) == 1
 
 

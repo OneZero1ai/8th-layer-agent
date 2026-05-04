@@ -411,6 +411,7 @@ class TestBaselineMatchesLegacySchema:
     the migration is the sole source of truth.
     """
 
+    @pytest.mark.skip(reason="PR-B cutover removed RemoteStore; legacy ensure_* fallback path retired in PR-C/D")
     async def test_baseline_schema_matches_legacy_ensure_schema(self, tmp_path: Path) -> None:
         legacy_db = tmp_path / "legacy.db"
         migrated_db = tmp_path / "migrated.db"
