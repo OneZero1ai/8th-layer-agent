@@ -462,10 +462,13 @@ class TestRouteMounts:
 
 class TestSchemaConstraints:
     def test_cross_group_allowed_column_is_not_null(self, aigrp_client: TestClient) -> None:
+        import sqlalchemy.exc
+
         store = _get_store()
-        with pytest.raises(sqlite3.IntegrityError), store._lock, store._conn:
-            store._engine.connect().exec_driver_sql(
-                "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
-                "VALUES (?, ?, ?)",
-                ("ku_null_xgroup", "{}", None),
-            )
+        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
+            with store._engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
+                    "VALUES (?, ?, ?)",
+                    ("ku_null_xgroup", "{}", None),
+                )

@@ -178,7 +178,7 @@ def test_bearer_swap_yields_different_bearer() -> None:
 
 def test_find_active_peering_returns_match(client: TestClient) -> None:
     _seed_peering(offer_id="off_a")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is not None
@@ -188,7 +188,7 @@ def test_find_active_peering_returns_match(client: TestClient) -> None:
 def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
     """Peering from A→B is also queryable as B→A."""
     _seed_peering(offer_id="off_b", from_ent="acme", to_ent="globex")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="globex", to_enterprise="acme"
     )
     assert p is not None
@@ -198,7 +198,7 @@ def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
 def test_find_active_peering_skips_expired(client: TestClient) -> None:
     """Past expires_at = no row."""
     _seed_peering(offer_id="off_old", expires_at="2020-01-01T00:00:00Z")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is None
@@ -206,7 +206,7 @@ def test_find_active_peering_skips_expired(client: TestClient) -> None:
 
 def test_find_active_peering_skips_non_active(client: TestClient) -> None:
     _seed_peering(offer_id="off_pending", status="pending")
-    p = _get_store().find_active_directory_peering(
+    p = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert p is None
@@ -418,7 +418,7 @@ def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
 
     monkeypatch.setattr(consults.httpx, "Client", _FakeClient)
 
-    peering = _get_store().find_active_directory_peering(
+    peering = _get_store().sync.find_active_directory_peering(
         from_enterprise="acme", to_enterprise="globex"
     )
     assert peering is not None
