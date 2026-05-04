@@ -425,7 +425,7 @@ class TestReviewTenantScope:
 
     def test_stats_scoped_to_admin_enterprise(self, client: TestClient) -> None:
         _login(client)  # default-tenant admin
-        unit_default = _propose(client, domains=["scope-test"])
+        _propose(client, domains=["scope-test"])
         unit_globex = _propose(client, domains=["scope-test"])
         self._set_ku_tenancy(unit_globex["id"], enterprise_id="globex")
 
