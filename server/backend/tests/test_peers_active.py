@@ -42,11 +42,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
                 "UPDATE users SET enterprise_id = 'acme', group_id = 'engineering' WHERE username = ?",
                 (ALICE,),
             )
-            store._engine.connect().exec_driver_sql(
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'acme', group_id = 'solutions' WHERE username = ?",
                 (BOB,),
             )
-            store._engine.connect().exec_driver_sql(
+            _c.exec_driver_sql(
                 "UPDATE users SET enterprise_id = 'initech', group_id = 'r-and-d' WHERE username = ?",
                 (CARLA,),
             )

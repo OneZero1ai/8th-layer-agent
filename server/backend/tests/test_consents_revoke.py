@@ -87,8 +87,8 @@ class TestRevokeHappyPath:
             headers={"Authorization": f"Bearer {jwt}"},
         )
         store = _get_store()
-        with store._lock:
-            rows = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            rows = _c.exec_driver_sql(
                 "SELECT policy_applied FROM cross_l2_audit "
                 "WHERE consent_id = ? ORDER BY ts ASC",
                 (cid,),

@@ -94,8 +94,8 @@ class TestHeartbeatUpsert:
             assert r2.json()["registered_at"] >= r1.json()["registered_at"]
             # And there should be exactly one row in the DB.
             store = _get_store()
-            with store._lock:
-                count = store._engine.connect().exec_driver_sql(
+            with store._engine.begin() as _c:
+                count = _c.exec_driver_sql(
                     "SELECT COUNT(*) FROM peers WHERE persona = 'persona-x'"
                 ).fetchone()[0]
             assert count == 1
@@ -114,8 +114,8 @@ class TestTenancyResolvedFromAuth:
         finally:
             _clear_override()
         store = _get_store()
-        with store._lock:
-            row = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            row = _c.exec_driver_sql(
                 "SELECT enterprise_id, group_id FROM peers WHERE persona = ?",
                 ("persona-alice",),
             ).fetchone()
@@ -142,8 +142,8 @@ class TestTenancyResolvedFromAuth:
         finally:
             _clear_override()
         store = _get_store()
-        with store._lock:
-            row = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            row = _c.exec_driver_sql(
                 "SELECT enterprise_id, group_id FROM peers WHERE persona = ?",
                 ("persona-shared",),
             ).fetchone()
@@ -166,8 +166,8 @@ class TestExpertiseDomainsRoundtrip:
         finally:
             _clear_override()
         store = _get_store()
-        with store._lock:
-            row = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            row = _c.exec_driver_sql(
                 "SELECT expertise_domains FROM peers WHERE persona = ?",
                 ("persona-domains",),
             ).fetchone()
@@ -183,8 +183,8 @@ class TestExpertiseDomainsRoundtrip:
         finally:
             _clear_override()
         store = _get_store()
-        with store._lock:
-            row = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            row = _c.exec_driver_sql(
                 "SELECT expertise_domains FROM peers WHERE persona = ?",
                 ("persona-no-domains",),
             ).fetchone()

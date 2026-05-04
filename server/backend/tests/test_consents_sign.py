@@ -89,8 +89,8 @@ class TestSignHappyPath:
         assert resp.status_code == 201
         consent_id = resp.json()["consent_id"]
         store = _get_store()
-        with store._lock:
-            rows = store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            rows = _c.exec_driver_sql(
                 "SELECT policy_applied, consent_id FROM cross_l2_audit "
                 "WHERE consent_id = ?",
                 (consent_id,),

@@ -275,8 +275,8 @@ class TestCrossEnterpriseWithConsent:
 class TestAuditLog:
     def _audit_rows(self) -> list[tuple[Any, ...]]:
         store = _get_store()
-        with store._lock:
-            return store._engine.connect().exec_driver_sql(
+        with store._engine.begin() as _c:
+            return _c.exec_driver_sql(
                 "SELECT requester_enterprise, requester_group, "
                 "responder_enterprise, responder_group, policy_applied, "
                 "result_count, consent_id "
