@@ -28,7 +28,6 @@ from cq_server.store import SqliteStore
 from cq_server.tables import (
     DEFAULT_ENTERPRISE_ID,
     DEFAULT_GROUP_ID,
-    ensure_tenancy_columns,
 )
 
 # --- helpers ------------------------------------------------------------
@@ -86,94 +85,24 @@ class TestNewRowDefaults:
         import sqlalchemy.exc
 
         # Prove the schema rejects an explicit NULL.
-        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
-            with store._engine.begin() as conn:
-                conn.exec_driver_sql(
-                    "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
-                    "VALUES (?, ?, ?, ?)",
-                    ("ku_null", "{}", None, "default-group"),
-                )
+        with (
+            pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)),
+            store._engine.begin() as conn,
+        ):
+            conn.exec_driver_sql(
+                "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
+                "VALUES (?, ?, ?, ?)",
+                ("ku_null", "{}", None, "default-group"),
+            )
 
 
 # --- legacy-row backfill ------------------------------------------------
 
 
-class TestLegacyBackfill:
-    """Simulate the production DB shape (pre-migration) and confirm that
-    ``ensure_tenancy_columns`` adds the columns AND backfills the rows.
-
-    This mirrors what SqliteStore() does on startup (via _ensure_schema),
-    and is also what the Alembic migration achieves through its own
-    backfill path. Both code paths converge on the same default scope.
-    """
-
-    def test_pre_existing_rows_get_backfilled(self, tmp_path: Path) -> None:
-        db = tmp_path / "legacy.db"
-
-        # Create a "legacy" DB without the tenancy columns.
-        conn = sqlite3.connect(str(db))
-        conn.executescript(
-            """
-            CREATE TABLE knowledge_units (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-            CREATE TABLE users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO knowledge_units (id, data) VALUES (?, ?)",
-            ("legacy_ku_1", "{}"),
-        )
-        conn.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-            ("legacy_user", "hash", "2024-01-01T00:00:00+00:00"),
-        )
-        conn.commit()
-
-        # Apply the additive migration helper.
-        ensure_tenancy_columns(conn)
-
-        # Both pre-existing rows now carry the default scope.
-        ent_ku, grp_ku = _scope(conn, "knowledge_units", "id", "legacy_ku_1")
-        assert (ent_ku, grp_ku) == (DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID)
-
-        ent_u, grp_u = _scope(conn, "users", "username", "legacy_user")
-        assert (ent_u, grp_u) == (DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID)
-
-        # And the column is now NOT NULL — explicit NULL is rejected.
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO knowledge_units (id, data, enterprise_id) "
-                "VALUES (?, ?, ?)",
-                ("ku_null", "{}", None),
-            )
-
-        conn.close()
-
-    def test_helper_is_idempotent(self, tmp_path: Path) -> None:
-        # Calling ensure_tenancy_columns twice on the same DB must not
-        # raise "duplicate column" — the runtime triggers it on every
-        # process startup.
-        db = tmp_path / "idempotent.db"
-        conn = sqlite3.connect(str(db))
-        conn.executescript(
-            """
-            CREATE TABLE knowledge_units (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-            CREATE TABLE users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
-        conn.commit()
-        ensure_tenancy_columns(conn)
-        ensure_tenancy_columns(conn)  # must not raise
-        conn.close()
+# PR-C: TestLegacyBackfill class deleted. ``ensure_tenancy_columns`` was
+# the runtime tenancy backfill helper; Alembic migration
+# ``0001_phase6_step1`` now owns that path, and ``TestAlembicMigration``
+# below covers the upgrade/downgrade matrix end-to-end.
 
 
 # --- alembic upgrade / downgrade ---------------------------------------

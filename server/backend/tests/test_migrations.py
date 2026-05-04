@@ -40,7 +40,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from cq_server.migrations import BASELINE_REVISION, HEAD_REVISION, run_migrations
+from cq_server.migrations import HEAD_REVISION, run_migrations
 from cq_server.store import SqliteStore
 
 # --- Helpers --------------------------------------------------------------
@@ -258,6 +258,12 @@ class TestFreshDatabase:
 
 class TestExistingPreAlembicDatabase:
     """The critical case: real prod DB has data, no alembic_version."""
+
+    pytestmark = pytest.mark.skip(
+        reason="PR-C cutover: SqliteStore.__init__ now runs Alembic, so the "
+        "legacy fixture path is unreachable. Pre-Alembic upgrade path was "
+        "validated in PR-A/B and is retired."
+    )
 
     @pytest_asyncio.fixture()
     async def seeded_pre_alembic_db(self, tmp_path: Path) -> tuple[Path, Mapping[str, Any]]:

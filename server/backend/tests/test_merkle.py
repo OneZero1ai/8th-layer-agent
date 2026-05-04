@@ -20,7 +20,7 @@ class TestEmptyAndSingle:
         expected = "sha256:" + hashlib.sha256(
             b"8l-reputation-empty-day-v1"
         ).hexdigest()
-        assert EMPTY_DAY_ROOT == expected
+        assert expected == EMPTY_DAY_ROOT
 
     def test_single_leaf_root_is_just_that_leaf(self) -> None:
         leaf = _h("a")
