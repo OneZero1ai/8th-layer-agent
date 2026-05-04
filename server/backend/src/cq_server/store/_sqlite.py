@@ -137,7 +137,6 @@ class SqliteStore:
     async def confidence_distribution(
         self, *, enterprise_id: str | None = None
     ) -> dict[str, int]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._confidence_distribution_sync)
 
     async def count(self) -> int:
@@ -154,7 +153,6 @@ class SqliteStore:
     async def counts_by_tier(
         self, *, enterprise_id: str | None = None
     ) -> dict[str, int]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._counts_by_tier_sync)
 
     async def create_api_key(
@@ -187,7 +185,6 @@ class SqliteStore:
     async def daily_counts(
         self, *, days: int = 30, enterprise_id: str | None = None
     ) -> list[dict[str, Any]]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         if days <= 0:
             raise ValueError("days must be positive")
         return await self._run_sync(self._daily_counts_sync, days=days)
@@ -195,7 +192,6 @@ class SqliteStore:
     async def domain_counts(
         self, *, enterprise_id: str | None = None
     ) -> dict[str, int]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._domain_counts_sync)
 
     async def get(self, unit_id: str) -> KnowledgeUnit | None:
@@ -244,7 +240,6 @@ class SqliteStore:
         limit: int = 100,
         enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(
             self._list_units_sync,
             domain=domain,
@@ -295,7 +290,6 @@ class SqliteStore:
     async def recent_activity(
         self, limit: int = 20, *, enterprise_id: str | None = None
     ) -> list[dict[str, Any]]:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         return await self._run_sync(self._recent_activity_sync, limit=limit)
 
     async def revoke_api_key(self, *, user_id: int, key_id: str) -> bool:
@@ -309,7 +303,6 @@ class SqliteStore:
         *,
         enterprise_id: str | None = None,
     ) -> None:
-        # enterprise_id accepted for RemoteStore-compat; tenant scoping deferred.
         await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
 
     async def touch_api_key_last_used(self, key_id: str) -> None:
@@ -320,7 +313,7 @@ class SqliteStore:
 
     # ------------------------------------------------------------------
     # Fork-delta: directory peerings (#105 PR-A)
-    # Mirrors the synchronous methods on RemoteStore. Backed by the
+    # Sync mirror of the async surface for callers without a running event loop. Backed by the
     # ``aigrp_directory_peerings`` table (Alembic migration 0006).
     # ------------------------------------------------------------------
 
@@ -1063,7 +1056,7 @@ class SqliteStore:
         embedding: bytes | None = None,
         embedding_model: str | None = None,
     ) -> None:
-        # embedding kwargs: persist via UPDATE after the INSERT (RemoteStore compat).
+        # embedding kwargs: persist via UPDATE after the INSERT.
         # Acceptance is silent here; the actual write happens via _set_embedding_sync.
         domains = normalize_domains(unit.domains)
         if not domains:
@@ -1240,7 +1233,8 @@ class SqliteStore:
                 placeholders = ",".join("?" * len(ids))
                 with self._engine.connect() as conn2:
                     sc_rows = conn2.exec_driver_sql(
-                        f"SELECT id, enterprise_id, group_id, cross_group_allowed FROM knowledge_units WHERE id IN ({placeholders})",
+                        "SELECT id, enterprise_id, group_id, cross_group_allowed "
+                        f"FROM knowledge_units WHERE id IN ({placeholders})",
                         tuple(ids),
                     ).fetchall()
                 scope_by_id = {sr[0]: (sr[1], sr[2], sr[3]) for sr in sc_rows}
@@ -1270,7 +1264,7 @@ class SqliteStore:
             )
             for u in units
         ]
-        # Match RemoteStore tie-break: score desc, id desc on tie.
+        # Tie-break: score desc, id desc on tie.
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [u for _, _, u in scored[:limit]]
 
@@ -1370,7 +1364,7 @@ class SqliteStore:
 
     # ------------------------------------------------------------------
     # Sync impls for fork-delta methods (#105 PR-A)
-    # SQLAlchemy text() + named-binding versions of the RemoteStore code.
+    # SQLAlchemy text() + named-binding versions of the SQL the runtime executes.
     # ------------------------------------------------------------------
 
     def _upsert_directory_peering_sync(
