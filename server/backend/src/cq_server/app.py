@@ -727,14 +727,20 @@ async def aigrp_peers(
 
 
 @api_router.get("/aigrp/signature")
-def aigrp_signature(
+async def aigrp_signature(
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpSignatureResponse:
     """Return this L2's current corpus signature — centroid + Bloom filter
     + counts. Polled by every peer on the AIGRP polling interval.
+
+    Was sync `def` post-PR-B (#105) async cutover but calls async
+    `_build_self_signature`; returning the coroutine made FastAPI/
+    Pydantic emit a silent 500 + a `RuntimeWarning: coroutine never
+    awaited`, which the aggregator's `_fetch_one_l2` swallowed and
+    fell back to ku_count=0 in topology. Closes #84.
     """
     store = _get_store()
-    return _build_self_signature(store)
+    return await _build_self_signature(store)
 
 
 class AigrpForwardQueryRequest(BaseModel):
