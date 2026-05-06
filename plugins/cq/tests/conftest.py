@@ -10,6 +10,7 @@ from types import ModuleType
 import pytest
 
 HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "cursor" / "cq_cursor_hook.py"
+CC_HOOK_PATH = Path(__file__).resolve().parent.parent / "hooks" / "claude_code" / "cq_cc_hook.py"
 
 
 @pytest.fixture(scope="session")
@@ -25,5 +26,16 @@ def hook() -> ModuleType:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["cq_cursor_hook"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="session")
+def cc_hook() -> ModuleType:
+    """Load cq_cc_hook.py (Claude Code L2 ambient hook) as a module."""
+    spec = importlib.util.spec_from_file_location("cq_cc_hook", CC_HOOK_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cq_cc_hook"] = module
     spec.loader.exec_module(module)
     return module

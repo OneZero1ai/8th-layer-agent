@@ -1,3 +1,29 @@
 {
-  "hooks": {}
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/claude_code/cq_cc_hook.py\" --mode post-tool-use"
+          }
+        ],
+        "description": "8l-cq L2 ambient capture: detect tool error-recovery patterns and concentrated work, prompt for KU proposal"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/claude_code/cq_cc_hook.py\" --mode stop"
+          }
+        ],
+        "description": "8l-cq L2 ambient capture: at session end, prompt the model to run /cq:reflect"
+      }
+    ]
+  }
 }
