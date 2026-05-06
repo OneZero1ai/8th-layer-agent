@@ -67,50 +67,35 @@ If the session contained no events meeting the above criteria, skip Steps 3–5 
 
 Apply the VIBE√ safety check as defined in the cq skill against every candidate from Step 2. Classify each finding as clean, soft-concern, or hard-finding. For hard findings, generate the sanitized rewrite covering every `propose` field that could carry the violating content (`summary`, `detail`, `action`, `domains`, `languages`, `frameworks`, `pattern`). Record the classification per candidate — Steps 3 and 6 use these results for presentation and the final summary.
 
-If a hard finding cannot be coherently sanitized, the candidate fails Step 2's generalizable criterion — drop it from the candidate list and record the exclusion in Step 6's summary. Do not present it. `/cq:reflect` never silently drops *presented* candidates; the user owns the final decision on every candidate that reaches Step 3.
+If a hard finding cannot be coherently sanitized, the candidate fails Step 2's generalizable criterion — drop it from the candidate list and record the exclusion in Step 6's summary. Do not present it. `/cq:reflect` never silently drops *presented* candidates; the operator owns the final decision on every hard-finding candidate that reaches Step 3 (clean and soft candidates are auto-proposed in Step 3a without going through inline review).
 
-### Step 3 — Present candidates to the user
+### Step 3 — Auto-store low-risk candidates; present only hard findings
 
-Open with:
+**Default policy (changed 2026-05-06):** clean + soft-concern candidates are auto-proposed without inline review. Only **hard-finding** candidates are presented for human judgment. This minimizes interruption when the session has nothing risky to surface, while preserving operator oversight on the candidates that actually need it.
 
-```
-cq identified {total} potential learning candidates from this session...
+#### Auto-propose phase (Step 3a — silent)
 
-{hard} have hard concerns and are shown with both the original and a sanitized rewrite — pick which (if either) to store.
-{soft} have soft concerns flagged with ⚠️ for your awareness.
-{clean} passed the VIBE√ check cleanly.
-```
+For each candidate classified as `clean` or `soft` in Step 2.5, call `propose` immediately without presenting. Soft concerns are not lost — they are listed in the Step 6 final summary so the operator can see what flags were raised.
 
-Omit any count line whose value is zero.
+Do NOT auto-propose hard findings, even with sanitization. Hard findings always require human judgment because the sanitized rewrite may have stripped content the operator cares about, or the operator may want to escalate the finding rather than store either form.
 
-Present each candidate as a numbered entry. Use one of three templates depending on what Step 2.5 produced. Every template has a blank line after the `{N}. {summary}` header so the metadata block is visually distinct.
+#### Present-hard-only phase (Step 3b)
 
-**Clean candidate:**
+If there are zero hard findings, skip presentation entirely — go straight to Step 6.
+
+If there are one or more hard findings, open with:
 
 ```
-{N}. {summary}
+cq auto-stored {clean+soft} candidate(s) from this session ({clean} clean, {soft} with soft concerns — see summary below).
 
-   Domains: {domain tags}
-   Relevance: {estimated_relevance}
-   ---
-   {detail}
-   Action: {action}
+{hard} candidate(s) have hard concerns and need your judgment. Each is shown with both the original and a sanitized rewrite — pick which (if either) to store.
 ```
 
-**Soft-concern candidate** (add the `⚠️` line as the first line of the metadata block, above `Domains`):
+Omit `{soft}` if zero. Omit the auto-stored line entirely if `clean+soft = 0`.
 
-```
-{N}. {summary}
+Present each hard-finding candidate using the template below. Numbering starts at 1; the auto-stored candidates are not numbered (they are reported in the final summary).
 
-   ⚠️ {one-line concern}
-   Domains: {domain tags}
-   Relevance: {estimated_relevance}
-   ---
-   {detail}
-   Action: {action}
-```
-
-**Hard-finding candidate.** The header `summary` and `Domains` use the sanitized values — the header never shows hard-finding content. The Original block shows the full original fields (summary, domains, detail, action). The Sanitized block shows only fields that differ from the header, i.e. detail and action.
+**Hard-finding candidate.** The header `summary` and `Domains` use the sanitized values — the header never shows hard-finding content. The Original block shows the full original fields. The Sanitized block shows only fields that differ from the header, i.e. detail and action.
 
 ```
 {N}. {sanitized summary}
@@ -133,23 +118,31 @@ After listing all candidates, show the command reference:
 
 ```
 Commands:
-  N              approve (sanitized version for hard-findings)
-  N original     approve original instead (hard-findings only)
+  N              approve sanitized version
+  N original     approve original instead
   edit N         revise before storing
   skip N         discard
-  all            approve every candidate's default
+  all            approve every candidate's sanitized default
   none           discard everything
 
 Combine with commas: e.g. "1, 3 original, skip 2" applies each command in order.
 ```
 
-### Step 4 — Handle edits
+#### Caveat: hard findings are session-bound (until L2-queued review ships)
 
-If the user requests an edit, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing.
+Hard findings presented inline are evaluated *only* against this session's running conversation. If the operator closes the session without responding, the candidates are lost. The L2-queued review feature (issue #103) will move hard findings to a server-side `pending_review` tier so they survive session end. Until then, surface a one-line reminder before the command prompt:
 
-### Step 5 — Propose approved candidates
+```
+⚠ Reply to capture these — pending L2-queued review (#103), unanswered hard findings end with the session.
+```
 
-For each approved candidate, call `propose`:
+### Step 4 — Handle edits (hard findings only)
+
+If the user requests an edit on a hard-finding candidate, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing.
+
+### Step 5 — Propose human-reviewed candidates
+
+For each hard-finding candidate the operator approved, call `propose` with the chosen variant (sanitized by default; original on explicit `N original`):
 
 ```
 propose(
@@ -178,11 +171,12 @@ Stored: {id} — "{summary}"
 
 {total} candidates identified.
 {excluded} dropped by VIBE√ (not generalizable; not presented).
-{approved} proposed to cq. {skipped} skipped by user.
+{auto_stored} auto-stored ({clean} clean, {soft} with soft concerns).
+{hard_approved} of {hard} hard finding(s) human-reviewed and stored. {hard_skipped} skipped.
 
 VIBE√ findings this session:
 - Hard concerns (candidates {numbers}): {one-line concern per candidate}
-- Soft concerns (candidates {numbers}): {one-line concern per candidate}
+- Soft concerns (auto-stored): {one-line concern per candidate}
 - Excluded (not presented): {one-line reason per excluded candidate}
 
 IDs stored this session:
@@ -190,14 +184,14 @@ IDs stored this session:
 - ...
 ```
 
-Always show the `{total} candidates identified.` line. Omit the `{excluded} dropped by VIBE√ ...` sentence when `{excluded}` is zero. Omit any VIBE√ findings bullet whose category has no entries.
+Always show the `{total} candidates identified.` line. Omit any line whose count is zero. Omit any VIBE√ findings bullet whose category has no entries.
 
 The bracketed annotation on each stored ID records the VIBE√ provenance of what was stored:
 
-- `clean` — no VIBE√ findings; stored as identified.
-- `soft` — soft concern present; stored as-is after the user weighed the flag.
-- `sanitized` — hard finding; the user picked the sanitized rewrite.
-- `original` — hard finding; the user explicitly picked the unmodified version.
+- `clean` — no VIBE√ findings; auto-stored without prompting.
+- `soft` — soft concern present; auto-stored with the concern logged in this summary.
+- `sanitized` — hard finding; operator picked the sanitized rewrite.
+- `original` — hard finding; operator explicitly picked the unmodified version.
 
 If no candidates were identified, display:
 
