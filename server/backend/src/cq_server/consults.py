@@ -685,7 +685,7 @@ class ForwardRequestBody(BaseModel):
     from_l2_id: str
     from_persona: str
     to_l2_id: str
-    to_persona: str
+    to_persona: str = Field(min_length=1)
     subject: str | None = Field(default=None, max_length=512)
     content: str = Field(min_length=1, max_length=4096)
     created_at: str

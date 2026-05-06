@@ -745,6 +745,31 @@ def test_x_enterprise_receiver_persona_in_wrong_enterprise_returns_404(
     assert _get_store().sync.get_consult(payload["thread_id"]) is None
 
 
+def test_x_enterprise_receiver_empty_persona_returns_422(client: TestClient) -> None:
+    """Empty-string to_persona is rejected at Pydantic parse time (HIGH on PR #112).
+
+    Without the schema-level ``min_length=1`` constraint on
+    ``ForwardRequestBody.to_persona``, the receiver's own
+    ``if body.to_persona:`` falsy guard would skip user lookup and
+    re-create the orphan-row bug for the degenerate empty-string input.
+    """
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    payload = _x_enterprise_payload()
+    payload["to_persona"] = ""
+
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=payload,
+    )
+    assert r.status_code == 422, r.text
+
+    # Defensive: no thread row, no message row landed.
+    assert _get_store().sync.get_consult(payload["thread_id"]) is None
+    assert _get_store().sync.list_consult_messages(payload["thread_id"]) == []
+
+
 def test_x_enterprise_receiver_valid_persona_succeeds(client: TestClient) -> None:
     """The happy-path mirror — explicit baseline that #98's validation
     didn't regress real users.
