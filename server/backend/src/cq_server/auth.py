@@ -220,28 +220,30 @@ def _get_jwt_secret() -> str:
     return secret
 
 
-def get_current_user(request: Request) -> str:
-    """FastAPI dependency that extracts and validates the JWT from the Authorization header.
+async def get_current_user(
+    request: Request,
+    store: SqliteStore = Depends(get_store),
+) -> str:
+    """FastAPI dependency: authenticate the caller and return their username.
+
+    Accepts either a JWT (issued by ``POST /auth/login``) or an API key
+    (minted by ``POST /auth/api-keys``). Tokens prefixed with ``cqa.v1.``
+    are verified as API keys; everything else is JWT-verified. The
+    dispatch matches ``_resolve_caller`` so every route protected by
+    this dep gets both bearer shapes for free.
 
     Args:
         request: The incoming FastAPI request.
+        store: The store dependency, used to resolve API-key rows.
 
     Returns:
-        The username extracted from the validated token.
+        The username extracted from whichever bearer shape validated.
 
     Raises:
-        HTTPException: With status 401 if the header is missing, malformed, or the token is invalid.
+        HTTPException: 401 on missing header or either-shape failure.
     """
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-    token = auth_header.removeprefix("Bearer ")
-    secret = _get_jwt_secret()
-    try:
-        payload = verify_token(token, secret=secret)
-    except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
-    return payload["sub"]
+    caller = await _resolve_caller(request, store)
+    return caller.username
 
 
 async def require_admin(
