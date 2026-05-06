@@ -67,7 +67,7 @@ If the session contained no events meeting the above criteria, skip Steps 3–5 
 
 Apply the VIBE√ safety check as defined in the cq skill against every candidate from Step 2. Classify each finding as clean, soft-concern, or hard-finding. For hard findings, generate the sanitized rewrite covering every `propose` field that could carry the violating content (`summary`, `detail`, `action`, `domains`, `languages`, `frameworks`, `pattern`). Record the classification per candidate — Steps 3 and 6 use these results for presentation and the final summary.
 
-If a hard finding cannot be coherently sanitized, the candidate fails Step 2's generalizable criterion — drop it from the candidate list and record the exclusion in Step 6's summary. Do not present it. `/cq:reflect` never silently drops *presented* candidates; the user owns the final decision on every candidate that reaches Step 3.
+If a hard finding cannot be coherently sanitized, the candidate fails Step 2's generalizable criterion — drop it from the candidate list and record the exclusion in Step 6's summary. Do not present it. `/cq:reflect` never silently drops *presented* candidates; the operator owns the final decision on every hard-finding candidate that reaches Step 3 (clean and soft candidates are auto-proposed in Step 3a without going through inline review).
 
 ### Step 3 — Auto-store low-risk candidates; present only hard findings
 
