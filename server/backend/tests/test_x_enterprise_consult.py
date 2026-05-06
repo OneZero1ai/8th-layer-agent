@@ -682,3 +682,86 @@ def test_x_enterprise_receiver_inbox_visibility(client: TestClient) -> None:
     assert inbox.status_code == 200
     threads = inbox.json()["threads"]
     assert any(t["thread_id"] == "th_recv_1" for t in threads)
+
+
+# ---------------------------------------------------------------------------
+# Issue #98 — to_persona must exist on the receiving L2
+# ---------------------------------------------------------------------------
+#
+# Without this guard, a typo'd or stale persona name produces a thread +
+# message pair that nobody can ever read (the addressed user doesn't exist
+# on this L2, so the inbox surface never returns the row) — and the sender
+# gets a false-positive "delivered" 201 response. See issue #98.
+
+
+def test_x_enterprise_receiver_unknown_persona_returns_404(client: TestClient) -> None:
+    """to_persona that doesn't exist as a user on this L2 → 404, no rows written."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+    payload = _x_enterprise_payload()
+    payload["to_persona"] = "nonexistent_user"
+
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=payload,
+    )
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "to_persona not found"
+
+    # Defensive: no thread row, no message row landed.
+    assert _get_store().sync.get_consult(payload["thread_id"]) is None
+    assert _get_store().sync.list_consult_messages(payload["thread_id"]) == []
+
+
+def test_x_enterprise_receiver_persona_in_wrong_enterprise_returns_404(
+    client: TestClient,
+) -> None:
+    """A username that exists but belongs to a different enterprise/group is not addressable."""
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+
+    # Seed a user with the right username but wrong tenancy. The receiver
+    # L2 is acme/engineering — this user is on rival/somewhere.
+    store = _get_store()
+    pw = bcrypt.hashpw(b"pw", bcrypt.gensalt()).decode()
+    store.sync.create_user("foreigner", pw)
+    with store._engine.begin() as _c:
+        _c.exec_driver_sql(
+            "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
+            ("rival", "somewhere", "foreigner"),
+        )
+
+    payload = _x_enterprise_payload()
+    payload["to_persona"] = "foreigner"
+
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=payload,
+    )
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "to_persona not found"
+    assert _get_store().sync.get_consult(payload["thread_id"]) is None
+
+
+def test_x_enterprise_receiver_valid_persona_succeeds(client: TestClient) -> None:
+    """The happy-path mirror — explicit baseline that #98's validation
+    didn't regress real users.
+
+    The fixture seeds ALICE on acme/engineering (the receiving L2's
+    tenancy). The default _x_enterprise_payload() addresses ALICE, so
+    this should still 201 + create the thread, even with the new check.
+    """
+    _seed_peering(offer_id="off_recv", from_ent="globex", to_ent="acme")
+    bearer = forward_sign.derive_peering_bearer(_FAKE_OFFER_SIG, _FAKE_ACCEPT_SIG)
+
+    r = client.post(
+        "/api/v1/consults/x-enterprise-forward-request",
+        headers=_x_enterprise_headers(bearer=bearer),
+        json=_x_enterprise_payload(),
+    )
+    assert r.status_code == 201, r.text
+    thread = _get_store().sync.get_consult("th_recv_1")
+    assert thread is not None
+    assert thread["to_persona"] == ALICE
