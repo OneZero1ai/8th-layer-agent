@@ -82,14 +82,14 @@ class RootsResponse(BaseModel):
     total: int
 
 
-def _user_enterprise(username: str, store: SqliteStore) -> str:
+async def _user_enterprise(username: str, store: SqliteStore) -> str:
     """Resolve the authenticated user's Enterprise id.
 
     Raises 403 if the user has no Enterprise (defensive — every user
     row has one in practice, but a stale row would otherwise leak
     cross-tenant data on the GET).
     """
-    user = store.get_user(username)
+    user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=403, detail="user not found")
     enterprise_id = user.get("enterprise_id")
@@ -99,7 +99,7 @@ def _user_enterprise(username: str, store: SqliteStore) -> str:
 
 
 @router.get("/events", response_model=EventsResponse)
-def list_reputation_events(
+async def list_reputation_events(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     event_type: str | None = Query(default=None),
@@ -116,7 +116,7 @@ def list_reputation_events(
     re-derive ``payload_hash`` and re-verify the signature locally
     without trusting the server's stored values.
     """
-    enterprise_id = _user_enterprise(username, store)
+    enterprise_id = await _user_enterprise(username, store)
 
     base = (
         "SELECT event_id, event_type, enterprise_id, l2_id, ts, "
@@ -159,13 +159,13 @@ def list_reputation_events(
 
 
 @router.get("/roots", response_model=RootsResponse)
-def list_reputation_roots(
+async def list_reputation_roots(
     limit: int = Query(default=90, ge=1, le=365),
     store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> RootsResponse:
     """Return daily Merkle roots for the caller's Enterprise, newest first."""
-    enterprise_id = _user_enterprise(username, store)
+    enterprise_id = await _user_enterprise(username, store)
 
     with store._lock:
         rows = store._conn.execute(
@@ -210,7 +210,7 @@ class ComputeRootRequest(BaseModel):
 
 
 @router.post("/roots/compute", response_model=RootOut)
-def compute_root_now(
+async def compute_root_now(
     body: ComputeRootRequest,
     store: SqliteStore = Depends(get_store),
     username: str = Depends(require_admin),
@@ -223,7 +223,7 @@ def compute_root_now(
     """
     from .daily_root import compute_root_for_day
 
-    enterprise_id = _user_enterprise(username, store)
+    enterprise_id = await _user_enterprise(username, store)
     with store._lock:
         result = compute_root_for_day(store._conn, enterprise_id, body.root_date)
         store._conn.commit()
