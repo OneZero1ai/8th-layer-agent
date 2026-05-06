@@ -685,7 +685,7 @@ class ForwardRequestBody(BaseModel):
     from_l2_id: str
     from_persona: str
     to_l2_id: str
-    to_persona: str
+    to_persona: str = Field(min_length=1)
     subject: str | None = Field(default=None, max_length=512)
     content: str = Field(min_length=1, max_length=4096)
     created_at: str
@@ -951,6 +951,27 @@ async def x_enterprise_forward_consult_request(
     """
     peering = await _require_x_enterprise_auth(request, body, store)
     policy = peering["consult_logging_policy"]
+
+    # Issue #98 — validate that body.to_persona corresponds to a real
+    # user on this L2 (matching enterprise + group). Without this guard,
+    # a typo'd or stale persona name produces a thread+message pair
+    # nobody can ever read (no inbox surface for a non-existent user)
+    # and the sender gets a false-positive "delivered" signal.
+    #
+    # Group-scoped consults (to_persona empty/None) are allowed through
+    # without persona validation — current schema requires non-empty
+    # to_persona but we keep the conditional for forward compatibility
+    # with a future Group-only address shape.
+    if body.to_persona:
+        user = await store.get_user(body.to_persona)
+        self_enterprise = aigrp_mod.enterprise()
+        self_group = aigrp_mod.group()
+        if (
+            user is None
+            or str(user.get("enterprise_id") or "default-enterprise") != self_enterprise
+            or str(user.get("group_id") or "default-group") != self_group
+        ):
+            raise HTTPException(status_code=404, detail="to_persona not found")
 
     # Thread row: always created (audit point: cross-Enterprise consult
     # was attempted, regardless of policy).
