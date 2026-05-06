@@ -147,6 +147,38 @@ class TestAuthMe:
         assert body["expires_at"] is not None
         assert body["issued_at"] is not None
 
+    def test_get_current_user_accepts_api_key(self, api_key_client: TestClient) -> None:
+        """Regression for issue #86 — Bran-style API-key call against a
+        ``get_current_user``-protected endpoint must not fall back to the
+        JWT path's ``Invalid or expired token`` error.
+
+        Before the fix: ``get_current_user`` only verified JWTs; an API
+        key (``cqa.v1.<keyid>.<secret>``) was passed to PyJWT which raised
+        ``DecodeError`` and the caller saw 401 ``Invalid or expired token``.
+        After: ``get_current_user`` delegates to ``_resolve_caller`` and
+        accepts both bearer shapes. The consults inbox endpoint is the
+        canonical user-protected route to exercise this through.
+        """
+        jwt_token = _login(api_key_client)
+        created = api_key_client.post(
+            "/auth/api-keys",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            json={"name": "regression-86", "ttl": "30d"},
+        )
+        assert created.status_code == 201
+        api_key_token = created.json()["token"]
+        # Sanity: this token would have triggered Bran's failure mode pre-fix.
+        assert api_key_token.startswith("cqa.v1.")
+
+        # /consults/inbox uses get_current_user (JWT-only pre-fix).
+        resp = api_key_client.get(
+            "/api/v1/consults/inbox",
+            headers={"Authorization": f"Bearer {api_key_token}"},
+        )
+        # Pre-fix: 401 "Invalid or expired token". Post-fix: 200 with empty inbox.
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["self_l2_id"]  # tenancy populated from API-key user
+
 
 @pytest.fixture()
 def api_key_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
