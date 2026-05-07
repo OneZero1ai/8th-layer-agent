@@ -1041,6 +1041,170 @@ class SqliteStore:
             cursor=cursor,
         )
 
+    # --- crosstalk_threads + crosstalk_messages (#124) -------------------
+    #
+    # L2-mediated inter-session messaging. Migration 0014 creates the
+    # tables; routes in cq_server/crosstalk_routes.py consume these
+    # helpers. Tenancy is pinned at create-time from the caller's user
+    # row; reads are tenant-scoped by the route layer.
+
+    async def create_crosstalk_thread(
+        self,
+        *,
+        thread_id: str,
+        subject: str,
+        enterprise_id: str,
+        group_id: str,
+        created_at: str,
+        created_by_username: str,
+        participants: list[str],
+    ) -> None:
+        """Insert a new ``crosstalk_threads`` row.
+
+        ``participants`` is a list of usernames who can read/reply on
+        this thread; at minimum it should contain the creator + the
+        initial recipient. JSON-encoded on the wire.
+        """
+        await self._run_sync(
+            self._create_crosstalk_thread_sync,
+            thread_id=thread_id,
+            subject=subject,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+            created_at=created_at,
+            created_by_username=created_by_username,
+            participants=participants,
+        )
+
+    async def append_crosstalk_message(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        from_username: str,
+        from_persona: str | None,
+        to_username: str | None,
+        content: str,
+        sent_at: str,
+        enterprise_id: str,
+        group_id: str,
+    ) -> None:
+        """Insert a new message into an existing thread.
+
+        ``to_username`` is optional for fan-out / multi-party threads;
+        for two-party direct messages the route layer should always
+        populate it so the inbox query can target it cleanly.
+        """
+        await self._run_sync(
+            self._append_crosstalk_message_sync,
+            message_id=message_id,
+            thread_id=thread_id,
+            from_username=from_username,
+            from_persona=from_persona,
+            to_username=to_username,
+            content=content,
+            sent_at=sent_at,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+
+    async def get_crosstalk_thread(
+        self, *, thread_id: str, tenant_enterprise: str
+    ) -> dict[str, Any] | None:
+        """Fetch one thread row by id, tenancy-scoped.
+
+        Returns ``None`` when the thread doesn't exist OR exists in a
+        different enterprise (route layer should treat both as 404 to
+        avoid information leakage).
+        """
+        return await self._run_sync(
+            self._get_crosstalk_thread_sync,
+            thread_id=thread_id,
+            tenant_enterprise=tenant_enterprise,
+        )
+
+    async def list_crosstalk_messages(
+        self,
+        *,
+        thread_id: str,
+        tenant_enterprise: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return messages on a thread, oldest first, tenancy-scoped."""
+        return await self._run_sync(
+            self._list_crosstalk_messages_sync,
+            thread_id=thread_id,
+            tenant_enterprise=tenant_enterprise,
+            limit=limit,
+        )
+
+    async def list_crosstalk_threads_for_user(
+        self,
+        *,
+        username: str,
+        tenant_enterprise: str,
+        is_admin: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Threads visible to ``username`` in ``tenant_enterprise``.
+
+        Non-admin: filtered to threads where the user is a participant.
+        Admin: all threads in the tenant (audit shape per Pass 2 Part 3
+        Ch 16's directory-sees-only-metadata model — admin needs the
+        oversight surface).
+        """
+        return await self._run_sync(
+            self._list_crosstalk_threads_for_user_sync,
+            username=username,
+            tenant_enterprise=tenant_enterprise,
+            is_admin=is_admin,
+            limit=limit,
+        )
+
+    async def close_crosstalk_thread(
+        self,
+        *,
+        thread_id: str,
+        closed_by_username: str,
+        closed_at: str,
+        reason: str | None,
+        tenant_enterprise: str,
+    ) -> bool:
+        """Mark thread closed. Returns False if thread doesn't exist or already closed."""
+        return await self._run_sync(
+            self._close_crosstalk_thread_sync,
+            thread_id=thread_id,
+            closed_by_username=closed_by_username,
+            closed_at=closed_at,
+            reason=reason,
+            tenant_enterprise=tenant_enterprise,
+        )
+
+    async def crosstalk_inbox_for_user(
+        self,
+        *,
+        username: str,
+        tenant_enterprise: str,
+        limit: int = 50,
+        mark_read: bool = False,
+        read_at_iso: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Unread messages addressed to ``username``, tenancy-scoped.
+
+        If ``mark_read=True``, atomically populate ``read_at`` for each
+        returned message with ``read_at_iso`` (caller-supplied so the
+        timestamp matches whatever clock semantics the route layer
+        uses). Default is read-only (no mutation).
+        """
+        return await self._run_sync(
+            self._crosstalk_inbox_for_user_sync,
+            username=username,
+            tenant_enterprise=tenant_enterprise,
+            limit=limit,
+            mark_read=mark_read,
+            read_at_iso=read_at_iso,
+        )
+
     # --- reflect_submissions (#67) ---------------------------------------
     #
     # Persistence layer for the batch-reflect contract. The router layer
@@ -3043,6 +3207,286 @@ class SqliteStore:
                 }
             )
         return results
+
+    # --- crosstalk_threads + crosstalk_messages (#124) sync impls --------
+
+    def _create_crosstalk_thread_sync(
+        self,
+        *,
+        thread_id: str,
+        subject: str,
+        enterprise_id: str,
+        group_id: str,
+        created_at: str,
+        created_by_username: str,
+        participants: list[str],
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO crosstalk_threads "
+                    "(id, subject, status, enterprise_id, group_id, created_at, "
+                    " created_by_username, participants) "
+                    "VALUES (:id, :subject, 'open', :enterprise_id, :group_id, "
+                    "        :created_at, :created_by_username, :participants)"
+                ),
+                {
+                    "id": thread_id,
+                    "subject": subject,
+                    "enterprise_id": enterprise_id,
+                    "group_id": group_id,
+                    "created_at": created_at,
+                    "created_by_username": created_by_username,
+                    "participants": json.dumps(participants),
+                },
+            )
+
+    def _append_crosstalk_message_sync(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        from_username: str,
+        from_persona: str | None,
+        to_username: str | None,
+        content: str,
+        sent_at: str,
+        enterprise_id: str,
+        group_id: str,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO crosstalk_messages "
+                    "(id, thread_id, from_username, from_persona, to_username, "
+                    " content, sent_at, enterprise_id, group_id) "
+                    "VALUES (:id, :thread_id, :from_username, :from_persona, "
+                    "        :to_username, :content, :sent_at, :enterprise_id, "
+                    "        :group_id)"
+                ),
+                {
+                    "id": message_id,
+                    "thread_id": thread_id,
+                    "from_username": from_username,
+                    "from_persona": from_persona,
+                    "to_username": to_username,
+                    "content": content,
+                    "sent_at": sent_at,
+                    "enterprise_id": enterprise_id,
+                    "group_id": group_id,
+                },
+            )
+
+    def _get_crosstalk_thread_sync(
+        self, *, thread_id: str, tenant_enterprise: str
+    ) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT id, subject, status, closed_at, closed_by_username, "
+                    "       closed_reason, enterprise_id, group_id, created_at, "
+                    "       created_by_username, participants "
+                    "FROM crosstalk_threads "
+                    "WHERE id = :id AND enterprise_id = :tenant"
+                ),
+                {"id": thread_id, "tenant": tenant_enterprise},
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            participants = json.loads(row[10]) if row[10] else []
+        except (TypeError, ValueError):
+            participants = []
+        return {
+            "id": row[0],
+            "subject": row[1],
+            "status": row[2],
+            "closed_at": row[3],
+            "closed_by_username": row[4],
+            "closed_reason": row[5],
+            "enterprise_id": row[6],
+            "group_id": row[7],
+            "created_at": row[8],
+            "created_by_username": row[9],
+            "participants": participants,
+        }
+
+    def _list_crosstalk_messages_sync(
+        self, *, thread_id: str, tenant_enterprise: str, limit: int
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, thread_id, from_username, from_persona, "
+                    "       to_username, content, sent_at, read_at "
+                    "FROM crosstalk_messages "
+                    "WHERE thread_id = :thread AND enterprise_id = :tenant "
+                    "ORDER BY sent_at ASC, id ASC "
+                    "LIMIT :limit"
+                ),
+                {
+                    "thread": thread_id,
+                    "tenant": tenant_enterprise,
+                    "limit": limit,
+                },
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "thread_id": r[1],
+                "from_username": r[2],
+                "from_persona": r[3],
+                "to_username": r[4],
+                "content": r[5],
+                "sent_at": r[6],
+                "read_at": r[7],
+            }
+            for r in rows
+        ]
+
+    def _list_crosstalk_threads_for_user_sync(
+        self,
+        *,
+        username: str,
+        tenant_enterprise: str,
+        is_admin: bool,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        # Admin: all threads in tenant. Non-admin: threads where username
+        # is in the participants JSON list. SQLite has no JSON_CONTAINS,
+        # so we string-match the JSON-quoted form. The participants
+        # column is bounded JSON ([]-list of usernames) and usernames
+        # contain only safe characters; the false-positive surface is
+        # acceptable for V1 and will tighten when we move to PostgreSQL
+        # JSONB.
+        if is_admin:
+            sql = (
+                "SELECT id, subject, status, created_at, created_by_username, "
+                "       participants "
+                "FROM crosstalk_threads "
+                "WHERE enterprise_id = :tenant "
+                "ORDER BY created_at DESC "
+                "LIMIT :limit"
+            )
+            params: dict[str, Any] = {"tenant": tenant_enterprise, "limit": limit}
+        else:
+            sql = (
+                "SELECT id, subject, status, created_at, created_by_username, "
+                "       participants "
+                "FROM crosstalk_threads "
+                "WHERE enterprise_id = :tenant "
+                "  AND participants LIKE :ptn "
+                "ORDER BY created_at DESC "
+                "LIMIT :limit"
+            )
+            params = {
+                "tenant": tenant_enterprise,
+                "ptn": f'%"{username}"%',
+                "limit": limit,
+            }
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        results: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                participants = json.loads(r[5]) if r[5] else []
+            except (TypeError, ValueError):
+                participants = []
+            results.append(
+                {
+                    "id": r[0],
+                    "subject": r[1],
+                    "status": r[2],
+                    "created_at": r[3],
+                    "created_by_username": r[4],
+                    "participants": participants,
+                }
+            )
+        return results
+
+    def _close_crosstalk_thread_sync(
+        self,
+        *,
+        thread_id: str,
+        closed_by_username: str,
+        closed_at: str,
+        reason: str | None,
+        tenant_enterprise: str,
+    ) -> bool:
+        # Optimistic concurrency: only flip if status is currently 'open'.
+        # Pattern matches set_review_status (#121 finding 1) — second
+        # closer races and gets False rather than overwriting fields.
+        with self._engine.begin() as conn:
+            cursor = conn.execute(
+                text(
+                    "UPDATE crosstalk_threads "
+                    "SET status = 'closed', "
+                    "    closed_at = :closed_at, "
+                    "    closed_by_username = :closed_by, "
+                    "    closed_reason = :reason "
+                    "WHERE id = :id "
+                    "  AND enterprise_id = :tenant "
+                    "  AND status = 'open'"
+                ),
+                {
+                    "id": thread_id,
+                    "tenant": tenant_enterprise,
+                    "closed_at": closed_at,
+                    "closed_by": closed_by_username,
+                    "reason": reason,
+                },
+            )
+            return bool(cursor.rowcount)
+
+    def _crosstalk_inbox_for_user_sync(
+        self,
+        *,
+        username: str,
+        tenant_enterprise: str,
+        limit: int,
+        mark_read: bool,
+        read_at_iso: str | None,
+    ) -> list[dict[str, Any]]:
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, thread_id, from_username, from_persona, "
+                    "       to_username, content, sent_at "
+                    "FROM crosstalk_messages "
+                    "WHERE to_username = :username "
+                    "  AND enterprise_id = :tenant "
+                    "  AND read_at IS NULL "
+                    "ORDER BY sent_at ASC "
+                    "LIMIT :limit"
+                ),
+                {
+                    "username": username,
+                    "tenant": tenant_enterprise,
+                    "limit": limit,
+                },
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if mark_read and ids and read_at_iso is not None:
+                conn.execute(
+                    text(
+                        "UPDATE crosstalk_messages "
+                        "SET read_at = :read_at "
+                        "WHERE id IN (" + ",".join(f":id{i}" for i in range(len(ids))) + ")"
+                    ),
+                    {"read_at": read_at_iso, **{f"id{i}": ids[i] for i in range(len(ids))}},
+                )
+        return [
+            {
+                "id": r[0],
+                "thread_id": r[1],
+                "from_username": r[2],
+                "from_persona": r[3],
+                "to_username": r[4],
+                "content": r[5],
+                "sent_at": r[6],
+            }
+            for r in rows
+        ]
 
     # --- reflect_submissions (#67) sync impls ----------------------------
 

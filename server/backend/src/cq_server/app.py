@@ -25,6 +25,7 @@ from starlette.responses import FileResponse
 from . import aigrp
 from .activity_logger import log_activity, summary_first_60
 from .activity_routes import router as activity_router
+from .crosstalk_routes import router as crosstalk_router
 from .auth import require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
@@ -354,6 +355,7 @@ api_router.include_router(consults_router)
 api_router.include_router(reputation_router)
 api_router.include_router(reflect_router, prefix="/reflect", tags=["reflect"])
 api_router.include_router(activity_router)
+api_router.include_router(crosstalk_router)
 
 
 @api_router.get("/health")

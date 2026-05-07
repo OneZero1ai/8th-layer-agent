@@ -412,9 +412,10 @@ class TestIdempotencyAndChain:
         finally:
             conn.close()
 
-    def test_head_revision_is_0013(self) -> None:
+    def test_head_revision_is_current(self) -> None:
         """If a future migration lands without bumping HEAD_REVISION,
         ``run_migrations`` silently misses the new revision on stamped
         DBs. Pin the constant so the chain head is the source of truth.
         """
-        assert HEAD_REVISION == "0013_backfill_default_enterprise_kus"
+        # Bumped to 0014_crosstalk_tables (#124).
+        assert HEAD_REVISION == "0014_crosstalk_tables"
