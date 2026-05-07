@@ -17,12 +17,14 @@ from cq.models import (
     Tier,
     create_knowledge_unit,
 )
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.responses import FileResponse
 
 from . import aigrp
+from .activity_logger import log_activity, summary_first_60
+from .activity_routes import router as activity_router
 from .auth import require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
@@ -351,6 +353,7 @@ api_router.include_router(network_router)
 api_router.include_router(consults_router)
 api_router.include_router(reputation_router)
 api_router.include_router(reflect_router, prefix="/reflect", tags=["reflect"])
+api_router.include_router(activity_router)
 
 
 @api_router.get("/health")
@@ -1409,6 +1412,7 @@ async def query_semantic(
 
 @api_router.get("/query")
 async def query_units(
+    background_tasks: BackgroundTasks,
     domains: Annotated[list[str], Query()],
     languages: Annotated[list[str] | None, Query()] = None,
     frameworks: Annotated[list[str] | None, Query()] = None,
@@ -1423,12 +1427,17 @@ async def query_units(
     request never carries scope. Results are restricted to the caller's
     Enterprise (own Group plus cross-group-allowed KUs); cross-Enterprise
     discovery flows through ``/aigrp/forward-query`` (consent + audit).
+
+    Activity log (#108): every query schedules a non-blocking
+    ``activity_log`` row with the query parameters in ``payload`` and
+    the matched KU ids in ``result_summary``. Failure of the log write
+    never affects the response.
     """
     store = _get_store()
     user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    return await store.query(
+    results = await store.query(
         domains,
         languages=languages,
         frameworks=frameworks,
@@ -1437,19 +1446,67 @@ async def query_units(
         enterprise_id=user["enterprise_id"],
         group_id=user["group_id"],
     )
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="query",
+        payload={
+            "domains": list(domains),
+            "languages": list(languages) if languages else [],
+            "frameworks": list(frameworks) if frameworks else [],
+            "pattern": pattern or "",
+            "limit": limit,
+        },
+        result_summary={
+            "ku_ids": [u.id for u in results],
+            "cache_hit": False,  # L2 has no client-side cache; reserved
+        },
+    )
+    return results
 
 
 @api_router.post("/propose", status_code=201)
 async def propose_unit(
     request: ProposeRequest,
+    background_tasks: BackgroundTasks,
     username: str = Depends(require_api_key),
 ) -> KnowledgeUnit:
     """Submit a new knowledge unit.
 
-    ``created_by`` is always set to the authenticated caller's username; any
-    value supplied by the client is discarded.
+    ``created_by`` is always set to the authenticated caller's username;
+    any value supplied by the client is discarded.
+
+    Tenancy (#89): the new KU's ``enterprise_id`` / ``group_id`` come
+    directly from the authenticated caller's user row — never from the
+    request body and never from the schema-level ``default-enterprise``
+    fallback. Pre-fix every KU proposed via the API landed in
+    ``default-enterprise`` regardless of the L2's configured Enterprise,
+    breaking tenant isolation; this resolution closes that gap.
+
+    Activity log (#108): a non-blocking ``activity_log`` row is
+    appended after the response is sent.
     """
     store = _get_store()
+    user = await store.get_user(username)
+    if user is None:
+        # The auth layer accepted the bearer token but the user row is
+        # gone (revocation race / cleanup). 401 is the right shape —
+        # ``require_api_key`` already 401'd if the key was invalid, so a
+        # caller hitting this branch has a half-deleted user.
+        raise HTTPException(status_code=401, detail="User not found")
+    enterprise_id = user["enterprise_id"]
+    group_id = user["group_id"]
+    if not enterprise_id or not group_id:
+        # Defensive: the migration backfills these to non-empty defaults
+        # and the column is NOT NULL, so this should never trigger. If
+        # it does, the user row is malformed; fail loudly rather than
+        # silently writing a KU into ``default-enterprise``.
+        raise HTTPException(
+            status_code=500,
+            detail="User row missing tenancy claims; refusing to proceed",
+        )
+
     normalized = normalize_domains(request.domains)
     if not normalized:
         raise HTTPException(status_code=422, detail="At least one non-empty domain is required")
@@ -1472,34 +1529,85 @@ async def propose_unit(
     )
     if embed_payload is not None:
         embedding_bytes, embedding_model = embed_payload
-        await store.insert(unit)
+        await store.insert(
+            unit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
         await store.set_embedding(unit.id, embedding_bytes, embedding_model)
     else:
-        await store.insert(unit)
+        await store.insert(
+            unit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="propose",
+        payload={
+            "ku_id": unit.id,
+            "summary_first_60_chars": summary_first_60(request.insight.summary),
+            "domains": list(normalized),
+        },
+    )
     return unit
 
 
 @api_router.post("/confirm/{unit_id}")
-async def confirm_unit(unit_id: str, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
-    """Confirm a knowledge unit, boosting its confidence."""
+async def confirm_unit(
+    unit_id: str,
+    background_tasks: BackgroundTasks,
+    username: str = Depends(require_api_key),
+) -> KnowledgeUnit:
+    """Confirm a knowledge unit, boosting its confidence.
+
+    Activity log (#108): non-blocking ``confirm`` row.
+    """
     store = _get_store()
     unit = await store.get(unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     confirmed = apply_confirmation(unit)
     await store.update(confirmed)
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="confirm",
+        payload={"ku_id": unit_id},
+    )
     return confirmed
 
 
 @api_router.post("/flag/{unit_id}")
-async def flag_unit(unit_id: str, request: FlagRequest, _username: str = Depends(require_api_key)) -> KnowledgeUnit:
-    """Flag a knowledge unit, reducing its confidence."""
+async def flag_unit(
+    unit_id: str,
+    request: FlagRequest,
+    background_tasks: BackgroundTasks,
+    username: str = Depends(require_api_key),
+) -> KnowledgeUnit:
+    """Flag a knowledge unit, reducing its confidence.
+
+    Activity log (#108): non-blocking ``flag`` row carries the flag
+    reason in ``payload`` so the dashboard can surface "what kinds of
+    things does the team flag most often".
+    """
     store = _get_store()
     unit = await store.get(unit_id)
     if unit is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     flagged = apply_flag(unit, request.reason)
     await store.update(flagged)
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="flag",
+        payload={"ku_id": unit_id, "reason": str(request.reason)},
+    )
     return flagged
 
 

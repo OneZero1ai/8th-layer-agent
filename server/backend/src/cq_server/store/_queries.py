@@ -46,6 +46,25 @@ INSERT_UNIT: TextClause = text(
     "INSERT INTO knowledge_units (id, data, created_at, tier) VALUES (:id, :data, :created_at, :tier)"
 )
 
+# Closes #89 — explicit ``enterprise_id`` / ``group_id`` columns. Pre-fix
+# every KU insert went through ``INSERT_UNIT`` (above), which omits
+# the tenancy columns and falls back to the schema-level
+# ``server_default`` of ``default-enterprise`` / ``default-group``.
+# The bug surfaced during the moscowmul3 onboarding (#89): every KU
+# proposed via the API landed in ``default-enterprise`` regardless of
+# the L2's configured Enterprise. Code paths that carry auth claims
+# (the ``POST /propose`` handler, the pending-review submitter) now use
+# ``INSERT_UNIT_WITH_TENANCY`` to write the caller's enterprise/group
+# directly. Callers that don't carry scope (legacy fixture tests, the
+# migration-smoke path) keep using ``INSERT_UNIT`` and rely on the
+# server defaults — same behaviour as before #89, plus a clear marker
+# for which call sites need an explicit tenancy decision.
+INSERT_UNIT_WITH_TENANCY: TextClause = text(
+    "INSERT INTO knowledge_units "
+    "(id, data, created_at, tier, enterprise_id, group_id) "
+    "VALUES (:id, :data, :created_at, :tier, :enterprise_id, :group_id)"
+)
+
 INSERT_UNIT_DOMAIN: TextClause = text("INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (:unit_id, :domain)")
 
 DELETE_UNIT_DOMAINS: TextClause = text("DELETE FROM knowledge_unit_domains WHERE unit_id = :unit_id")
@@ -58,8 +77,23 @@ SELECT_REVIEW_STATUS_BY_ID: TextClause = text(
     "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = :id"
 )
 
+# Optimistic-concurrency guard: the WHERE clause requires the row to
+# still be in a pending-shaped state. When two admins race (one
+# approves, one rejects) only the first UPDATE finds the row in the
+# expected state; the second sees ``rowcount == 0`` and the route
+# layer turns that into a 409 ``already <status>`` response. Without
+# this guard, both UPDATEs commit and the last writer wins silently
+# — losing the audit trail of the first decision and producing a
+# ``reviewed_by`` value that disagrees with the activity log.
+#
+# ``status NOT IN ('approved','rejected','dropped')`` rather than
+# ``IN ('pending','pending_review')`` so future intermediate states
+# (e.g. an in-review hold) inherit the same race-protection without
+# needing a query edit. The terminal-state list is the small, stable
+# axis; the pending-state list is the open-ended one.
 UPDATE_REVIEW_STATUS: TextClause = text(
-    "UPDATE knowledge_units SET status = :status, reviewed_by = :reviewed_by, reviewed_at = :reviewed_at WHERE id = :id"
+    "UPDATE knowledge_units SET status = :status, reviewed_by = :reviewed_by, reviewed_at = :reviewed_at "
+    "WHERE id = :id AND status NOT IN ('approved', 'rejected', 'dropped')"
 )
 
 UPDATE_UNIT_DATA: TextClause = text("UPDATE knowledge_units SET data = :data, tier = :tier WHERE id = :id")
@@ -215,3 +249,40 @@ UPDATE_KEY_REVOKE: TextClause = text(
 )
 
 UPDATE_KEY_LAST_USED: TextClause = text("UPDATE api_keys SET last_used_at = :now WHERE id = :key_id")
+
+# --- activity_log (#108) ----------------------------------------------------
+
+# Append-only insert. Stage-1 substrate; Stage-2 instrumentation calls
+# this from FastAPI ``BackgroundTask`` writes (non-blocking — failures
+# are logged, not raised, so the response path never breaks because
+# the audit log is unavailable).
+INSERT_ACTIVITY_LOG: TextClause = text(
+    "INSERT INTO activity_log "
+    "(id, ts, tenant_enterprise, tenant_group, persona, human, "
+    " event_type, payload, result_summary, thread_or_chain_id) "
+    "VALUES (:id, :ts, :tenant_enterprise, :tenant_group, :persona, :human, "
+    " :event_type, :payload, :result_summary, :thread_or_chain_id)"
+)
+
+# Per-Enterprise retention config (90-day default; absence of a row
+# means "use the default", so the cleanup helper LEFT JOINs against
+# this table rather than INNER JOINing).
+SELECT_ACTIVITY_RETENTION_DAYS: TextClause = text(
+    "SELECT retention_days FROM activity_retention_config WHERE enterprise_id = :enterprise_id"
+)
+
+UPSERT_ACTIVITY_RETENTION_DAYS: TextClause = text(
+    "INSERT INTO activity_retention_config (enterprise_id, retention_days, updated_at) "
+    "VALUES (:enterprise_id, :retention_days, :updated_at) "
+    "ON CONFLICT(enterprise_id) DO UPDATE SET "
+    "retention_days = excluded.retention_days, "
+    "updated_at = excluded.updated_at"
+)
+
+# Retention sweep — delete rows older than ``cutoff_iso`` for one
+# Enterprise. Scoped per-tenant so a slow large-tenant sweep doesn't
+# block writes on every other tenant. Uses ``idx_activity_log_tenant_ts``.
+DELETE_ACTIVITY_OLDER_THAN: TextClause = text(
+    "DELETE FROM activity_log "
+    "WHERE tenant_enterprise = :tenant_enterprise AND ts < :cutoff_iso"
+)

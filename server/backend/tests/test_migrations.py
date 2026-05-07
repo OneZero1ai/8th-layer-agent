@@ -215,7 +215,8 @@ class TestFreshDatabase:
 
             # knowledge_units columns and order: baseline (0001) +
             # tenancy (0001_phase6_step1) + xgroup (0002_phase6_step2)
-            # + embedding (0007_embedding). Other phase-2 migrations
+            # + embedding (0007_embedding) + pending_review
+            # (0012_pending_review_tier). Other phase-2 migrations
             # don't touch this table.
             ku_cols = [c[0] for c in _columns(conn, "knowledge_units")]
             assert ku_cols == [
@@ -231,6 +232,8 @@ class TestFreshDatabase:
                 "cross_group_allowed",
                 "embedding",
                 "embedding_model",
+                "pending_review_reason",
+                "pending_review_expires_at",
             ]
 
             # Defaults on the columns that have them.

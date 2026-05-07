@@ -222,8 +222,28 @@ class SqliteStore:
         *,
         embedding: bytes | None = None,
         embedding_model: str | None = None,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> None:
-        await self._run_sync(self._insert_sync, unit)
+        """Insert a KU; optionally pin its tenancy.
+
+        ``enterprise_id`` / ``group_id`` are the auth-claim values from
+        the propose request. When set, they are written into the row
+        directly — closes #89 (KUs landing in ``default-enterprise``
+        regardless of the caller's actual scope). When unset (legacy
+        fixture / migration-smoke-test path), the schema-level
+        ``server_default`` populates the columns instead.
+
+        The two-variant approach keeps the legacy test surface
+        (``store.sync.insert(unit)`` with no kwargs) green while making
+        every API path honour real tenancy.
+        """
+        await self._run_sync(
+            self._insert_sync,
+            unit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
         if embedding is not None and embedding_model is not None:
             await self.set_embedding(unit.id, embedding, embedding_model)
 
@@ -302,8 +322,91 @@ class SqliteStore:
         reviewed_by: str,
         *,
         enterprise_id: str | None = None,
+    ) -> bool:
+        """Transition a KU's review status with optimistic concurrency.
+
+        Returns ``True`` when the UPDATE matched a row (the caller won
+        the race) and ``False`` when the row was already in a terminal
+        state (another admin resolved it concurrently). Raises
+        ``KeyError`` only when the unit_id doesn't exist at all — the
+        race-loss case (row exists but is already terminal) is the
+        ``False`` branch, distinguished so route handlers can return
+        409 instead of 404.
+        """
+        return await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
+
+    # --- pending_review tier (#103) -------------------------------------
+    #
+    # Hard-finding queue: KUs flagged by reflect's VIBE√ classifier as
+    # needing human approval before tier-promotion. ``submit_pending_review``
+    # is the entry point (called from /reflect/submit?queue_hard_findings=true
+    # in a follow-up); ``list_pending_review`` drives the admin queue UI;
+    # ``expire_pending_reviews`` is the TTL sweeper. Reuses the existing
+    # ``status`` column rather than adding a new tier (cq SDK Tier enum is
+    # PyPI-pinned; see migration 0012 for the rationale).
+
+    async def submit_pending_review(
+        self,
+        unit: KnowledgeUnit,
+        *,
+        reason: str,
+        expires_at: str,
+        enterprise_id: str,
+        group_id: str,
     ) -> None:
-        await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
+        """Insert a KU at ``status='pending_review'`` with reason + TTL.
+
+        Same code path as ``insert``, then a follow-up UPDATE sets
+        ``status='pending_review'`` plus the two pending_review columns.
+        Doing it as INSERT-then-UPDATE rather than a custom INSERT keeps
+        the standard insert path (with quality guards, domain rows, and
+        embedding stub) intact.
+        """
+        await self._run_sync(
+            self._submit_pending_review_sync,
+            unit,
+            reason=reason,
+            expires_at=expires_at,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+
+    async def list_pending_review(
+        self,
+        *,
+        enterprise_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return KUs in pending_review state for the admin queue."""
+        return await self._run_sync(
+            self._list_pending_review_sync,
+            enterprise_id=enterprise_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def count_pending_review(self, *, enterprise_id: str) -> int:
+        """Return the size of the pending_review queue for one tenant."""
+        return await self._run_sync(
+            self._count_pending_review_sync, enterprise_id=enterprise_id
+        )
+
+    async def expire_pending_reviews(
+        self, *, enterprise_id: str, now_iso: str
+    ) -> list[str]:
+        """Sweep expired pending_review rows for one tenant.
+
+        Transitions every row with ``status='pending_review'`` AND
+        ``pending_review_expires_at < now_iso`` to ``status='dropped'``.
+        Returns the list of unit_ids transitioned so the caller can log
+        the per-row drops to the activity log.
+        """
+        return await self._run_sync(
+            self._expire_pending_reviews_sync,
+            enterprise_id=enterprise_id,
+            now_iso=now_iso,
+        )
 
     async def touch_api_key_last_used(self, key_id: str) -> None:
         await self._run_sync(self._touch_api_key_last_used_sync, key_id)
@@ -807,6 +910,137 @@ class SqliteStore:
             consent_id=consent_id,
         )
 
+    # --- activity_log (#108) ---------------------------------------------
+    #
+    # Append-only audit-of-record. Stage-1 substrate (this PR) ships the
+    # write path + retention helpers; Stage-2 wires every existing
+    # handler (query / propose / confirm / flag / review / consult /
+    # crosstalk) to call ``append_activity`` from a FastAPI
+    # ``BackgroundTask``. Failures inside the helper are *not* swallowed
+    # here — the caller wraps the call in its own try/except so the
+    # response path stays green when the audit log is unavailable.
+
+    async def append_activity(
+        self,
+        *,
+        activity_id: str,
+        ts: str,
+        tenant_enterprise: str,
+        tenant_group: str | None,
+        persona: str | None,
+        human: str | None,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        result_summary: dict[str, Any] | None = None,
+        thread_or_chain_id: str | None = None,
+    ) -> None:
+        """Append one row to ``activity_log``.
+
+        Args carry the schema sketch from #108 verbatim. ``payload`` and
+        ``result_summary`` are JSON-serialised here; the table column
+        type is TEXT (SQLite has no JSON type — see migration 0011 for
+        the full rationale). ``event_type`` is validated against
+        ``cq_server.activity.EVENT_TYPES`` before hitting the DB so we
+        get a clean ``ValueError`` rather than a CHECK-constraint
+        IntegrityError on the wire.
+        """
+        from ..activity import EVENT_TYPES
+
+        if event_type not in EVENT_TYPES:
+            raise ValueError(
+                f"unknown activity event_type {event_type!r}; "
+                f"expected one of {sorted(EVENT_TYPES)}"
+            )
+        await self._run_sync(
+            self._append_activity_sync,
+            activity_id=activity_id,
+            ts=ts,
+            tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
+            persona=persona,
+            human=human,
+            event_type=event_type,
+            payload=payload,
+            result_summary=result_summary,
+            thread_or_chain_id=thread_or_chain_id,
+        )
+
+    async def get_activity_retention_days(
+        self, *, enterprise_id: str
+    ) -> int:
+        """Return the configured retention window for an Enterprise.
+
+        Falls back to ``DEFAULT_RETENTION_DAYS`` (90) when no override
+        row exists. Stage-2 cron uses this to compute the per-tenant
+        cutoff before calling ``purge_activity_older_than``.
+        """
+        return await self._run_sync(
+            self._get_activity_retention_days_sync,
+            enterprise_id=enterprise_id,
+        )
+
+    async def set_activity_retention_days(
+        self, *, enterprise_id: str, retention_days: int
+    ) -> None:
+        """Upsert the retention window for one Enterprise."""
+        if retention_days <= 0:
+            raise ValueError("retention_days must be positive")
+        await self._run_sync(
+            self._set_activity_retention_days_sync,
+            enterprise_id=enterprise_id,
+            retention_days=retention_days,
+        )
+
+    async def purge_activity_older_than(
+        self, *, tenant_enterprise: str, cutoff_iso: str
+    ) -> int:
+        """Delete activity rows for one tenant older than ``cutoff_iso``.
+
+        Returns the number of deleted rows so the cron can log
+        observability metrics. Scoped per-Enterprise so a slow
+        large-tenant sweep doesn't lock writes for every other tenant
+        on the same L2.
+        """
+        return await self._run_sync(
+            self._purge_activity_older_than_sync,
+            tenant_enterprise=tenant_enterprise,
+            cutoff_iso=cutoff_iso,
+        )
+
+    async def list_activity(
+        self,
+        *,
+        tenant_enterprise: str,
+        persona: str | None = None,
+        since_iso: str | None = None,
+        until_iso: str | None = None,
+        event_type: str | None = None,
+        limit: int = 50,
+        cursor: tuple[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read rows from ``activity_log`` with filter + cursor pagination.
+
+        Powers ``GET /api/v1/activity`` (Stage 2 of #108). All filters
+        compose with AND. ``cursor`` is a ``(ts, id)`` tuple from the
+        last row of the previous page — the next page reads strictly
+        before that point on the ``(ts DESC, id DESC)`` ordering. Pure
+        keyset pagination; no offset arithmetic.
+
+        Tenancy is mandatory (``tenant_enterprise`` is required, never
+        nullable on this read path) so the route layer can never
+        accidentally return cross-tenant rows.
+        """
+        return await self._run_sync(
+            self._list_activity_sync,
+            tenant_enterprise=tenant_enterprise,
+            persona=persona,
+            since_iso=since_iso,
+            until_iso=until_iso,
+            event_type=event_type,
+            limit=limit,
+            cursor=cursor,
+        )
+
     # --- reflect_submissions (#67) ---------------------------------------
     #
     # Persistence layer for the batch-reflect contract. The router layer
@@ -1163,9 +1397,22 @@ class SqliteStore:
         *,
         embedding: bytes | None = None,
         embedding_model: str | None = None,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> None:
         # embedding kwargs: persist via UPDATE after the INSERT.
         # Acceptance is silent here; the actual write happens via _set_embedding_sync.
+        #
+        # ``enterprise_id`` / ``group_id`` are the auth-claim values from
+        # the propose handler (closes #89). When both are provided we
+        # use ``INSERT_UNIT_WITH_TENANCY`` to write them explicitly; when
+        # either is None the legacy ``INSERT_UNIT`` runs and the schema's
+        # ``server_default`` (``default-enterprise`` / ``default-group``)
+        # fills the column. The two-variant split keeps legacy fixture
+        # callers (``store.sync.insert(unit)`` with no kwargs) green
+        # without forcing every test to manufacture a tenant.
+        from ._queries import INSERT_UNIT_WITH_TENANCY
+
         domains = normalize_domains(unit.domains)
         if not domains:
             raise ValueError("At least one non-empty domain is required")
@@ -1178,15 +1425,28 @@ class SqliteStore:
         )
         try:
             with self._engine.begin() as conn:
-                conn.execute(
-                    INSERT_UNIT,
-                    {
-                        "id": unit.id,
-                        "data": unit.model_dump_json(),
-                        "created_at": created_at,
-                        "tier": unit.tier.value,
-                    },
-                )
+                if enterprise_id is not None and group_id is not None:
+                    conn.execute(
+                        INSERT_UNIT_WITH_TENANCY,
+                        {
+                            "id": unit.id,
+                            "data": unit.model_dump_json(),
+                            "created_at": created_at,
+                            "tier": unit.tier.value,
+                            "enterprise_id": enterprise_id,
+                            "group_id": group_id,
+                        },
+                    )
+                else:
+                    conn.execute(
+                        INSERT_UNIT,
+                        {
+                            "id": unit.id,
+                            "data": unit.model_dump_json(),
+                            "created_at": created_at,
+                            "tier": unit.tier.value,
+                        },
+                    )
                 for d in domains:
                     conn.execute(INSERT_UNIT_DOMAIN, {"unit_id": unit.id, "domain": d})
                 if embedding is not None and embedding_model is not None:
@@ -1429,15 +1689,174 @@ class SqliteStore:
             raise RuntimeError("SqliteStore is closed")
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    def _set_review_status_sync(self, unit_id: str, status: str, reviewed_by: str) -> None:
+    def _set_review_status_sync(self, unit_id: str, status: str, reviewed_by: str) -> bool:
+        """Issue the guarded UPDATE; tell ``KeyError`` (no row) apart from race-loss.
+
+        ``UPDATE_REVIEW_STATUS`` ANDs the WHERE clause on
+        ``status NOT IN ('approved','rejected','dropped')``. Two paths
+        produce ``rowcount == 0``:
+
+        * The unit_id doesn't exist — raise ``KeyError`` (legacy
+          behaviour, preserved for callers that 404 on missing).
+        * The unit_id exists but is already terminal — return ``False``
+          so the caller can 409 instead of overwriting the prior
+          decision.
+
+        We disambiguate with a follow-up SELECT inside the same
+        transaction so the answer reflects the same snapshot the UPDATE
+        saw. SQLite's default isolation is serialisable on a single
+        write connection, so no extra locking is needed.
+        """
         reviewed_at = datetime.now(UTC).isoformat()
         with self._engine.begin() as conn:
             cursor = conn.execute(
                 UPDATE_REVIEW_STATUS,
                 {"id": unit_id, "status": status, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at},
             )
-            if cursor.rowcount == 0:
+            if cursor.rowcount > 0:
+                return True
+            # Distinguish missing-row from race-loss with a SELECT in
+            # the same transaction. If the row is gone, raise KeyError
+            # (404 in the caller); if it's terminal, return False (409).
+            row = conn.exec_driver_sql(
+                "SELECT 1 FROM knowledge_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+            if row is None:
                 raise KeyError(f"Knowledge unit not found: {unit_id}")
+            return False
+
+    # --- pending_review tier (#103) sync impls ---------------------------
+
+    def _submit_pending_review_sync(
+        self,
+        unit: KnowledgeUnit,
+        *,
+        reason: str,
+        expires_at: str,
+        enterprise_id: str,
+        group_id: str,
+    ) -> None:
+        """Insert a KU and immediately move it into pending_review state.
+
+        Two writes in one transaction: the standard INSERT (re-uses the
+        ``_insert_sync`` body for tier=private + tenancy + domain rows),
+        then an UPDATE that flips status to pending_review and stamps
+        the reason + expires_at columns.
+        """
+        # Re-use the canonical insert path so domain rows / quality
+        # guards / tenancy fields all flow through the same sync method.
+        self._insert_sync(unit, enterprise_id=enterprise_id, group_id=group_id)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE knowledge_units SET "
+                    "status = 'pending_review', "
+                    "pending_review_reason = :reason, "
+                    "pending_review_expires_at = :expires_at "
+                    "WHERE id = :id"
+                ),
+                {"reason": reason, "expires_at": expires_at, "id": unit.id},
+            )
+
+    def _list_pending_review_sync(
+        self, *, enterprise_id: str, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List pending-review rows that have NOT yet hit their TTL.
+
+        Read-time TTL filter (#121 finding 2): the sweeper transitions
+        ``pending_review → dropped`` eventually, but until it fires
+        every read could surface stale candidates whose
+        ``pending_review_expires_at`` has already passed. We add an
+        ``expires_at > now`` guard inline so the response can never
+        contain rows the operator should no longer see, regardless of
+        sweeper timing. Rows where ``expires_at IS NULL`` continue to
+        appear (defensive: a NULL TTL means "never expires", same shape
+        as ``expire_pending_reviews``'s ``IS NOT NULL`` filter).
+
+        ``ORDER BY pending_review_expires_at ASC`` is preserved so the
+        admin still sees closest-to-expiring rows first within the
+        non-expired set.
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        with self._engine.connect() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT data, status, reviewed_by, reviewed_at, "
+                "pending_review_reason, pending_review_expires_at "
+                "FROM knowledge_units "
+                "WHERE status = 'pending_review' AND enterprise_id = ? "
+                "AND (pending_review_expires_at IS NULL "
+                "     OR pending_review_expires_at > ?) "
+                "ORDER BY pending_review_expires_at ASC "
+                "LIMIT ? OFFSET ?",
+                (enterprise_id, now_iso, limit, offset),
+            ).fetchall()
+        return [
+            {
+                "knowledge_unit": KnowledgeUnit.model_validate_json(row[0]),
+                "status": row[1] or "pending_review",
+                "reviewed_by": row[2],
+                "reviewed_at": row[3],
+                "pending_review_reason": row[4],
+                "pending_review_expires_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def _count_pending_review_sync(self, *, enterprise_id: str) -> int:
+        """Count pending-review rows whose TTL has not yet passed.
+
+        Mirror of ``_list_pending_review_sync``'s read-time filter
+        (#121 finding 2) — count and list must agree on which rows
+        are visible, otherwise dashboard pagination breaks ("total: 5"
+        with only 3 items rendered).
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        with self._engine.connect() as conn:
+            return int(
+                conn.exec_driver_sql(
+                    "SELECT COUNT(*) FROM knowledge_units "
+                    "WHERE status = 'pending_review' AND enterprise_id = ? "
+                    "AND (pending_review_expires_at IS NULL "
+                    "     OR pending_review_expires_at > ?)",
+                    (enterprise_id, now_iso),
+                ).scalar() or 0
+            )
+
+    def _expire_pending_reviews_sync(
+        self, *, enterprise_id: str, now_iso: str
+    ) -> list[str]:
+        """Two-step sweep: SELECT the row ids first, then UPDATE.
+
+        We return the ids so the caller can emit one ``review_resolve``
+        activity-log row per drop. Doing it as a single UPDATE…
+        RETURNING would be cleaner on PostgreSQL but SQLite's RETURNING
+        landed in 3.35; we run on whatever the host has, so split the
+        round-trip explicitly.
+        """
+        with self._engine.begin() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT id FROM knowledge_units "
+                "WHERE status = 'pending_review' AND enterprise_id = ? "
+                "AND pending_review_expires_at IS NOT NULL "
+                "AND pending_review_expires_at < ?",
+                (enterprise_id, now_iso),
+            ).fetchall()
+            ids = [row[0] for row in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                # Mark as dropped + stamp reviewed_by sentinel so the
+                # admin UI can render "TTL-expired" in the audit history.
+                reviewed_at = datetime.now(UTC).isoformat()
+                conn.exec_driver_sql(
+                    f"UPDATE knowledge_units SET "
+                    f"status = 'dropped', "
+                    f"reviewed_by = 'ttl_expired_sweeper', "
+                    f"reviewed_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (reviewed_at, *ids),
+                )
+        return ids
 
     def _touch_api_key_last_used_sync(self, key_id: str) -> None:
         now = datetime.now(UTC).isoformat()
@@ -2451,6 +2870,179 @@ class SqliteStore:
                 )
             ).fetchall()
         return {r[0] for r in rows if r[0]}
+
+    # --- activity_log (#108) sync impls ----------------------------------
+
+    def _append_activity_sync(
+        self,
+        *,
+        activity_id: str,
+        ts: str,
+        tenant_enterprise: str,
+        tenant_group: str | None,
+        persona: str | None,
+        human: str | None,
+        event_type: str,
+        payload: dict[str, Any] | None,
+        result_summary: dict[str, Any] | None,
+        thread_or_chain_id: str | None,
+    ) -> None:
+        from ._queries import INSERT_ACTIVITY_LOG
+
+        payload_json = json.dumps(payload if payload is not None else {})
+        result_json = (
+            None if result_summary is None else json.dumps(result_summary)
+        )
+        with self._engine.begin() as conn:
+            conn.execute(
+                INSERT_ACTIVITY_LOG,
+                {
+                    "id": activity_id,
+                    "ts": ts,
+                    "tenant_enterprise": tenant_enterprise,
+                    "tenant_group": tenant_group,
+                    "persona": persona,
+                    "human": human,
+                    "event_type": event_type,
+                    "payload": payload_json,
+                    "result_summary": result_json,
+                    "thread_or_chain_id": thread_or_chain_id,
+                },
+            )
+
+    def _get_activity_retention_days_sync(
+        self, *, enterprise_id: str
+    ) -> int:
+        from ..activity import DEFAULT_RETENTION_DAYS
+        from ._queries import SELECT_ACTIVITY_RETENTION_DAYS
+
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                SELECT_ACTIVITY_RETENTION_DAYS,
+                {"enterprise_id": enterprise_id},
+            ).fetchone()
+        if row is None:
+            return DEFAULT_RETENTION_DAYS
+        return int(row[0])
+
+    def _set_activity_retention_days_sync(
+        self, *, enterprise_id: str, retention_days: int
+    ) -> None:
+        from ._queries import UPSERT_ACTIVITY_RETENTION_DAYS
+
+        updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with self._engine.begin() as conn:
+            conn.execute(
+                UPSERT_ACTIVITY_RETENTION_DAYS,
+                {
+                    "enterprise_id": enterprise_id,
+                    "retention_days": retention_days,
+                    "updated_at": updated_at,
+                },
+            )
+
+    def _purge_activity_older_than_sync(
+        self, *, tenant_enterprise: str, cutoff_iso: str
+    ) -> int:
+        from ._queries import DELETE_ACTIVITY_OLDER_THAN
+
+        with self._engine.begin() as conn:
+            cursor = conn.execute(
+                DELETE_ACTIVITY_OLDER_THAN,
+                {
+                    "tenant_enterprise": tenant_enterprise,
+                    "cutoff_iso": cutoff_iso,
+                },
+            )
+            return int(cursor.rowcount or 0)
+
+    def _list_activity_sync(
+        self,
+        *,
+        tenant_enterprise: str,
+        persona: str | None,
+        since_iso: str | None,
+        until_iso: str | None,
+        event_type: str | None,
+        limit: int,
+        cursor: tuple[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        """Build the WHERE clause dynamically based on which filters are set.
+
+        The base index is ``idx_activity_log_tenant_ts (tenant_enterprise,
+        tenant_group, ts)``; the leading column pin makes every filter
+        combination index-friendly. Persona filter switches over to
+        ``idx_activity_log_persona_ts`` when set. Event-type filter
+        switches over to ``idx_activity_log_event_type_ts``.
+
+        Cursor: when set, restrict to rows strictly before ``(ts, id)``
+        on the descending order — equivalent to "give me the next page
+        beneath the last row of the previous page". The id tie-breaker
+        is necessary because two rows can share a ts (sub-millisecond
+        background-task scheduling).
+        """
+        clauses = ["tenant_enterprise = :tenant_enterprise"]
+        params: dict[str, Any] = {"tenant_enterprise": tenant_enterprise, "limit": limit}
+        if persona is not None:
+            clauses.append("persona = :persona")
+            params["persona"] = persona
+        if since_iso is not None:
+            clauses.append("ts >= :since_iso")
+            params["since_iso"] = since_iso
+        if until_iso is not None:
+            clauses.append("ts < :until_iso")
+            params["until_iso"] = until_iso
+        if event_type is not None:
+            clauses.append("event_type = :event_type")
+            params["event_type"] = event_type
+        if cursor is not None:
+            cursor_ts, cursor_id = cursor
+            # (ts, id) < (cursor_ts, cursor_id) tuple comparison — split
+            # into the lexicographic SQL form so SQLite's planner can
+            # use the indexes correctly.
+            clauses.append("(ts < :cursor_ts OR (ts = :cursor_ts AND id < :cursor_id))")
+            params["cursor_ts"] = cursor_ts
+            params["cursor_id"] = cursor_id
+
+        sql = (
+            "SELECT id, ts, tenant_enterprise, tenant_group, persona, human, "
+            "event_type, payload, result_summary, thread_or_chain_id "
+            "FROM activity_log "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY ts DESC, id DESC "
+            "LIMIT :limit"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            payload_raw = row[7]
+            result_raw = row[8]
+            try:
+                payload = json.loads(payload_raw) if payload_raw else {}
+            except (TypeError, ValueError):
+                payload = {}
+            try:
+                result_summary = (
+                    json.loads(result_raw) if result_raw is not None else None
+                )
+            except (TypeError, ValueError):
+                result_summary = None
+            results.append(
+                {
+                    "id": row[0],
+                    "ts": row[1],
+                    "tenant_enterprise": row[2],
+                    "tenant_group": row[3],
+                    "persona": row[4],
+                    "human": row[5],
+                    "event_type": row[6],
+                    "payload": payload,
+                    "result_summary": result_summary,
+                    "thread_or_chain_id": row[9],
+                }
+            )
+        return results
 
     # --- reflect_submissions (#67) sync impls ----------------------------
 
