@@ -27,11 +27,12 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import aigrp as aigrp_mod
 from . import forward_sign
+from .activity_logger import log_activity
 from .auth import get_current_user
 from .deps import get_store
 from .store._sqlite import SqliteStore
@@ -402,6 +403,7 @@ def _to_thread_out(row: dict[str, Any]) -> ConsultThreadOut:
 @router.post("/request", response_model=ConsultThreadOut, status_code=201)
 async def request_consult(
     body: ConsultRequest,
+    background_tasks: BackgroundTasks,
     store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultThreadOut:
@@ -515,6 +517,22 @@ async def request_consult(
 
     row = await store.get_consult(thread_id)
     assert row is not None  # just inserted
+
+    # Activity log (#108): consult opened. Both same-L2 and cross-L2
+    # paths log on the asker side; the recipient L2 logs separately
+    # when its forward-request handler fires (covered there).
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="consult_open",
+        payload={
+            "thread_id": thread_id,
+            "to_l2_id": body.to_l2_id,
+            "to_persona": body.to_persona,
+        },
+        thread_or_chain_id=thread_id,
+    )
     return _to_thread_out(row)
 
 
@@ -522,6 +540,7 @@ async def request_consult(
 async def post_consult_message(
     thread_id: str,
     body: ConsultMessage,
+    background_tasks: BackgroundTasks,
     store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultMessageOut:
@@ -594,6 +613,17 @@ async def post_consult_message(
         # Kept side-note: cross-L2 unused var lint guard
         del other_persona
 
+    # Activity log (#108): consult reply. ``thread_or_chain_id``
+    # carries the consult thread id so dashboards can group
+    # send/reply/close events into a single workflow.
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="consult_reply",
+        payload={"thread_id": thread_id, "message_id": msg_id},
+        thread_or_chain_id=thread_id,
+    )
     return ConsultMessageOut(
         message_id=msg_id,
         thread_id=thread_id,
@@ -630,10 +660,16 @@ async def get_consult_messages(
 async def close_consult(
     thread_id: str,
     body: CloseRequest,
+    background_tasks: BackgroundTasks,
     store: SqliteStore = Depends(get_store),
     username: str = Depends(get_current_user),
 ) -> ConsultThreadOut:
-    """Mark the thread closed. Either participant can close."""
+    """Mark the thread closed. Either participant can close.
+
+    Activity log (#108): non-blocking ``consult_close`` row carries
+    the close reason so dashboards can break down consult outcomes
+    (resolved vs abandoned vs out-of-scope etc.).
+    """
     self_l2_id, self_persona = await _self_identity(store, username)
     thread = await store.get_consult(thread_id)
     if thread is None:
@@ -670,6 +706,14 @@ async def close_consult(
                 "resolution_summary": body.resolution_summary,
             },
         )
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="consult_close",
+        payload={"thread_id": thread_id, "reason": body.reason},
+        thread_or_chain_id=thread_id,
+    )
     return _to_thread_out(row)
 
 

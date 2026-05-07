@@ -46,6 +46,25 @@ INSERT_UNIT: TextClause = text(
     "INSERT INTO knowledge_units (id, data, created_at, tier) VALUES (:id, :data, :created_at, :tier)"
 )
 
+# Closes #89 — explicit ``enterprise_id`` / ``group_id`` columns. Pre-fix
+# every KU insert went through ``INSERT_UNIT`` (above), which omits
+# the tenancy columns and falls back to the schema-level
+# ``server_default`` of ``default-enterprise`` / ``default-group``.
+# The bug surfaced during the moscowmul3 onboarding (#89): every KU
+# proposed via the API landed in ``default-enterprise`` regardless of
+# the L2's configured Enterprise. Code paths that carry auth claims
+# (the ``POST /propose`` handler, the pending-review submitter) now use
+# ``INSERT_UNIT_WITH_TENANCY`` to write the caller's enterprise/group
+# directly. Callers that don't carry scope (legacy fixture tests, the
+# migration-smoke path) keep using ``INSERT_UNIT`` and rely on the
+# server defaults — same behaviour as before #89, plus a clear marker
+# for which call sites need an explicit tenancy decision.
+INSERT_UNIT_WITH_TENANCY: TextClause = text(
+    "INSERT INTO knowledge_units "
+    "(id, data, created_at, tier, enterprise_id, group_id) "
+    "VALUES (:id, :data, :created_at, :tier, :enterprise_id, :group_id)"
+)
+
 INSERT_UNIT_DOMAIN: TextClause = text("INSERT INTO knowledge_unit_domains (unit_id, domain) VALUES (:unit_id, :domain)")
 
 DELETE_UNIT_DOMAINS: TextClause = text("DELETE FROM knowledge_unit_domains WHERE unit_id = :unit_id")
