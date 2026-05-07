@@ -1,0 +1,28 @@
+{
+  "name": "@8th-layer/crosstalk-mcp",
+  "version": "0.1.0-dev",
+  "description": "8th-Layer crosstalk MCP server — local-first inter-agent messaging with L2 sync. Productized from claude-mux's prototype crosstalk; the past handing off to its proper home.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/server.js",
+  "bin": {
+    "crosstalk-mcp": "src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "better-sqlite3": "^12.9.0"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "homepage": "https://github.com/OneZero1ai/8th-layer-agent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OneZero1ai/8th-layer-agent.git",
+    "directory": "plugins/crosstalk-mcp"
+  }
+}
