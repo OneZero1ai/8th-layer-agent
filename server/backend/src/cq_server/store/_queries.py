@@ -215,3 +215,40 @@ UPDATE_KEY_REVOKE: TextClause = text(
 )
 
 UPDATE_KEY_LAST_USED: TextClause = text("UPDATE api_keys SET last_used_at = :now WHERE id = :key_id")
+
+# --- activity_log (#108) ----------------------------------------------------
+
+# Append-only insert. Stage-1 substrate; Stage-2 instrumentation calls
+# this from FastAPI ``BackgroundTask`` writes (non-blocking — failures
+# are logged, not raised, so the response path never breaks because
+# the audit log is unavailable).
+INSERT_ACTIVITY_LOG: TextClause = text(
+    "INSERT INTO activity_log "
+    "(id, ts, tenant_enterprise, tenant_group, persona, human, "
+    " event_type, payload, result_summary, thread_or_chain_id) "
+    "VALUES (:id, :ts, :tenant_enterprise, :tenant_group, :persona, :human, "
+    " :event_type, :payload, :result_summary, :thread_or_chain_id)"
+)
+
+# Per-Enterprise retention config (90-day default; absence of a row
+# means "use the default", so the cleanup helper LEFT JOINs against
+# this table rather than INNER JOINing).
+SELECT_ACTIVITY_RETENTION_DAYS: TextClause = text(
+    "SELECT retention_days FROM activity_retention_config WHERE enterprise_id = :enterprise_id"
+)
+
+UPSERT_ACTIVITY_RETENTION_DAYS: TextClause = text(
+    "INSERT INTO activity_retention_config (enterprise_id, retention_days, updated_at) "
+    "VALUES (:enterprise_id, :retention_days, :updated_at) "
+    "ON CONFLICT(enterprise_id) DO UPDATE SET "
+    "retention_days = excluded.retention_days, "
+    "updated_at = excluded.updated_at"
+)
+
+# Retention sweep — delete rows older than ``cutoff_iso`` for one
+# Enterprise. Scoped per-tenant so a slow large-tenant sweep doesn't
+# block writes on every other tenant. Uses ``idx_activity_log_tenant_ts``.
+DELETE_ACTIVITY_OLDER_THAN: TextClause = text(
+    "DELETE FROM activity_log "
+    "WHERE tenant_enterprise = :tenant_enterprise AND ts < :cutoff_iso"
+)

@@ -807,6 +807,103 @@ class SqliteStore:
             consent_id=consent_id,
         )
 
+    # --- activity_log (#108) ---------------------------------------------
+    #
+    # Append-only audit-of-record. Stage-1 substrate (this PR) ships the
+    # write path + retention helpers; Stage-2 wires every existing
+    # handler (query / propose / confirm / flag / review / consult /
+    # crosstalk) to call ``append_activity`` from a FastAPI
+    # ``BackgroundTask``. Failures inside the helper are *not* swallowed
+    # here — the caller wraps the call in its own try/except so the
+    # response path stays green when the audit log is unavailable.
+
+    async def append_activity(
+        self,
+        *,
+        activity_id: str,
+        ts: str,
+        tenant_enterprise: str,
+        tenant_group: str | None,
+        persona: str | None,
+        human: str | None,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        result_summary: dict[str, Any] | None = None,
+        thread_or_chain_id: str | None = None,
+    ) -> None:
+        """Append one row to ``activity_log``.
+
+        Args carry the schema sketch from #108 verbatim. ``payload`` and
+        ``result_summary`` are JSON-serialised here; the table column
+        type is TEXT (SQLite has no JSON type — see migration 0011 for
+        the full rationale). ``event_type`` is validated against
+        ``cq_server.activity.EVENT_TYPES`` before hitting the DB so we
+        get a clean ``ValueError`` rather than a CHECK-constraint
+        IntegrityError on the wire.
+        """
+        from ..activity import EVENT_TYPES
+
+        if event_type not in EVENT_TYPES:
+            raise ValueError(
+                f"unknown activity event_type {event_type!r}; "
+                f"expected one of {sorted(EVENT_TYPES)}"
+            )
+        await self._run_sync(
+            self._append_activity_sync,
+            activity_id=activity_id,
+            ts=ts,
+            tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
+            persona=persona,
+            human=human,
+            event_type=event_type,
+            payload=payload,
+            result_summary=result_summary,
+            thread_or_chain_id=thread_or_chain_id,
+        )
+
+    async def get_activity_retention_days(
+        self, *, enterprise_id: str
+    ) -> int:
+        """Return the configured retention window for an Enterprise.
+
+        Falls back to ``DEFAULT_RETENTION_DAYS`` (90) when no override
+        row exists. Stage-2 cron uses this to compute the per-tenant
+        cutoff before calling ``purge_activity_older_than``.
+        """
+        return await self._run_sync(
+            self._get_activity_retention_days_sync,
+            enterprise_id=enterprise_id,
+        )
+
+    async def set_activity_retention_days(
+        self, *, enterprise_id: str, retention_days: int
+    ) -> None:
+        """Upsert the retention window for one Enterprise."""
+        if retention_days <= 0:
+            raise ValueError("retention_days must be positive")
+        await self._run_sync(
+            self._set_activity_retention_days_sync,
+            enterprise_id=enterprise_id,
+            retention_days=retention_days,
+        )
+
+    async def purge_activity_older_than(
+        self, *, tenant_enterprise: str, cutoff_iso: str
+    ) -> int:
+        """Delete activity rows for one tenant older than ``cutoff_iso``.
+
+        Returns the number of deleted rows so the cron can log
+        observability metrics. Scoped per-Enterprise so a slow
+        large-tenant sweep doesn't lock writes for every other tenant
+        on the same L2.
+        """
+        return await self._run_sync(
+            self._purge_activity_older_than_sync,
+            tenant_enterprise=tenant_enterprise,
+            cutoff_iso=cutoff_iso,
+        )
+
     # --- reflect_submissions (#67) ---------------------------------------
     #
     # Persistence layer for the batch-reflect contract. The router layer
@@ -2451,6 +2548,91 @@ class SqliteStore:
                 )
             ).fetchall()
         return {r[0] for r in rows if r[0]}
+
+    # --- activity_log (#108) sync impls ----------------------------------
+
+    def _append_activity_sync(
+        self,
+        *,
+        activity_id: str,
+        ts: str,
+        tenant_enterprise: str,
+        tenant_group: str | None,
+        persona: str | None,
+        human: str | None,
+        event_type: str,
+        payload: dict[str, Any] | None,
+        result_summary: dict[str, Any] | None,
+        thread_or_chain_id: str | None,
+    ) -> None:
+        from ._queries import INSERT_ACTIVITY_LOG
+
+        payload_json = json.dumps(payload if payload is not None else {})
+        result_json = (
+            None if result_summary is None else json.dumps(result_summary)
+        )
+        with self._engine.begin() as conn:
+            conn.execute(
+                INSERT_ACTIVITY_LOG,
+                {
+                    "id": activity_id,
+                    "ts": ts,
+                    "tenant_enterprise": tenant_enterprise,
+                    "tenant_group": tenant_group,
+                    "persona": persona,
+                    "human": human,
+                    "event_type": event_type,
+                    "payload": payload_json,
+                    "result_summary": result_json,
+                    "thread_or_chain_id": thread_or_chain_id,
+                },
+            )
+
+    def _get_activity_retention_days_sync(
+        self, *, enterprise_id: str
+    ) -> int:
+        from ..activity import DEFAULT_RETENTION_DAYS
+        from ._queries import SELECT_ACTIVITY_RETENTION_DAYS
+
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                SELECT_ACTIVITY_RETENTION_DAYS,
+                {"enterprise_id": enterprise_id},
+            ).fetchone()
+        if row is None:
+            return DEFAULT_RETENTION_DAYS
+        return int(row[0])
+
+    def _set_activity_retention_days_sync(
+        self, *, enterprise_id: str, retention_days: int
+    ) -> None:
+        from ._queries import UPSERT_ACTIVITY_RETENTION_DAYS
+
+        updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        with self._engine.begin() as conn:
+            conn.execute(
+                UPSERT_ACTIVITY_RETENTION_DAYS,
+                {
+                    "enterprise_id": enterprise_id,
+                    "retention_days": retention_days,
+                    "updated_at": updated_at,
+                },
+            )
+
+    def _purge_activity_older_than_sync(
+        self, *, tenant_enterprise: str, cutoff_iso: str
+    ) -> int:
+        from ._queries import DELETE_ACTIVITY_OLDER_THAN
+
+        with self._engine.begin() as conn:
+            cursor = conn.execute(
+                DELETE_ACTIVITY_OLDER_THAN,
+                {
+                    "tenant_enterprise": tenant_enterprise,
+                    "cutoff_iso": cutoff_iso,
+                },
+            )
+            return int(cursor.rowcount or 0)
 
     # --- reflect_submissions (#67) sync impls ----------------------------
 
