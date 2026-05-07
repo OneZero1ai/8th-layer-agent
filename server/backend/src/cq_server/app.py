@@ -1553,6 +1553,36 @@ async def propose_unit(
             "domains": list(normalized),
         },
     )
+
+    # Auto-approve on propose (#123): solo-operator deployments (TeamDW,
+    # sole-prop AAISNs) want VIBE-clean KUs immediately queryable. Default
+    # off; opt in via CQ_AUTO_APPROVE_PROPOSE=true. Multi-operator
+    # deployments leave the env unset; status='pending' remains the
+    # default and Pass 2 Part 4 Ch 21's review-queue ritual applies.
+    #
+    # Hard-finding KUs flow through the dedicated pending_review tier
+    # (PR #121 / #103), unaffected by this flag.
+    if os.environ.get("CQ_AUTO_APPROVE_PROPOSE", "").lower() in ("1", "true", "yes"):
+        try:
+            won = await store.set_review_status(unit.id, "approved", reviewed_by=username)
+            if won:
+                background_tasks.add_task(
+                    log_activity,
+                    store,
+                    username=username,
+                    event_type="review_resolve",
+                    payload={
+                        "ku_id": unit.id,
+                        "resolution": "approved",
+                        "auto": True,
+                    },
+                    thread_or_chain_id=unit.id,
+                )
+        except KeyError:
+            # Race against an unexpected delete; the propose response
+            # itself already returned 201, so this is best-effort.
+            pass
+
     return unit
 
 
