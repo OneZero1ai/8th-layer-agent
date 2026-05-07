@@ -512,10 +512,11 @@ class TestHeadRevisionAndHistory:
         is the source of truth for ops scripts and stamp logic."""
         from cq_server.migrations import HEAD_REVISION
 
-        # Bumped by 0012_pending_review_tier (#103). Stage 1 of #108
-        # set this to 0011_activity_log; Stage 2 (this PR) chains
-        # 0012_pending_review_tier on top.
-        assert HEAD_REVISION == "0012_pending_review_tier"
+        # Bumped by 0013_backfill_default_enterprise_kus (#121
+        # finding 3, post-merge cleanup of #89 tenancy fix). Earlier
+        # bumps: 0011 (#108 Stage 1), 0012 (#103). Each new migration
+        # MUST move this constant.
+        assert HEAD_REVISION == "0013_backfill_default_enterprise_kus"
 
     @pytest.mark.parametrize("invalid_dir", [None])
     def test_alembic_history_includes_0011(self, invalid_dir: object) -> None:
