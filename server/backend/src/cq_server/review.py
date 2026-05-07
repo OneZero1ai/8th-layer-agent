@@ -173,7 +173,19 @@ async def approve_unit(
     # resolved and 409s.
     if status["status"] not in ("pending", "pending_review"):
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
-    await store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
+    # Optimistic concurrency: ``set_review_status`` returns False when
+    # another admin transitioned the row between our SELECT above and
+    # our UPDATE — the WHERE clause's terminal-state guard refuses the
+    # second write. Re-read and 409 with the winning admin's outcome.
+    won = await store.set_review_status(
+        unit_id, "approved", username, enterprise_id=enterprise_id
+    )
+    if not won:
+        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+        terminal = current["status"] if current else "resolved"
+        raise HTTPException(
+            status_code=409, detail=f"Knowledge unit already {terminal}"
+        )
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
@@ -217,7 +229,18 @@ async def reject_unit(
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {status['status']}")
 
     target_status = "dropped" if status["status"] == "pending_review" else "rejected"
-    await store.set_review_status(unit_id, target_status, username, enterprise_id=enterprise_id)
+    # Optimistic concurrency: see ``approve_unit`` for the rationale —
+    # if another admin won the race we 409 with the terminal status
+    # rather than silently overwriting their decision.
+    won = await store.set_review_status(
+        unit_id, target_status, username, enterprise_id=enterprise_id
+    )
+    if not won:
+        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+        terminal = current["status"] if current else "resolved"
+        raise HTTPException(
+            status_code=409, detail=f"Knowledge unit already {terminal}"
+        )
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "reject", enterprise_id, username)

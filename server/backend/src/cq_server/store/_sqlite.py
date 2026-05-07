@@ -322,8 +322,18 @@ class SqliteStore:
         reviewed_by: str,
         *,
         enterprise_id: str | None = None,
-    ) -> None:
-        await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
+    ) -> bool:
+        """Transition a KU's review status with optimistic concurrency.
+
+        Returns ``True`` when the UPDATE matched a row (the caller won
+        the race) and ``False`` when the row was already in a terminal
+        state (another admin resolved it concurrently). Raises
+        ``KeyError`` only when the unit_id doesn't exist at all — the
+        race-loss case (row exists but is already terminal) is the
+        ``False`` branch, distinguished so route handlers can return
+        409 instead of 404.
+        """
+        return await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
 
     # --- pending_review tier (#103) -------------------------------------
     #
@@ -1679,15 +1689,42 @@ class SqliteStore:
             raise RuntimeError("SqliteStore is closed")
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    def _set_review_status_sync(self, unit_id: str, status: str, reviewed_by: str) -> None:
+    def _set_review_status_sync(self, unit_id: str, status: str, reviewed_by: str) -> bool:
+        """Issue the guarded UPDATE; tell ``KeyError`` (no row) apart from race-loss.
+
+        ``UPDATE_REVIEW_STATUS`` ANDs the WHERE clause on
+        ``status NOT IN ('approved','rejected','dropped')``. Two paths
+        produce ``rowcount == 0``:
+
+        * The unit_id doesn't exist — raise ``KeyError`` (legacy
+          behaviour, preserved for callers that 404 on missing).
+        * The unit_id exists but is already terminal — return ``False``
+          so the caller can 409 instead of overwriting the prior
+          decision.
+
+        We disambiguate with a follow-up SELECT inside the same
+        transaction so the answer reflects the same snapshot the UPDATE
+        saw. SQLite's default isolation is serialisable on a single
+        write connection, so no extra locking is needed.
+        """
         reviewed_at = datetime.now(UTC).isoformat()
         with self._engine.begin() as conn:
             cursor = conn.execute(
                 UPDATE_REVIEW_STATUS,
                 {"id": unit_id, "status": status, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at},
             )
-            if cursor.rowcount == 0:
+            if cursor.rowcount > 0:
+                return True
+            # Distinguish missing-row from race-loss with a SELECT in
+            # the same transaction. If the row is gone, raise KeyError
+            # (404 in the caller); if it's terminal, return False (409).
+            row = conn.exec_driver_sql(
+                "SELECT 1 FROM knowledge_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+            if row is None:
                 raise KeyError(f"Knowledge unit not found: {unit_id}")
+            return False
 
     # --- pending_review tier (#103) sync impls ---------------------------
 

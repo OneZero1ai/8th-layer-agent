@@ -77,8 +77,23 @@ SELECT_REVIEW_STATUS_BY_ID: TextClause = text(
     "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = :id"
 )
 
+# Optimistic-concurrency guard: the WHERE clause requires the row to
+# still be in a pending-shaped state. When two admins race (one
+# approves, one rejects) only the first UPDATE finds the row in the
+# expected state; the second sees ``rowcount == 0`` and the route
+# layer turns that into a 409 ``already <status>`` response. Without
+# this guard, both UPDATEs commit and the last writer wins silently
+# — losing the audit trail of the first decision and producing a
+# ``reviewed_by`` value that disagrees with the activity log.
+#
+# ``status NOT IN ('approved','rejected','dropped')`` rather than
+# ``IN ('pending','pending_review')`` so future intermediate states
+# (e.g. an in-review hold) inherit the same race-protection without
+# needing a query edit. The terminal-state list is the small, stable
+# axis; the pending-state list is the open-ended one.
 UPDATE_REVIEW_STATUS: TextClause = text(
-    "UPDATE knowledge_units SET status = :status, reviewed_by = :reviewed_by, reviewed_at = :reviewed_at WHERE id = :id"
+    "UPDATE knowledge_units SET status = :status, reviewed_by = :reviewed_by, reviewed_at = :reviewed_at "
+    "WHERE id = :id AND status NOT IN ('approved', 'rejected', 'dropped')"
 )
 
 UPDATE_UNIT_DATA: TextClause = text("UPDATE knowledge_units SET data = :data, tier = :tier WHERE id = :id")
