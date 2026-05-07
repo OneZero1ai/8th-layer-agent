@@ -321,6 +321,81 @@ def test_activity_log_captures_crosstalk_events(
     )
 
 
+def test_idempotency_send_with_client_thread_and_message_ids(client: TestClient) -> None:
+    """Client-provided thread_id + message_id round-trip + retry-safe."""
+    _seed_user(username="alice", password="pw", enterprise_id="acme", group_id="eng")
+    _seed_user(username="bob", password="pw", enterprise_id="acme", group_id="eng")
+    alice_key = _login_and_mint(client, "alice", "pw")
+
+    client_thread_id = "thread_clientprovided001"
+    client_message_id = "msg_clientprovided001"
+
+    first = client.post(
+        "/crosstalk/messages",
+        headers=_bearer(alice_key),
+        json={
+            "to": "bob",
+            "content": "first send",
+            "thread_id": client_thread_id,
+            "message_id": client_message_id,
+        },
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["thread_id"] == client_thread_id
+    assert first.json()["message_id"] == client_message_id
+
+    # Retry with same IDs — should return existing record, no duplicate
+    second = client.post(
+        "/crosstalk/messages",
+        headers=_bearer(alice_key),
+        json={
+            "to": "bob",
+            "content": "second send (should be ignored)",
+            "thread_id": client_thread_id,
+            "message_id": client_message_id,
+        },
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["message_id"] == client_message_id
+    assert second.json()["sent_at"] == first.json()["sent_at"]
+
+    # Thread has only 1 message
+    thread = client.get(
+        f"/crosstalk/threads/{client_thread_id}", headers=_bearer(alice_key)
+    ).json()
+    assert len(thread["messages"]) == 1
+    assert thread["messages"][0]["content"] == "first send"
+
+
+def test_idempotency_append_to_existing_thread_via_send(client: TestClient) -> None:
+    """If client-provided thread_id matches existing, append (don't recreate)."""
+    _seed_user(username="alice", password="pw", enterprise_id="acme", group_id="eng")
+    _seed_user(username="bob", password="pw", enterprise_id="acme", group_id="eng")
+    alice_key = _login_and_mint(client, "alice", "pw")
+
+    first = client.post(
+        "/crosstalk/messages",
+        headers=_bearer(alice_key),
+        json={"to": "bob", "content": "first"},
+    )
+    thread_id = first.json()["thread_id"]
+
+    # Same thread_id, NEW message_id → should append
+    second = client.post(
+        "/crosstalk/messages",
+        headers=_bearer(alice_key),
+        json={"to": "bob", "content": "second", "thread_id": thread_id},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["thread_id"] == thread_id
+    assert second.json()["message_id"] != first.json()["message_id"]
+
+    thread = client.get(
+        f"/crosstalk/threads/{thread_id}", headers=_bearer(alice_key)
+    ).json()
+    assert len(thread["messages"]) == 2
+
+
 def test_reply_to_closed_thread_returns_409(client: TestClient) -> None:
     _seed_user(username="alice", password="pw", enterprise_id="acme", group_id="eng")
     _seed_user(username="bob", password="pw", enterprise_id="acme", group_id="eng")

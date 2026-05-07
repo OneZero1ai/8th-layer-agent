@@ -75,19 +75,55 @@ _LIMIT_MAX = 200
 
 
 class SendMessageRequest(BaseModel):
-    """Send a message; creates new thread if ``thread_id`` is absent."""
+    """Send a message; creates new thread if ``thread_id`` is absent.
+
+    Client-provided IDs (idempotency-key shape): callers MAY supply
+    ``thread_id`` and/or ``message_id`` to make the call idempotent. If
+    ``thread_id`` matches an existing thread the caller participates in,
+    the message is appended; if it doesn't exist, the thread is created
+    with that ID. If ``message_id`` matches an existing message, the
+    request is a no-op (returns the existing record).
+
+    Use case: dual-write clients (claude-mux's crosstalk MCP) generate
+    IDs locally before sending. The L2 must accept those IDs so thread
+    references stay stable across local + L2 storage. Server-generated
+    IDs remain the default when fields are omitted.
+    """
 
     to: str = Field(..., description="Recipient username")
     content: str = Field(..., min_length=1)
     persona: str | None = Field(default=None, description="Optional persona attribution for the message")
     subject: str = Field(default="", description="Initial thread subject (used only on new-thread create)")
+    thread_id: str | None = Field(
+        default=None,
+        description=(
+            "Client-provided thread_id (idempotency-key). If matches "
+            "existing thread, appends; if new, creates with this ID."
+        ),
+    )
+    message_id: str | None = Field(
+        default=None,
+        description=(
+            "Client-provided message_id (idempotency-key). If exists, "
+            "returns the existing record without inserting."
+        ),
+    )
 
 
 class ReplyRequest(BaseModel):
-    """Reply on an existing thread."""
+    """Reply on an existing thread.
+
+    ``message_id`` accepts a client-provided idempotency key (same shape
+    as SendMessageRequest's). On retry, returns the existing record
+    rather than inserting a duplicate.
+    """
 
     content: str = Field(..., min_length=1)
     persona: str | None = Field(default=None)
+    message_id: str | None = Field(
+        default=None,
+        description="Client-provided message_id (idempotency-key). If exists, returns existing record.",
+    )
 
 
 class CloseRequest(BaseModel):
@@ -219,7 +255,15 @@ async def send_message(
     username: str = Depends(get_current_user),
     store: SqliteStore = Depends(get_store),
 ) -> SendResponse:
-    """Send a message. Creates a new thread between caller + recipient."""
+    """Send a message. Creates a new thread between caller + recipient.
+
+    Idempotency-key behavior (added for claude-mux's dual-write client,
+    which generates IDs locally before sending — see SendMessageRequest
+    docstring): if ``thread_id`` matches an existing thread the caller
+    participates in, this becomes an append; if it's new, the thread is
+    created with that ID. If ``message_id`` matches an existing message,
+    the request is a no-op returning the existing record.
+    """
     enterprise_id, group_id, _role = await _resolve_caller(username, store)
 
     # Verify recipient exists in the same tenant
@@ -231,18 +275,55 @@ async def send_message(
         )
 
     now = _now_iso()
-    thread_id = _new_thread_id()
-    message_id = _new_message_id()
+    thread_id = request.thread_id or _new_thread_id()
+    message_id = request.message_id or _new_message_id()
 
-    await store.create_crosstalk_thread(
-        thread_id=thread_id,
-        subject=request.subject,
-        enterprise_id=enterprise_id,
-        group_id=group_id,
-        created_at=now,
-        created_by_username=username,
-        participants=[username, request.to],
+    # Idempotency: if the message_id already exists, return the existing
+    # record without inserting (covers retries on flaky L2 connectivity).
+    if request.message_id is not None:
+        existing_thread = await store.get_crosstalk_thread(
+            thread_id=thread_id, tenant_enterprise=enterprise_id
+        )
+        if existing_thread is not None:
+            existing_msgs = await store.list_crosstalk_messages(
+                thread_id=thread_id,
+                tenant_enterprise=enterprise_id,
+                limit=200,
+            )
+            for m in existing_msgs:
+                if m["id"] == message_id:
+                    return SendResponse(
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        sent_at=m["sent_at"],
+                    )
+
+    # Idempotency: if a thread with the given ID exists in the same
+    # tenant AND caller is a participant, this is an append. Otherwise
+    # create the thread.
+    existing = (
+        await store.get_crosstalk_thread(
+            thread_id=thread_id, tenant_enterprise=enterprise_id
+        )
+        if request.thread_id is not None
+        else None
     )
+    if existing is None:
+        await store.create_crosstalk_thread(
+            thread_id=thread_id,
+            subject=request.subject,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+            created_at=now,
+            created_by_username=username,
+            participants=[username, request.to],
+        )
+    else:
+        if existing["status"] != "open":
+            raise HTTPException(status_code=409, detail="Thread is closed")
+        if username not in existing["participants"]:
+            raise HTTPException(status_code=403, detail="Not a participant")
+
     await store.append_crosstalk_message(
         message_id=message_id,
         thread_id=thread_id,
@@ -299,7 +380,23 @@ async def reply_on_thread(
     to_username = others[0] if others else None
 
     now = _now_iso()
-    message_id = _new_message_id()
+    message_id = request.message_id or _new_message_id()
+
+    # Idempotency: if client-provided message_id already exists on this
+    # thread, return the existing record (retry-safe).
+    if request.message_id is not None:
+        existing_msgs = await store.list_crosstalk_messages(
+            thread_id=thread_id,
+            tenant_enterprise=enterprise_id,
+            limit=200,
+        )
+        for m in existing_msgs:
+            if m["id"] == message_id:
+                return SendResponse(
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    sent_at=m["sent_at"],
+                )
 
     await store.append_crosstalk_message(
         message_id=message_id,
