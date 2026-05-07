@@ -1762,15 +1762,34 @@ class SqliteStore:
     def _list_pending_review_sync(
         self, *, enterprise_id: str, limit: int = 20, offset: int = 0
     ) -> list[dict[str, Any]]:
+        """List pending-review rows that have NOT yet hit their TTL.
+
+        Read-time TTL filter (#121 finding 2): the sweeper transitions
+        ``pending_review → dropped`` eventually, but until it fires
+        every read could surface stale candidates whose
+        ``pending_review_expires_at`` has already passed. We add an
+        ``expires_at > now`` guard inline so the response can never
+        contain rows the operator should no longer see, regardless of
+        sweeper timing. Rows where ``expires_at IS NULL`` continue to
+        appear (defensive: a NULL TTL means "never expires", same shape
+        as ``expire_pending_reviews``'s ``IS NOT NULL`` filter).
+
+        ``ORDER BY pending_review_expires_at ASC`` is preserved so the
+        admin still sees closest-to-expiring rows first within the
+        non-expired set.
+        """
+        now_iso = datetime.now(UTC).isoformat()
         with self._engine.connect() as conn:
             rows = conn.exec_driver_sql(
                 "SELECT data, status, reviewed_by, reviewed_at, "
                 "pending_review_reason, pending_review_expires_at "
                 "FROM knowledge_units "
                 "WHERE status = 'pending_review' AND enterprise_id = ? "
+                "AND (pending_review_expires_at IS NULL "
+                "     OR pending_review_expires_at > ?) "
                 "ORDER BY pending_review_expires_at ASC "
                 "LIMIT ? OFFSET ?",
-                (enterprise_id, limit, offset),
+                (enterprise_id, now_iso, limit, offset),
             ).fetchall()
         return [
             {
@@ -1785,12 +1804,22 @@ class SqliteStore:
         ]
 
     def _count_pending_review_sync(self, *, enterprise_id: str) -> int:
+        """Count pending-review rows whose TTL has not yet passed.
+
+        Mirror of ``_list_pending_review_sync``'s read-time filter
+        (#121 finding 2) — count and list must agree on which rows
+        are visible, otherwise dashboard pagination breaks ("total: 5"
+        with only 3 items rendered).
+        """
+        now_iso = datetime.now(UTC).isoformat()
         with self._engine.connect() as conn:
             return int(
                 conn.exec_driver_sql(
                     "SELECT COUNT(*) FROM knowledge_units "
-                    "WHERE status = 'pending_review' AND enterprise_id = ?",
-                    (enterprise_id,),
+                    "WHERE status = 'pending_review' AND enterprise_id = ? "
+                    "AND (pending_review_expires_at IS NULL "
+                    "     OR pending_review_expires_at > ?)",
+                    (enterprise_id, now_iso),
                 ).scalar() or 0
             )
 

@@ -129,6 +129,35 @@ async def review_queue(
     )
 
 
+async def _sweep_pending_review_ttl(store: "SqliteStore", enterprise_id: str) -> None:
+    """Best-effort TTL sweeper invoked from the read path (#121 finding 2).
+
+    The startup-loop wiring is still deferred (see ``expire_pending_reviews``
+    docstring); until that ships, every read of ``GET /review/pending-review``
+    queues a sweep so expired rows transition to ``status='dropped'``
+    before they accumulate. The read query itself filters by ``expires_at``
+    so the response is correct even if this sweep is dropped — the sweep
+    only ensures the on-disk state eventually catches up.
+
+    Failures are swallowed: a flaky sweep must never break the read.
+    """
+    import logging
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    try:
+        now_iso = _dt.now(UTC).isoformat()
+        await store.expire_pending_reviews(
+            enterprise_id=enterprise_id, now_iso=now_iso
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        logging.getLogger(__name__).warning(
+            "pending_review TTL sweep failed for enterprise=%s: %s",
+            enterprise_id,
+            exc,
+        )
+
+
 async def _hook_ku_event(store: "SqliteStore", unit_id: str, verb: str, enterprise_id: str, by: str) -> None:
     """Reputation hook for KU lifecycle transitions (#108 sub-task 5).
 
@@ -285,6 +314,7 @@ class PendingReviewQueueResponse(BaseModel):
 
 @router.get("/pending-review")
 async def pending_review_queue(
+    background_tasks: BackgroundTasks,
     limit: int = 20,
     offset: int = 0,
     username: str = Depends(require_admin),
@@ -299,12 +329,24 @@ async def pending_review_queue(
 
     Sorted by ``pending_review_expires_at ASC`` so the admin sees the
     closest-to-expiring rows first — the actionable ones.
+
+    TTL enforcement (#121 finding 2): the read query already filters
+    ``expires_at > now`` so callers never see stale candidates even
+    when the sweeper hasn't fired yet. We *also* schedule a background
+    sweep so the on-disk transition to ``status='dropped'`` happens
+    promptly — the read response is correct without waiting for it.
+    Sweep failures are logged inside the helper and never block the
+    response (best-effort, same pattern as the activity-log writes).
     """
     enterprise_id = await _admin_enterprise(username, store)
     items = await store.list_pending_review(
         enterprise_id=enterprise_id, limit=limit, offset=offset
     )
     total = await store.count_pending_review(enterprise_id=enterprise_id)
+    # Best-effort TTL sweep — runs after the response is sent so the
+    # eventual on-disk transition lines up with the activity log
+    # without slowing the read path.
+    background_tasks.add_task(_sweep_pending_review_ttl, store, enterprise_id)
     return PendingReviewQueueResponse(
         items=[
             PendingReviewItem(
