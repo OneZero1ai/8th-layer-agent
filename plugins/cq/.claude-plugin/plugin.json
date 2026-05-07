@@ -1,7 +1,7 @@
 {
   "name": "8l-cq",
-  "version": "0.8.0+8l-dev",
-  "description": "8th-Layer.ai agent — Apache-2.0 fork of Mozilla.AI's cq plugin (https://github.com/mozilla-ai/cq) adding enterprise execution: AIGRP intra-Enterprise routing, DSN intent resolution, L3 live consults, multi-tenant scope, directory + reputation log primitives. Speaks the cq protocol natively (MCP server is still named 'cq' for protocol compatibility); pair with an 8th-Layer.ai tenant Remote for the enterprise feature set.",
+  "version": "0.9.0+8l-dev",
+  "description": "8th-Layer.ai agent — Apache-2.0 fork of Mozilla.AI's cq plugin (https://github.com/mozilla-ai/cq) adding enterprise execution: AIGRP intra-Enterprise routing, DSN intent resolution, L3 live consults, multi-tenant scope, directory + reputation log primitives. Speaks the cq protocol natively (MCP server is still named 'cq' for protocol compatibility); pair with an 8th-Layer.ai tenant Remote for the enterprise feature set. v0.9 adds the crosstalk MCP server (l2-only mode) for inter-agent messaging through the tenant L2 — productized from the prototype that originated in claude-mux.",
   "homepage": "https://8thlayer.onezero1.ai",
   "author": {
     "name": "OneZero1.ai",
@@ -10,13 +10,17 @@
   },
   "repository": "https://github.com/OneZero1ai/8th-layer-agent",
   "license": "Apache-2.0",
-  "keywords": ["8th-layer", "enterprise", "cq", "agent-to-agent", "knowledge-graph", "aigrp", "multi-tenant"],
+  "keywords": ["8th-layer", "enterprise", "cq", "agent-to-agent", "knowledge-graph", "aigrp", "multi-tenant", "crosstalk"],
   "commands": "./commands/",
   "skills": "./skills/",
   "mcpServers": {
     "cq": {
       "command": "python3",
       "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.py"]
+    },
+    "crosstalk": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/crosstalk-mcp/src/server-l2-only.js"]
     }
   }
 }
