@@ -1,6 +1,6 @@
 # 8th-Layer.ai agent
 
-This repository is the [**8th-Layer.ai**](https://8thlayer.onezero1.ai) agent platform — a fork of [`mozilla-ai/cq`](https://github.com/mozilla-ai/cq) maintained by [OneZero1.ai](https://github.com/OneZero1ai). 8th-Layer is the Semantic Knowledge Layer for agent fleets — Layer 8 of the OSI model.
+This repository is the [**8th-Layer.ai**](https://8th-layer.ai) agent platform — a fork of [`mozilla-ai/cq`](https://github.com/mozilla-ai/cq) maintained by [OneZero1.ai](https://github.com/OneZero1ai). 8th-Layer is the Semantic Knowledge Layer for agent fleets — Layer 8 of the OSI model.
 
 The fork adopts upstream cq's open standard (Knowledge Unit schema, REST contract, DID identity model, SDKs) **unchanged**, and adds the enterprise execution layer on top: AIGRP intra-Enterprise routing, DSN intent resolution, L3 live consults, multi-tenant scope, and the cross-Enterprise directory + reputation log primitives.
 
