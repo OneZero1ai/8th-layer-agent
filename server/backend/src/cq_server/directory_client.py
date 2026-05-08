@@ -1,7 +1,8 @@
 """8th-Layer Directory client — sprint 3.
 
 Cq-server's L2-side adapter for the public directory at
-``directory.8thlayer.onezero1.ai``. Per ``decisions/11`` and
+``directory.8th-layer.ai`` (legacy: ``directory.8thlayer.onezero1.ai``).
+Per ``decisions/11`` and
 ``specs/directory-v1.md``:
 
 - **Announce-on-startup**: when ``CQ_DIRECTORY_ENABLED=true``, the L2
@@ -92,7 +93,7 @@ if not log.handlers:
     log.addHandler(_h)
 
 # Public directory base URL. Override in tests via env.
-DEFAULT_DIRECTORY_URL = "https://directory.8thlayer.onezero1.ai"
+DEFAULT_DIRECTORY_URL = "https://directory.8th-layer.ai"
 DEFAULT_PULL_INTERVAL_SEC = 3600
 ANNOUNCE_RETRY_BASE_SEC = 30
 ANNOUNCE_RETRY_MAX_SEC = 600

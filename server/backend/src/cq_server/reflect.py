@@ -149,7 +149,7 @@ def _generate_submission_id() -> str:
     shape `python-ulid` produces; inlined to avoid a dependency for one
     helper.
     """
-    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # pragma: allowlist secret
     millis = int(time.time() * 1000)
     ts_chars: list[str] = []
     for _ in range(10):
