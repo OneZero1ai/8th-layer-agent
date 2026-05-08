@@ -20,7 +20,7 @@
     },
     "crosstalk": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/crosstalk-mcp/src/server-l2-only.js"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/crosstalk-mcp/src/bootstrap.js"]
     }
   }
 }
