@@ -329,7 +329,7 @@ class DsnResolveRequest(BaseModel):
     include_consented_cross_enterprise: bool = True
     # Optional caller scope for policy_if_queried decisions. Defaults
     # to ('marketing', 'public') when omitted — the public-viewer
-    # scope used by 8thlayer.onezero1.ai. Internal callers can pass
+    # scope used by 8th-layer.ai. Internal callers can pass
     # their actual scope to get accurate policy hints.
     caller_enterprise: str = Field(default="", max_length=128)
     caller_group: str = Field(default="", max_length=128)
@@ -684,7 +684,7 @@ async def network_topology(
     Public read — no auth. Returns only operator-authorized topology
     metadata (L2 names, KU counts, peer table, declared-discoverable
     presence rows, active consent edges). The data is intended for the
-    public marketing site at 8thlayer.onezero1.ai.
+    public marketing site at 8th-layer.ai.
 
     Cached in-process for ``TOPOLOGY_CACHE_TTL_SECONDS`` to damp the
     frontend's 5s poll loop. Per-L2 failures are tolerated (rendered
@@ -725,7 +725,7 @@ async def network_dsn_resolve(
     ``/aigrp/forward-query`` against it, so the frontend can pre-render
     boundary edges. Caller scope defaults to ('marketing', 'public')
     when not provided — that's the public-viewer scope used by
-    8thlayer.onezero1.ai. Internal demo callers can pass their actual
+    8th-layer.ai. Internal demo callers can pass their actual
     scope via ``caller_enterprise`` / ``caller_group``.
     """
     caller_ent = request.caller_enterprise or "marketing"
