@@ -173,7 +173,14 @@ SELECT_QUERY_UNITS: TextClause = text(
 ).bindparams(bindparam("domains", expanding=True))
 
 
-def select_list_units(*, domain: str | None, status: str | None, apply_limit: bool) -> TextClause:
+def select_list_units(
+    *,
+    domain: str | None,
+    status: str | None,
+    apply_limit: bool,
+    enterprise_id: str | None = None,
+    group_id: str | None = None,
+) -> TextClause:
     """Build the SELECT for ``SqliteStore.list_units``.
 
     Pure SQL builder — does no normalization, the caller owns it. WHERE
@@ -187,14 +194,25 @@ def select_list_units(*, domain: str | None, status: str | None, apply_limit: bo
     applied: skip it when confidence filtering is in effect because
     confidence lives inside the JSON blob and is filtered in Python.
 
-    Caller binds ``:status`` and ``:domain`` only for conditions that are
-    enabled; ``:limit`` only when ``apply_limit`` is true.
+    Decision 27: ``enterprise_id`` (and optionally ``group_id``) tighten
+    the filter to a single tenant. Pre-Decision-27 callers omitted both
+    and the route ignored the parameter — the migration closes that
+    gap by threading ``enterprise_id`` (and optionally ``group_id``)
+    through to the WHERE clause.
+
+    Caller binds ``:status``, ``:domain``, ``:enterprise_id``, and
+    ``:group_id`` only for conditions that are enabled; ``:limit`` only
+    when ``apply_limit`` is true.
     """
     conditions: list[str] = []
     if status is not None:
         conditions.append("ku.status = :status")
     if domain is not None:
         conditions.append("ku.id IN (SELECT DISTINCT unit_id FROM knowledge_unit_domains WHERE domain = :domain)")
+    if enterprise_id is not None:
+        conditions.append("ku.enterprise_id = :enterprise_id")
+    if group_id is not None:
+        conditions.append("ku.group_id = :group_id")
     parts: list[str] = ["SELECT ku.data, ku.status, ku.reviewed_by, ku.reviewed_at FROM knowledge_units ku"]
     if conditions:
         parts.append(f"WHERE {' AND '.join(conditions)}")

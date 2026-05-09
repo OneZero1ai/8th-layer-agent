@@ -58,7 +58,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .activity_logger import log_activity
-from .auth import get_current_user
+from .auth import get_current_user, scope_filter
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
@@ -236,6 +236,17 @@ async def _resolve_caller(username: str, store: SqliteStore) -> tuple[str, str, 
     return enterprise_id, group_id, user.get("role") or "user"
 
 
+def _read_scope(enterprise_id: str, group_id: str) -> tuple[str, str | None]:
+    """Apply Decision 27's read-side scope filter for crosstalk routes.
+
+    Write paths always carry both columns (already verified by
+    ``_resolve_caller``); read paths gate the group_id portion of the
+    WHERE clause behind ``PER_L2_ISOLATION``. This thin wrapper keeps
+    every read site consistent with the auth.scope_filter() contract.
+    """
+    return scope_filter(enterprise_id=enterprise_id, group_id=group_id)
+
+
 def _summary_first_60(text: str) -> str:
     return text[:60]
 
@@ -262,10 +273,20 @@ async def send_message(
     the request is a no-op returning the existing record.
     """
     enterprise_id, group_id, _role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
-    # Verify recipient exists in the same tenant
+    # Verify recipient exists in the same tenant. Decision 27: when
+    # PER_L2_ISOLATION is on, the recipient must additionally share the
+    # caller's group — cross-L2 messaging within an Enterprise goes
+    # through the shared-domain primitive (separate PR), not the
+    # direct send path.
     recipient = await store.get_user(request.to)
     if recipient is None or recipient.get("enterprise_id") != enterprise_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Recipient '{request.to}' not found in this Enterprise",
+        )
+    if read_grp is not None and recipient.get("group_id") != group_id:
         raise HTTPException(
             status_code=404,
             detail=f"Recipient '{request.to}' not found in this Enterprise",
@@ -278,11 +299,14 @@ async def send_message(
     # Idempotency: if the message_id already exists, return the existing
     # record without inserting (covers retries on flaky L2 connectivity).
     if request.message_id is not None:
-        existing_thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
+        existing_thread = await store.get_crosstalk_thread(
+            thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp
+        )
         if existing_thread is not None:
             existing_msgs = await store.list_crosstalk_messages(
                 thread_id=thread_id,
-                tenant_enterprise=enterprise_id,
+                tenant_enterprise=read_ent,
+                tenant_group=read_grp,
                 limit=200,
             )
             for m in existing_msgs:
@@ -297,7 +321,7 @@ async def send_message(
     # tenant AND caller is a participant, this is an append. Otherwise
     # create the thread.
     existing = (
-        await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
+        await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
         if request.thread_id is not None
         else None
     )
@@ -357,8 +381,9 @@ async def reply_on_thread(
 ) -> SendResponse:
     """Reply on an existing thread. Caller must be a participant."""
     enterprise_id, group_id, role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
-    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread["status"] != "open":
@@ -378,7 +403,8 @@ async def reply_on_thread(
     if request.message_id is not None:
         existing_msgs = await store.list_crosstalk_messages(
             thread_id=thread_id,
-            tenant_enterprise=enterprise_id,
+            tenant_enterprise=read_ent,
+            tenant_group=read_grp,
             limit=200,
         )
         for m in existing_msgs:
@@ -426,11 +452,13 @@ async def list_threads(
     store: SqliteStore = Depends(get_store),
 ) -> ThreadListResponse:
     """List threads visible to caller. Admin sees all in tenant; user sees own."""
-    enterprise_id, _group_id, role = await _resolve_caller(username, store)
+    enterprise_id, group_id, role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
     rows = await store.list_crosstalk_threads_for_user(
         username=username,
-        tenant_enterprise=enterprise_id,
+        tenant_enterprise=read_ent,
+        tenant_group=read_grp,
         is_admin=(role == "admin"),
         limit=limit,
     )
@@ -446,15 +474,21 @@ async def get_thread(
     store: SqliteStore = Depends(get_store),
 ) -> ThreadWithMessagesResponse:
     """Fetch one thread + its messages."""
-    enterprise_id, _group_id, role = await _resolve_caller(username, store)
+    enterprise_id, group_id, role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
-    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if username not in thread["participants"] and role != "admin":
         raise HTTPException(status_code=403, detail="Not a participant")
 
-    msgs = await store.list_crosstalk_messages(thread_id=thread_id, tenant_enterprise=enterprise_id, limit=limit)
+    msgs = await store.list_crosstalk_messages(
+        thread_id=thread_id,
+        tenant_enterprise=read_ent,
+        tenant_group=read_grp,
+        limit=limit,
+    )
     return ThreadWithMessagesResponse(
         thread=CrosstalkThread(**thread),
         messages=[CrosstalkMessage(**m) for m in msgs],
@@ -470,9 +504,10 @@ async def close_thread(
     store: SqliteStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Mark a thread closed. Caller must be a participant or admin."""
-    enterprise_id, _group_id, role = await _resolve_caller(username, store)
+    enterprise_id, group_id, role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
-    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if username not in thread["participants"] and role != "admin":
@@ -483,7 +518,8 @@ async def close_thread(
         closed_by_username=username,
         closed_at=_now_iso(),
         reason=request.reason,
-        tenant_enterprise=enterprise_id,
+        tenant_enterprise=read_ent,
+        tenant_group=read_grp,
     )
     if not won:
         raise HTTPException(status_code=409, detail="Thread already closed")
@@ -514,11 +550,13 @@ async def inbox(
     store: SqliteStore = Depends(get_store),
 ) -> InboxResponse:
     """Caller's unread messages, oldest first."""
-    enterprise_id, _group_id, _role = await _resolve_caller(username, store)
+    enterprise_id, group_id, _role = await _resolve_caller(username, store)
+    read_ent, read_grp = _read_scope(enterprise_id, group_id)
 
     rows = await store.crosstalk_inbox_for_user(
         username=username,
-        tenant_enterprise=enterprise_id,
+        tenant_enterprise=read_ent,
+        tenant_group=read_grp,
         limit=limit,
         mark_read=mark_read,
         read_at_iso=_now_iso() if mark_read else None,

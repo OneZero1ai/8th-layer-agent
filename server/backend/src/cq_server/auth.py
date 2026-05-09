@@ -220,6 +220,43 @@ def _get_jwt_secret() -> str:
     return secret
 
 
+def per_l2_isolation_enabled() -> bool:
+    """Return whether per-L2 (composite-tenancy) read-path filtering is on.
+
+    Decision 27 — when ``PER_L2_ISOLATION=true``, every read-path filter
+    that today scopes by ``enterprise_id`` alone tightens to the
+    composite ``(enterprise_id, group_id)`` predicate. Default off so
+    existing customer-l2 stacks deployed in the wild keep their current
+    behavior; operators flip the env per-stack to opt in.
+
+    Recognised truthy values: ``1``, ``true``, ``yes`` (case-insensitive)
+    — same shape as ``CQ_AUTO_APPROVE_PROPOSE``'s parser.
+    """
+    return os.environ.get("PER_L2_ISOLATION", "").lower() in ("1", "true", "yes")
+
+
+def scope_filter(*, enterprise_id: str, group_id: str | None) -> tuple[str, str | None]:
+    """Return the ``(enterprise_id, effective_group_id)`` filter tuple.
+
+    Decision 27 / Pattern A read-path migration. When the
+    ``PER_L2_ISOLATION`` flag is on, the effective group is the
+    caller's; when off, the effective group is ``None`` so existing
+    enterprise-only WHERE clauses keep their pre-flag semantics. Every
+    18 audited read-path call site funnels through this helper so the
+    flag flip is a single environment variable rather than a routes
+    sweep.
+
+    Callers pin both values from the authenticated user row (never the
+    request body); ``group_id`` is the user's home group, not a
+    target-group. Cross-L2 sharing is the shared-domain primitive
+    (``cross_group_allowed`` + ``xgroup_consent``), wired separately
+    on the query-time path.
+    """
+    if per_l2_isolation_enabled():
+        return enterprise_id, group_id
+    return enterprise_id, None
+
+
 async def get_current_user(
     request: Request,
     background_tasks: BackgroundTasks,

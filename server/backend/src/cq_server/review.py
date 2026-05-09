@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from .activity_logger import log_activity
-from .auth import require_admin
+from .auth import require_admin, scope_filter
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
@@ -25,6 +25,25 @@ async def _admin_enterprise(username: str, store: SqliteStore) -> str:
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return user["enterprise_id"]
+
+
+async def _admin_scope(username: str, store: SqliteStore) -> tuple[str, str | None]:
+    """Resolve the admin caller's ``(enterprise_id, group_id|None)`` filter.
+
+    Decision 27: when ``PER_L2_ISOLATION`` is on, the second tuple
+    element is the admin's home group; when off, it is ``None`` so
+    every read-path WHERE clause keeps its pre-flag enterprise-only
+    semantics. The admin role does NOT escape per-L2 scoping —
+    oversight is per-L2 by design (the directory federation principal
+    is Enterprise; an L2 is the isolation tenant inside it).
+    """
+    user = await store.get_user(username)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return scope_filter(
+        enterprise_id=user["enterprise_id"],
+        group_id=user.get("group_id"),
+    )
 
 
 class ReviewItem(BaseModel):
@@ -110,9 +129,9 @@ async def review_queue(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewQueueResponse:
     """Return pending KUs for review, scoped to the caller's Enterprise."""
-    enterprise_id = await _admin_enterprise(username, store)
-    items = await store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id)
-    total = await store.pending_count(enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    items = await store.pending_queue(limit=limit, offset=offset, enterprise_id=enterprise_id, group_id=group_id)
+    total = await store.pending_count(enterprise_id=enterprise_id, group_id=group_id)
     return ReviewQueueResponse(
         items=[
             ReviewItem(
@@ -190,8 +209,8 @@ async def approve_unit(
     Activity log (#108): non-blocking ``review_resolve`` row with
     ``decision='approve'``.
     """
-    enterprise_id = await _admin_enterprise(username, store)
-    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     # ``pending_review`` (#103) is a parallel review state — admin can
@@ -204,12 +223,20 @@ async def approve_unit(
     # another admin transitioned the row between our SELECT above and
     # our UPDATE — the WHERE clause's terminal-state guard refuses the
     # second write. Re-read and 409 with the winning admin's outcome.
-    won = await store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
+    try:
+        won = await store.set_review_status(
+            unit_id, "approved", username, enterprise_id=enterprise_id, group_id=group_id
+        )
+    except KeyError:
+        # Cross-tenant id surfaces here under per-L2 isolation; treat
+        # as 404 (same shape as the missing-id branch) so it leaks no
+        # enumeration oracle.
+        raise HTTPException(status_code=404, detail="Knowledge unit not found") from None
     if not won:
-        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
         terminal = current["status"] if current else "resolved"
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {terminal}")
-    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
     background_tasks.add_task(
@@ -244,8 +271,8 @@ async def reject_unit(
     two cohorts separately and lets future tooling sweep dropped rows
     on a stricter retention than rejected rows.
     """
-    enterprise_id = await _admin_enterprise(username, store)
-    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    status = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     if status["status"] not in ("pending", "pending_review"):
@@ -255,12 +282,17 @@ async def reject_unit(
     # Optimistic concurrency: see ``approve_unit`` for the rationale —
     # if another admin won the race we 409 with the terminal status
     # rather than silently overwriting their decision.
-    won = await store.set_review_status(unit_id, target_status, username, enterprise_id=enterprise_id)
+    try:
+        won = await store.set_review_status(
+            unit_id, target_status, username, enterprise_id=enterprise_id, group_id=group_id
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Knowledge unit not found") from None
     if not won:
-        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+        current = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
         terminal = current["status"] if current else "resolved"
         raise HTTPException(status_code=409, detail=f"Knowledge unit already {terminal}")
-    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
     payload: dict[str, str] = {
@@ -328,12 +360,14 @@ async def pending_review_queue(
     Sweep failures are logged inside the helper and never block the
     response (best-effort, same pattern as the activity-log writes).
     """
-    enterprise_id = await _admin_enterprise(username, store)
-    items = await store.list_pending_review(enterprise_id=enterprise_id, limit=limit, offset=offset)
-    total = await store.count_pending_review(enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    items = await store.list_pending_review(enterprise_id=enterprise_id, group_id=group_id, limit=limit, offset=offset)
+    total = await store.count_pending_review(enterprise_id=enterprise_id, group_id=group_id)
     # Best-effort TTL sweep — runs after the response is sent so the
     # eventual on-disk transition lines up with the activity log
-    # without slowing the read path.
+    # without slowing the read path. The sweeper itself stays
+    # enterprise-only (Decision 27 keeps retention coarse so a slow
+    # sweep can't lock writes per-L2).
     background_tasks.add_task(_sweep_pending_review_ttl, store, enterprise_id)
     return PendingReviewQueueResponse(
         items=[
@@ -362,8 +396,8 @@ async def delete_unit(
     Cross-tenant DELETEs return 404 — same shape as missing-id, so
     enumeration probes can't fingerprint other tenants' KU IDs.
     """
-    enterprise_id = await _admin_enterprise(username, store)
-    deleted = await store.delete(unit_id, enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    deleted = await store.delete(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
     return None
@@ -375,19 +409,19 @@ async def review_stats(
     store: SqliteStore = Depends(get_store),
 ) -> ReviewStatsResponse:
     """Return dashboard metrics, scoped to the caller's Enterprise."""
-    enterprise_id = await _admin_enterprise(username, store)
-    counts = await store.counts_by_status(enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    counts = await store.counts_by_status(enterprise_id=enterprise_id, group_id=group_id)
     return ReviewStatsResponse(
         counts={
             "pending": counts.get("pending", 0),
             "approved": counts.get("approved", 0),
             "rejected": counts.get("rejected", 0),
         },
-        domains=await store.domain_counts(enterprise_id=enterprise_id),
-        confidence_distribution=await store.confidence_distribution(enterprise_id=enterprise_id),
-        recent_activity=await store.recent_activity(enterprise_id=enterprise_id),
+        domains=await store.domain_counts(enterprise_id=enterprise_id, group_id=group_id),
+        confidence_distribution=await store.confidence_distribution(enterprise_id=enterprise_id, group_id=group_id),
+        recent_activity=await store.recent_activity(enterprise_id=enterprise_id, group_id=group_id),
         trends=TrendsResponse(
-            daily=[DailyCount(**d) for d in await store.daily_counts(enterprise_id=enterprise_id)],
+            daily=[DailyCount(**d) for d in await store.daily_counts(enterprise_id=enterprise_id, group_id=group_id)],
         ),
     )
 
@@ -403,7 +437,7 @@ async def list_units(
     store: SqliteStore = Depends(get_store),
 ) -> list[ReviewItem]:
     """List KUs in the admin's Enterprise, filtered by domain/confidence/status."""
-    enterprise_id = await _admin_enterprise(username, store)
+    enterprise_id, group_id = await _admin_scope(username, store)
     items = await store.list_units(
         domain=domain,
         confidence_min=confidence_min,
@@ -411,6 +445,7 @@ async def list_units(
         status=status,
         limit=limit,
         enterprise_id=enterprise_id,
+        group_id=group_id,
     )
     return [
         ReviewItem(
@@ -433,11 +468,11 @@ async def get_unit(
 
     Cross-tenant GETs return 404 — same shape as missing-id.
     """
-    enterprise_id = await _admin_enterprise(username, store)
-    ku = await store.get_any(unit_id, enterprise_id=enterprise_id)
+    enterprise_id, group_id = await _admin_scope(username, store)
+    ku = await store.get_any(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     if ku is None:
         raise HTTPException(status_code=404, detail="Knowledge unit not found")
-    review = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
+    review = await store.get_review_status(unit_id, enterprise_id=enterprise_id, group_id=group_id)
     assert review is not None  # Unit exists; get_any just returned it.
     return ReviewItem(
         knowledge_unit=ku,

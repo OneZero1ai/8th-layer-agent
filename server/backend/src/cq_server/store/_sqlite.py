@@ -134,8 +134,17 @@ class SqliteStore:
         """
         return _SyncStoreProxy(self)
 
-    async def confidence_distribution(self, *, enterprise_id: str | None = None) -> dict[str, int]:
-        return await self._run_sync(self._confidence_distribution_sync)
+    async def confidence_distribution(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
+        return await self._run_sync(
+            self._confidence_distribution_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def count(self) -> int:
         return await self._run_sync(self._count_sync)
@@ -143,8 +152,17 @@ class SqliteStore:
     async def count_active_api_keys_for_user(self, user_id: int) -> int:
         return await self._run_sync(self._count_active_api_keys_for_user_sync, user_id)
 
-    async def counts_by_status(self, *, enterprise_id: str | None = None) -> dict[str, int]:
-        return await self._run_sync(self._counts_by_status_sync, enterprise_id=enterprise_id)
+    async def counts_by_status(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
+        return await self._run_sync(
+            self._counts_by_status_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def counts_by_tier(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         return await self._run_sync(self._counts_by_tier_sync)
@@ -176,13 +194,33 @@ class SqliteStore:
     async def create_user(self, username: str, password_hash: str) -> None:
         await self._run_sync(self._create_user_sync, username, password_hash)
 
-    async def daily_counts(self, *, days: int = 30, enterprise_id: str | None = None) -> list[dict[str, Any]]:
+    async def daily_counts(
+        self,
+        *,
+        days: int = 30,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if days <= 0:
             raise ValueError("days must be positive")
-        return await self._run_sync(self._daily_counts_sync, days=days)
+        return await self._run_sync(
+            self._daily_counts_sync,
+            days=days,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
-    async def domain_counts(self, *, enterprise_id: str | None = None) -> dict[str, int]:
-        return await self._run_sync(self._domain_counts_sync)
+    async def domain_counts(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
+        return await self._run_sync(
+            self._domain_counts_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def get(self, unit_id: str) -> KnowledgeUnit | None:
         return await self._run_sync(self._get_sync, unit_id)
@@ -190,16 +228,36 @@ class SqliteStore:
     async def get_active_api_key_by_id(self, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_active_api_key_by_id_sync, key_id)
 
-    async def get_any(self, unit_id: str, *, enterprise_id: str | None = None) -> KnowledgeUnit | None:
-        return await self._run_sync(self._get_any_sync, unit_id, enterprise_id=enterprise_id)
+    async def get_any(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> KnowledgeUnit | None:
+        return await self._run_sync(
+            self._get_any_sync,
+            unit_id,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def get_api_key_for_user(self, *, user_id: int, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_api_key_for_user_sync, user_id=user_id, key_id=key_id)
 
     async def get_review_status(
-        self, unit_id: str, *, enterprise_id: str | None = None
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> dict[str, str | None] | None:
-        return await self._run_sync(self._get_review_status_sync, unit_id, enterprise_id=enterprise_id)
+        return await self._run_sync(
+            self._get_review_status_sync,
+            unit_id,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def get_user(self, username: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_user_sync, username)
@@ -247,6 +305,7 @@ class SqliteStore:
         status: str | None = None,
         limit: int = 100,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await self._run_sync(
             self._list_units_sync,
@@ -255,10 +314,21 @@ class SqliteStore:
             confidence_max=confidence_max,
             status=status,
             limit=limit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
         )
 
-    async def pending_count(self, *, enterprise_id: str | None = None) -> int:
-        return await self._run_sync(self._pending_count_sync, enterprise_id=enterprise_id)
+    async def pending_count(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> int:
+        return await self._run_sync(
+            self._pending_count_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def pending_queue(
         self,
@@ -266,8 +336,15 @@ class SqliteStore:
         limit: int = 20,
         offset: int = 0,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._run_sync(self._pending_queue_sync, limit=limit, offset=offset, enterprise_id=enterprise_id)
+        return await self._run_sync(
+            self._pending_queue_sync,
+            limit=limit,
+            offset=offset,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def query(
         self,
@@ -291,8 +368,19 @@ class SqliteStore:
             group_id=group_id,
         )
 
-    async def recent_activity(self, limit: int = 20, *, enterprise_id: str | None = None) -> list[dict[str, Any]]:
-        return await self._run_sync(self._recent_activity_sync, limit=limit)
+    async def recent_activity(
+        self,
+        limit: int = 20,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._run_sync(
+            self._recent_activity_sync,
+            limit=limit,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def revoke_api_key(self, *, user_id: int, key_id: str) -> bool:
         return await self._run_sync(self._revoke_api_key_sync, user_id=user_id, key_id=key_id)
@@ -304,6 +392,7 @@ class SqliteStore:
         reviewed_by: str,
         *,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> bool:
         """Transition a KU's review status with optimistic concurrency.
 
@@ -315,7 +404,14 @@ class SqliteStore:
         ``False`` branch, distinguished so route handlers can return
         409 instead of 404.
         """
-        return await self._run_sync(self._set_review_status_sync, unit_id, status, reviewed_by)
+        return await self._run_sync(
+            self._set_review_status_sync,
+            unit_id,
+            status,
+            reviewed_by,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     # --- pending_review tier (#103) -------------------------------------
     #
@@ -359,6 +455,7 @@ class SqliteStore:
         enterprise_id: str,
         limit: int = 20,
         offset: int = 0,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return KUs in pending_review state for the admin queue."""
         return await self._run_sync(
@@ -366,11 +463,16 @@ class SqliteStore:
             enterprise_id=enterprise_id,
             limit=limit,
             offset=offset,
+            group_id=group_id,
         )
 
-    async def count_pending_review(self, *, enterprise_id: str) -> int:
+    async def count_pending_review(self, *, enterprise_id: str, group_id: str | None = None) -> int:
         """Return the size of the pending_review queue for one tenant."""
-        return await self._run_sync(self._count_pending_review_sync, enterprise_id=enterprise_id)
+        return await self._run_sync(
+            self._count_pending_review_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def expire_pending_reviews(self, *, enterprise_id: str, now_iso: str) -> list[str]:
         """Sweep expired pending_review rows for one tenant.
@@ -611,12 +713,14 @@ class SqliteStore:
         unit_id: str,
         *,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> bool:
         """Hard-delete a KU; tenant-scoped when enterprise_id provided."""
         return await self._run_sync(
             self._delete_sync,
             unit_id=unit_id,
             enterprise_id=enterprise_id,
+            group_id=group_id,
         )
 
     # ------------------------------------------------------------------
@@ -986,6 +1090,7 @@ class SqliteStore:
         self,
         *,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
         persona: str | None = None,
         since_iso: str | None = None,
         until_iso: str | None = None,
@@ -1008,6 +1113,7 @@ class SqliteStore:
         return await self._run_sync(
             self._list_activity_sync,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
             persona=persona,
             since_iso=since_iso,
             until_iso=until_iso,
@@ -1083,7 +1189,13 @@ class SqliteStore:
             group_id=group_id,
         )
 
-    async def get_crosstalk_thread(self, *, thread_id: str, tenant_enterprise: str) -> dict[str, Any] | None:
+    async def get_crosstalk_thread(
+        self,
+        *,
+        thread_id: str,
+        tenant_enterprise: str,
+        tenant_group: str | None = None,
+    ) -> dict[str, Any] | None:
         """Fetch one thread row by id, tenancy-scoped.
 
         Returns ``None`` when the thread doesn't exist OR exists in a
@@ -1094,6 +1206,7 @@ class SqliteStore:
             self._get_crosstalk_thread_sync,
             thread_id=thread_id,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
         )
 
     async def list_crosstalk_messages(
@@ -1101,6 +1214,7 @@ class SqliteStore:
         *,
         thread_id: str,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Return messages on a thread, oldest first, tenancy-scoped."""
@@ -1108,6 +1222,7 @@ class SqliteStore:
             self._list_crosstalk_messages_sync,
             thread_id=thread_id,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
             limit=limit,
         )
 
@@ -1116,6 +1231,7 @@ class SqliteStore:
         *,
         username: str,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
         is_admin: bool = False,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -1130,6 +1246,7 @@ class SqliteStore:
             self._list_crosstalk_threads_for_user_sync,
             username=username,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
             is_admin=is_admin,
             limit=limit,
         )
@@ -1142,6 +1259,7 @@ class SqliteStore:
         closed_at: str,
         reason: str | None,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
     ) -> bool:
         """Mark thread closed. Returns False if thread doesn't exist or already closed."""
         return await self._run_sync(
@@ -1151,6 +1269,7 @@ class SqliteStore:
             closed_at=closed_at,
             reason=reason,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
         )
 
     async def crosstalk_inbox_for_user(
@@ -1158,6 +1277,7 @@ class SqliteStore:
         *,
         username: str,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
         limit: int = 50,
         mark_read: bool = False,
         read_at_iso: str | None = None,
@@ -1173,6 +1293,7 @@ class SqliteStore:
             self._crosstalk_inbox_for_user_sync,
             username=username,
             tenant_enterprise=tenant_enterprise,
+            tenant_group=tenant_group,
             limit=limit,
             mark_read=mark_read,
             read_at_iso=read_at_iso,
@@ -1280,10 +1401,26 @@ class SqliteStore:
             lookback_iso=lookback_iso,
         )
 
-    def _confidence_distribution_sync(self) -> dict[str, int]:
+    def _confidence_distribution_sync(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
         buckets = {"0.0-0.3": 0, "0.3-0.6": 0, "0.6-0.8": 0, "0.8-1.0": 0}
         with self._engine.connect() as conn:
-            rows = conn.execute(SELECT_APPROVED_DATA).fetchall()
+            if enterprise_id is not None and group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT data FROM knowledge_units WHERE status = 'approved' AND enterprise_id = ? AND group_id = ?",
+                    (enterprise_id, group_id),
+                ).fetchall()
+            elif enterprise_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT data FROM knowledge_units WHERE status = 'approved' AND enterprise_id = ?",
+                    (enterprise_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(SELECT_APPROVED_DATA).fetchall()
         for row in rows:
             c = KnowledgeUnit.model_validate_json(row[0]).evidence.confidence
             if c < 0.3:
@@ -1306,9 +1443,20 @@ class SqliteStore:
         with self._engine.connect() as conn:
             return int(conn.execute(SELECT_TOTAL_COUNT).scalar() or 0)
 
-    def _counts_by_status_sync(self, *, enterprise_id: str | None = None) -> dict[str, int]:
+    def _counts_by_status_sync(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
         with self._engine.connect() as conn:
-            if enterprise_id is not None:
+            if enterprise_id is not None and group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT COALESCE(status, 'pending'), COUNT(*) FROM knowledge_units "
+                    "WHERE enterprise_id = ? AND group_id = ? GROUP BY status",
+                    (enterprise_id, group_id),
+                ).fetchall()
+            elif enterprise_id is not None:
                 rows = conn.exec_driver_sql(
                     "SELECT COALESCE(status, 'pending'), COUNT(*) FROM knowledge_units "
                     "WHERE enterprise_id = ? GROUP BY status",
@@ -1386,16 +1534,84 @@ class SqliteStore:
                 raise e.orig from e
             raise
 
-    def _daily_counts_sync(self, *, days: int = 30, enterprise_id: str | None = None) -> list[dict[str, Any]]:
+    def _daily_counts_sync(
+        self,
+        *,
+        days: int = 30,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if days <= 0:
             raise ValueError("days must be positive")
         cutoff = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
         from ._queries import SELECT_APPROVED_DAILY, SELECT_PROPOSED_DAILY, SELECT_REJECTED_DAILY
 
         with self._engine.connect() as conn:
-            proposed = {row[0]: row[1] for row in conn.execute(SELECT_PROPOSED_DAILY, {"cutoff": cutoff}).fetchall()}
-            approved = {row[0]: row[1] for row in conn.execute(SELECT_APPROVED_DAILY, {"cutoff": cutoff}).fetchall()}
-            rejected = {row[0]: row[1] for row in conn.execute(SELECT_REJECTED_DAILY, {"cutoff": cutoff}).fetchall()}
+            if enterprise_id is not None and group_id is not None:
+                proposed = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(created_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE created_at >= ? AND enterprise_id = ? AND group_id = ? "
+                        "GROUP BY day",
+                        (cutoff, enterprise_id, group_id),
+                    ).fetchall()
+                }
+                approved = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(reviewed_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'approved' AND reviewed_at >= ? "
+                        "AND enterprise_id = ? AND group_id = ? GROUP BY day",
+                        (cutoff, enterprise_id, group_id),
+                    ).fetchall()
+                }
+                rejected = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(reviewed_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'rejected' AND reviewed_at >= ? "
+                        "AND enterprise_id = ? AND group_id = ? GROUP BY day",
+                        (cutoff, enterprise_id, group_id),
+                    ).fetchall()
+                }
+            elif enterprise_id is not None:
+                proposed = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(created_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE created_at >= ? AND enterprise_id = ? GROUP BY day",
+                        (cutoff, enterprise_id),
+                    ).fetchall()
+                }
+                approved = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(reviewed_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'approved' AND reviewed_at >= ? "
+                        "AND enterprise_id = ? GROUP BY day",
+                        (cutoff, enterprise_id),
+                    ).fetchall()
+                }
+                rejected = {
+                    r[0]: r[1]
+                    for r in conn.exec_driver_sql(
+                        "SELECT date(reviewed_at) AS day, COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'rejected' AND reviewed_at >= ? "
+                        "AND enterprise_id = ? GROUP BY day",
+                        (cutoff, enterprise_id),
+                    ).fetchall()
+                }
+            else:
+                proposed = {
+                    row[0]: row[1] for row in conn.execute(SELECT_PROPOSED_DAILY, {"cutoff": cutoff}).fetchall()
+                }
+                approved = {
+                    row[0]: row[1] for row in conn.execute(SELECT_APPROVED_DAILY, {"cutoff": cutoff}).fetchall()
+                }
+                rejected = {
+                    row[0]: row[1] for row in conn.execute(SELECT_REJECTED_DAILY, {"cutoff": cutoff}).fetchall()
+                }
         all_dates = set(proposed) | set(approved) | set(rejected)
         if not all_dates:
             return []
@@ -1416,9 +1632,35 @@ class SqliteStore:
             current += timedelta(days=1)
         return rows
 
-    def _domain_counts_sync(self) -> dict[str, int]:
+    def _domain_counts_sync(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> dict[str, int]:
         with self._engine.connect() as conn:
-            rows = conn.execute(SELECT_DOMAIN_COUNTS).fetchall()
+            if enterprise_id is not None and group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT d.domain, COUNT(*) "
+                    "FROM knowledge_unit_domains d "
+                    "JOIN knowledge_units ku ON ku.id = d.unit_id "
+                    "WHERE ku.status = 'approved' "
+                    "AND ku.enterprise_id = ? AND ku.group_id = ? "
+                    "GROUP BY d.domain ORDER BY COUNT(*) DESC",
+                    (enterprise_id, group_id),
+                ).fetchall()
+            elif enterprise_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT d.domain, COUNT(*) "
+                    "FROM knowledge_unit_domains d "
+                    "JOIN knowledge_units ku ON ku.id = d.unit_id "
+                    "WHERE ku.status = 'approved' "
+                    "AND ku.enterprise_id = ? "
+                    "GROUP BY d.domain ORDER BY COUNT(*) DESC",
+                    (enterprise_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(SELECT_DOMAIN_COUNTS).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def _get_active_api_key_by_id_sync(self, key_id: str) -> dict[str, Any] | None:
@@ -1451,9 +1693,20 @@ class SqliteStore:
             "revoked_at": row[11],
         }
 
-    def _get_any_sync(self, unit_id: str, *, enterprise_id: str | None = None) -> KnowledgeUnit | None:
+    def _get_any_sync(
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> KnowledgeUnit | None:
         with self._engine.connect() as conn:
-            if enterprise_id is not None:
+            if enterprise_id is not None and group_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT data FROM knowledge_units WHERE id = ? AND enterprise_id = ? AND group_id = ?",
+                    (unit_id, enterprise_id, group_id),
+                ).fetchone()
+            elif enterprise_id is not None:
                 row = conn.exec_driver_sql(
                     "SELECT data FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
                     (unit_id, enterprise_id),
@@ -1481,10 +1734,20 @@ class SqliteStore:
         }
 
     def _get_review_status_sync(
-        self, unit_id: str, *, enterprise_id: str | None = None
+        self,
+        unit_id: str,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> dict[str, str | None] | None:
         with self._engine.connect() as conn:
-            if enterprise_id is not None:
+            if enterprise_id is not None and group_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT status, reviewed_by, reviewed_at FROM knowledge_units "
+                    "WHERE id = ? AND enterprise_id = ? AND group_id = ?",
+                    (unit_id, enterprise_id, group_id),
+                ).fetchone()
+            elif enterprise_id is not None:
                 row = conn.exec_driver_sql(
                     "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
                     (unit_id, enterprise_id),
@@ -1622,6 +1885,7 @@ class SqliteStore:
         status: str | None = None,
         limit: int = 100,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from ._queries import select_list_units
 
@@ -1636,12 +1900,18 @@ class SqliteStore:
             domain=normalized_domain,
             status=normalized_status,
             apply_limit=not confidence_filter_active,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
         )
         params: dict[str, Any] = {}
         if normalized_domain is not None:
             params["domain"] = normalized_domain
         if normalized_status is not None:
             params["status"] = normalized_status
+        if enterprise_id is not None:
+            params["enterprise_id"] = enterprise_id
+        if group_id is not None:
+            params["group_id"] = group_id
         if not confidence_filter_active:
             params["limit"] = limit
 
@@ -1668,8 +1938,22 @@ class SqliteStore:
                 break
         return results
 
-    def _pending_count_sync(self, *, enterprise_id: str | None = None) -> int:
+    def _pending_count_sync(
+        self,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> int:
         with self._engine.connect() as conn:
+            if enterprise_id is not None and group_id is not None:
+                return int(
+                    conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'pending' AND enterprise_id = ? AND group_id = ?",
+                        (enterprise_id, group_id),
+                    ).scalar()
+                    or 0
+                )
             if enterprise_id is not None:
                 return int(
                     conn.exec_driver_sql(
@@ -1681,10 +1965,22 @@ class SqliteStore:
             return int(conn.execute(SELECT_PENDING_COUNT).scalar() or 0)
 
     def _pending_queue_sync(
-        self, *, limit: int = 50, offset: int = 0, enterprise_id: str | None = None
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
-            if enterprise_id is not None:
+            if enterprise_id is not None and group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT data, status, reviewed_by, reviewed_at FROM knowledge_units "
+                    "WHERE status = 'pending' AND enterprise_id = ? AND group_id = ? "
+                    "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (enterprise_id, group_id, limit, offset),
+                ).fetchall()
+            elif enterprise_id is not None:
                 rows = conn.exec_driver_sql(
                     "SELECT data, status, reviewed_by, reviewed_at FROM knowledge_units "
                     "WHERE status = 'pending' AND enterprise_id = ? "
@@ -1764,11 +2060,34 @@ class SqliteStore:
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [u for _, _, u in scored[:limit]]
 
-    def _recent_activity_sync(self, *, limit: int) -> list[dict[str, Any]]:
+    def _recent_activity_sync(
+        self,
+        *,
+        limit: int,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         # Over-fetch by 2x to give buffer; the SELECT already ORDER BYs
         # COALESCE(reviewed_at, created_at) DESC. Final slice trims to limit.
         with self._engine.connect() as conn:
-            rows = conn.execute(SELECT_RECENT_ACTIVITY, {"limit": limit * 2}).fetchall()
+            if enterprise_id is not None and group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT id, data, status, reviewed_by, reviewed_at "
+                    "FROM knowledge_units "
+                    "WHERE enterprise_id = ? AND group_id = ? "
+                    "ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?",
+                    (enterprise_id, group_id, limit * 2),
+                ).fetchall()
+            elif enterprise_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT id, data, status, reviewed_by, reviewed_at "
+                    "FROM knowledge_units "
+                    "WHERE enterprise_id = ? "
+                    "ORDER BY COALESCE(reviewed_at, created_at) DESC LIMIT ?",
+                    (enterprise_id, limit * 2),
+                ).fetchall()
+            else:
+                rows = conn.execute(SELECT_RECENT_ACTIVITY, {"limit": limit * 2}).fetchall()
         activity: list[dict[str, Any]] = []
         for row in rows:
             unit = KnowledgeUnit.model_validate_json(row[1])
@@ -1817,7 +2136,15 @@ class SqliteStore:
             raise RuntimeError("SqliteStore is closed")
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    def _set_review_status_sync(self, unit_id: str, status: str, reviewed_by: str) -> bool:
+    def _set_review_status_sync(
+        self,
+        unit_id: str,
+        status: str,
+        reviewed_by: str,
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> bool:
         """Issue the guarded UPDATE; tell ``KeyError`` (no row) apart from race-loss.
 
         ``UPDATE_REVIEW_STATUS`` ANDs the WHERE clause on
@@ -1834,22 +2161,50 @@ class SqliteStore:
         transaction so the answer reflects the same snapshot the UPDATE
         saw. SQLite's default isolation is serialisable on a single
         write connection, so no extra locking is needed.
+
+        Decision 27: when ``enterprise_id`` (and optionally ``group_id``)
+        is provided, the UPDATE is also scoped by that tenant. The
+        disambiguation SELECT honours the same scope so a cross-tenant
+        id surfaces as ``KeyError`` (caller 404s), not ``False`` (409).
         """
         reviewed_at = datetime.now(UTC).isoformat()
         with self._engine.begin() as conn:
-            cursor = conn.execute(
-                UPDATE_REVIEW_STATUS,
-                {"id": unit_id, "status": status, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at},
-            )
+            if enterprise_id is not None and group_id is not None:
+                cursor = conn.exec_driver_sql(
+                    "UPDATE knowledge_units SET status = ?, reviewed_by = ?, reviewed_at = ? "
+                    "WHERE id = ? AND enterprise_id = ? AND group_id = ? "
+                    "AND status NOT IN ('approved', 'rejected', 'dropped')",
+                    (status, reviewed_by, reviewed_at, unit_id, enterprise_id, group_id),
+                )
+            elif enterprise_id is not None:
+                cursor = conn.exec_driver_sql(
+                    "UPDATE knowledge_units SET status = ?, reviewed_by = ?, reviewed_at = ? "
+                    "WHERE id = ? AND enterprise_id = ? "
+                    "AND status NOT IN ('approved', 'rejected', 'dropped')",
+                    (status, reviewed_by, reviewed_at, unit_id, enterprise_id),
+                )
+            else:
+                cursor = conn.execute(
+                    UPDATE_REVIEW_STATUS,
+                    {"id": unit_id, "status": status, "reviewed_by": reviewed_by, "reviewed_at": reviewed_at},
+                )
             if cursor.rowcount > 0:
                 return True
-            # Distinguish missing-row from race-loss with a SELECT in
-            # the same transaction. If the row is gone, raise KeyError
-            # (404 in the caller); if it's terminal, return False (409).
-            row = conn.exec_driver_sql(
-                "SELECT 1 FROM knowledge_units WHERE id = ?",
-                (unit_id,),
-            ).fetchone()
+            if enterprise_id is not None and group_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT 1 FROM knowledge_units WHERE id = ? AND enterprise_id = ? AND group_id = ?",
+                    (unit_id, enterprise_id, group_id),
+                ).fetchone()
+            elif enterprise_id is not None:
+                row = conn.exec_driver_sql(
+                    "SELECT 1 FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
+                    (unit_id, enterprise_id),
+                ).fetchone()
+            else:
+                row = conn.exec_driver_sql(
+                    "SELECT 1 FROM knowledge_units WHERE id = ?",
+                    (unit_id,),
+                ).fetchone()
             if row is None:
                 raise KeyError(f"Knowledge unit not found: {unit_id}")
             return False
@@ -1888,7 +2243,12 @@ class SqliteStore:
             )
 
     def _list_pending_review_sync(
-        self, *, enterprise_id: str, limit: int = 20, offset: int = 0
+        self,
+        *,
+        enterprise_id: str,
+        limit: int = 20,
+        offset: int = 0,
+        group_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """List pending-review rows that have NOT yet hit their TTL.
 
@@ -1908,17 +2268,30 @@ class SqliteStore:
         """
         now_iso = datetime.now(UTC).isoformat()
         with self._engine.connect() as conn:
-            rows = conn.exec_driver_sql(
-                "SELECT data, status, reviewed_by, reviewed_at, "
-                "pending_review_reason, pending_review_expires_at "
-                "FROM knowledge_units "
-                "WHERE status = 'pending_review' AND enterprise_id = ? "
-                "AND (pending_review_expires_at IS NULL "
-                "     OR pending_review_expires_at > ?) "
-                "ORDER BY pending_review_expires_at ASC "
-                "LIMIT ? OFFSET ?",
-                (enterprise_id, now_iso, limit, offset),
-            ).fetchall()
+            if group_id is not None:
+                rows = conn.exec_driver_sql(
+                    "SELECT data, status, reviewed_by, reviewed_at, "
+                    "pending_review_reason, pending_review_expires_at "
+                    "FROM knowledge_units "
+                    "WHERE status = 'pending_review' AND enterprise_id = ? AND group_id = ? "
+                    "AND (pending_review_expires_at IS NULL "
+                    "     OR pending_review_expires_at > ?) "
+                    "ORDER BY pending_review_expires_at ASC "
+                    "LIMIT ? OFFSET ?",
+                    (enterprise_id, group_id, now_iso, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.exec_driver_sql(
+                    "SELECT data, status, reviewed_by, reviewed_at, "
+                    "pending_review_reason, pending_review_expires_at "
+                    "FROM knowledge_units "
+                    "WHERE status = 'pending_review' AND enterprise_id = ? "
+                    "AND (pending_review_expires_at IS NULL "
+                    "     OR pending_review_expires_at > ?) "
+                    "ORDER BY pending_review_expires_at ASC "
+                    "LIMIT ? OFFSET ?",
+                    (enterprise_id, now_iso, limit, offset),
+                ).fetchall()
         return [
             {
                 "knowledge_unit": KnowledgeUnit.model_validate_json(row[0]),
@@ -1931,7 +2304,7 @@ class SqliteStore:
             for row in rows
         ]
 
-    def _count_pending_review_sync(self, *, enterprise_id: str) -> int:
+    def _count_pending_review_sync(self, *, enterprise_id: str, group_id: str | None = None) -> int:
         """Count pending-review rows whose TTL has not yet passed.
 
         Mirror of ``_list_pending_review_sync``'s read-time filter
@@ -1941,6 +2314,17 @@ class SqliteStore:
         """
         now_iso = datetime.now(UTC).isoformat()
         with self._engine.connect() as conn:
+            if group_id is not None:
+                return int(
+                    conn.exec_driver_sql(
+                        "SELECT COUNT(*) FROM knowledge_units "
+                        "WHERE status = 'pending_review' AND enterprise_id = ? AND group_id = ? "
+                        "AND (pending_review_expires_at IS NULL "
+                        "     OR pending_review_expires_at > ?)",
+                        (enterprise_id, group_id, now_iso),
+                    ).scalar()
+                    or 0
+                )
             return int(
                 conn.exec_driver_sql(
                     "SELECT COUNT(*) FROM knowledge_units "
@@ -2877,12 +3261,20 @@ class SqliteStore:
         unit_id: str | None = None,
         *,
         enterprise_id: str | None = None,
+        group_id: str | None = None,
         **kwargs: Any,
     ) -> bool:
         if unit_id is None:
             unit_id = kwargs.get("unit_id")
         with self._engine.begin() as conn:
-            if enterprise_id is not None:
+            if enterprise_id is not None and group_id is not None:
+                row = conn.execute(
+                    text("SELECT 1 FROM knowledge_units WHERE id = :id AND enterprise_id = :eid AND group_id = :gid"),
+                    {"id": unit_id, "eid": enterprise_id, "gid": group_id},
+                ).fetchone()
+                if row is None:
+                    return False
+            elif enterprise_id is not None:
                 row = conn.execute(
                     text("SELECT 1 FROM knowledge_units WHERE id = :id AND enterprise_id = :eid"),
                     {"id": unit_id, "eid": enterprise_id},
@@ -3083,6 +3475,7 @@ class SqliteStore:
         self,
         *,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
         persona: str | None,
         since_iso: str | None,
         until_iso: str | None,
@@ -3106,6 +3499,13 @@ class SqliteStore:
         """
         clauses = ["tenant_enterprise = :tenant_enterprise"]
         params: dict[str, Any] = {"tenant_enterprise": tenant_enterprise, "limit": limit}
+        if tenant_group is not None:
+            # Decision 27: composite tenancy filter on the activity log
+            # read path. The base index ``idx_activity_log_tenant_ts``
+            # already covers ``(tenant_enterprise, tenant_group, ts)``
+            # so this clause is index-friendly.
+            clauses.append("tenant_group = :tenant_group")
+            params["tenant_group"] = tenant_group
         if persona is not None:
             clauses.append("persona = :persona")
             params["persona"] = persona
@@ -3234,18 +3634,37 @@ class SqliteStore:
                 },
             )
 
-    def _get_crosstalk_thread_sync(self, *, thread_id: str, tenant_enterprise: str) -> dict[str, Any] | None:
+    def _get_crosstalk_thread_sync(
+        self,
+        *,
+        thread_id: str,
+        tenant_enterprise: str,
+        tenant_group: str | None = None,
+    ) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT id, subject, status, closed_at, closed_by_username, "
-                    "       closed_reason, enterprise_id, group_id, created_at, "
-                    "       created_by_username, participants "
-                    "FROM crosstalk_threads "
-                    "WHERE id = :id AND enterprise_id = :tenant"
-                ),
-                {"id": thread_id, "tenant": tenant_enterprise},
-            ).fetchone()
+            if tenant_group is not None:
+                row = conn.execute(
+                    text(
+                        "SELECT id, subject, status, closed_at, closed_by_username, "
+                        "       closed_reason, enterprise_id, group_id, created_at, "
+                        "       created_by_username, participants "
+                        "FROM crosstalk_threads "
+                        "WHERE id = :id AND enterprise_id = :tenant "
+                        "  AND group_id = :tgroup"
+                    ),
+                    {"id": thread_id, "tenant": tenant_enterprise, "tgroup": tenant_group},
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    text(
+                        "SELECT id, subject, status, closed_at, closed_by_username, "
+                        "       closed_reason, enterprise_id, group_id, created_at, "
+                        "       created_by_username, participants "
+                        "FROM crosstalk_threads "
+                        "WHERE id = :id AND enterprise_id = :tenant"
+                    ),
+                    {"id": thread_id, "tenant": tenant_enterprise},
+                ).fetchone()
         if row is None:
             return None
         try:
@@ -3267,24 +3686,48 @@ class SqliteStore:
         }
 
     def _list_crosstalk_messages_sync(
-        self, *, thread_id: str, tenant_enterprise: str, limit: int
+        self,
+        *,
+        thread_id: str,
+        tenant_enterprise: str,
+        limit: int,
+        tenant_group: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT id, thread_id, from_username, from_persona, "
-                    "       to_username, content, sent_at, read_at "
-                    "FROM crosstalk_messages "
-                    "WHERE thread_id = :thread AND enterprise_id = :tenant "
-                    "ORDER BY sent_at ASC, id ASC "
-                    "LIMIT :limit"
-                ),
-                {
-                    "thread": thread_id,
-                    "tenant": tenant_enterprise,
-                    "limit": limit,
-                },
-            ).fetchall()
+            if tenant_group is not None:
+                rows = conn.execute(
+                    text(
+                        "SELECT id, thread_id, from_username, from_persona, "
+                        "       to_username, content, sent_at, read_at "
+                        "FROM crosstalk_messages "
+                        "WHERE thread_id = :thread AND enterprise_id = :tenant "
+                        "  AND group_id = :tgroup "
+                        "ORDER BY sent_at ASC, id ASC "
+                        "LIMIT :limit"
+                    ),
+                    {
+                        "thread": thread_id,
+                        "tenant": tenant_enterprise,
+                        "tgroup": tenant_group,
+                        "limit": limit,
+                    },
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    text(
+                        "SELECT id, thread_id, from_username, from_persona, "
+                        "       to_username, content, sent_at, read_at "
+                        "FROM crosstalk_messages "
+                        "WHERE thread_id = :thread AND enterprise_id = :tenant "
+                        "ORDER BY sent_at ASC, id ASC "
+                        "LIMIT :limit"
+                    ),
+                    {
+                        "thread": thread_id,
+                        "tenant": tenant_enterprise,
+                        "limit": limit,
+                    },
+                ).fetchall()
         return [
             {
                 "id": r[0],
@@ -3306,6 +3749,7 @@ class SqliteStore:
         tenant_enterprise: str,
         is_admin: bool,
         limit: int,
+        tenant_group: str | None = None,
     ) -> list[dict[str, Any]]:
         # Admin: all threads in tenant. Non-admin: threads where username
         # is in the participants JSON list. SQLite has no JSON_CONTAINS,
@@ -3314,12 +3758,18 @@ class SqliteStore:
         # contain only safe characters; the false-positive surface is
         # acceptable for V1 and will tighten when we move to PostgreSQL
         # JSONB.
+        #
+        # Decision 27: when ``tenant_group`` is set, the WHERE clause
+        # additionally pins ``group_id`` so two L2s under one Enterprise
+        # see disjoint thread lists (admin role does NOT escape the
+        # tenancy boundary — admin oversight is per-L2 by design).
+        group_clause = " AND group_id = :tgroup" if tenant_group is not None else ""
         if is_admin:
             sql = (
                 "SELECT id, subject, status, created_at, created_by_username, "
                 "       participants "
                 "FROM crosstalk_threads "
-                "WHERE enterprise_id = :tenant "
+                f"WHERE enterprise_id = :tenant{group_clause} "
                 "ORDER BY created_at DESC "
                 "LIMIT :limit"
             )
@@ -3329,7 +3779,7 @@ class SqliteStore:
                 "SELECT id, subject, status, created_at, created_by_username, "
                 "       participants "
                 "FROM crosstalk_threads "
-                "WHERE enterprise_id = :tenant "
+                f"WHERE enterprise_id = :tenant{group_clause} "
                 "  AND participants LIKE :ptn "
                 "ORDER BY created_at DESC "
                 "LIMIT :limit"
@@ -3339,6 +3789,8 @@ class SqliteStore:
                 "ptn": f'%"{username}"%',
                 "limit": limit,
             }
+        if tenant_group is not None:
+            params["tgroup"] = tenant_group
         with self._engine.connect() as conn:
             rows = conn.execute(text(sql), params).fetchall()
         results: list[dict[str, Any]] = []
@@ -3367,30 +3819,44 @@ class SqliteStore:
         closed_at: str,
         reason: str | None,
         tenant_enterprise: str,
+        tenant_group: str | None = None,
     ) -> bool:
         # Optimistic concurrency: only flip if status is currently 'open'.
         # Pattern matches set_review_status (#121 finding 1) — second
         # closer races and gets False rather than overwriting fields.
-        with self._engine.begin() as conn:
-            cursor = conn.execute(
-                text(
-                    "UPDATE crosstalk_threads "
-                    "SET status = 'closed', "
-                    "    closed_at = :closed_at, "
-                    "    closed_by_username = :closed_by, "
-                    "    closed_reason = :reason "
-                    "WHERE id = :id "
-                    "  AND enterprise_id = :tenant "
-                    "  AND status = 'open'"
-                ),
-                {
-                    "id": thread_id,
-                    "tenant": tenant_enterprise,
-                    "closed_at": closed_at,
-                    "closed_by": closed_by_username,
-                    "reason": reason,
-                },
+        params = {
+            "id": thread_id,
+            "tenant": tenant_enterprise,
+            "closed_at": closed_at,
+            "closed_by": closed_by_username,
+            "reason": reason,
+        }
+        if tenant_group is not None:
+            sql = (
+                "UPDATE crosstalk_threads "
+                "SET status = 'closed', "
+                "    closed_at = :closed_at, "
+                "    closed_by_username = :closed_by, "
+                "    closed_reason = :reason "
+                "WHERE id = :id "
+                "  AND enterprise_id = :tenant "
+                "  AND group_id = :tgroup "
+                "  AND status = 'open'"
             )
+            params["tgroup"] = tenant_group
+        else:
+            sql = (
+                "UPDATE crosstalk_threads "
+                "SET status = 'closed', "
+                "    closed_at = :closed_at, "
+                "    closed_by_username = :closed_by, "
+                "    closed_reason = :reason "
+                "WHERE id = :id "
+                "  AND enterprise_id = :tenant "
+                "  AND status = 'open'"
+            )
+        with self._engine.begin() as conn:
+            cursor = conn.execute(text(sql), params)
             return bool(cursor.rowcount)
 
     def _crosstalk_inbox_for_user_sync(
@@ -3401,25 +3867,47 @@ class SqliteStore:
         limit: int,
         mark_read: bool,
         read_at_iso: str | None,
+        tenant_group: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._engine.begin() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT id, thread_id, from_username, from_persona, "
-                    "       to_username, content, sent_at "
-                    "FROM crosstalk_messages "
-                    "WHERE to_username = :username "
-                    "  AND enterprise_id = :tenant "
-                    "  AND read_at IS NULL "
-                    "ORDER BY sent_at ASC "
-                    "LIMIT :limit"
-                ),
-                {
-                    "username": username,
-                    "tenant": tenant_enterprise,
-                    "limit": limit,
-                },
-            ).fetchall()
+            if tenant_group is not None:
+                rows = conn.execute(
+                    text(
+                        "SELECT id, thread_id, from_username, from_persona, "
+                        "       to_username, content, sent_at "
+                        "FROM crosstalk_messages "
+                        "WHERE to_username = :username "
+                        "  AND enterprise_id = :tenant "
+                        "  AND group_id = :tgroup "
+                        "  AND read_at IS NULL "
+                        "ORDER BY sent_at ASC "
+                        "LIMIT :limit"
+                    ),
+                    {
+                        "username": username,
+                        "tenant": tenant_enterprise,
+                        "tgroup": tenant_group,
+                        "limit": limit,
+                    },
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    text(
+                        "SELECT id, thread_id, from_username, from_persona, "
+                        "       to_username, content, sent_at "
+                        "FROM crosstalk_messages "
+                        "WHERE to_username = :username "
+                        "  AND enterprise_id = :tenant "
+                        "  AND read_at IS NULL "
+                        "ORDER BY sent_at ASC "
+                        "LIMIT :limit"
+                    ),
+                    {
+                        "username": username,
+                        "tenant": tenant_enterprise,
+                        "limit": limit,
+                    },
+                ).fetchall()
             ids = [r[0] for r in rows]
             if mark_read and ids and read_at_iso is not None:
                 conn.execute(
