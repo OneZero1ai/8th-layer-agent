@@ -180,3 +180,115 @@ export interface CreateInviteRequest {
   target_l2_id?: string | null
   enterprise_name?: string
 }
+
+// Activity log row — wire shape mirrors backend ActivityRow in
+// activity_routes.py. The crosstalk tab uses it to derive the
+// cross-Enterprise consult outbox from consult_open events.
+export interface ActivityRow {
+  id: string
+  ts: string
+  tenant_enterprise: string
+  tenant_group: string | null
+  persona: string | null
+  human: string | null
+  event_type: string
+  payload: Record<string, unknown>
+  result_summary: Record<string, unknown> | null
+  thread_or_chain_id: string | null
+}
+
+export interface ActivityListResponse {
+  items: ActivityRow[]
+  count: number
+  next_cursor: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Crosstalk threads (#171). Wire shapes mirror crosstalk_routes.py:
+//   - ThreadSummary           (GET /crosstalk/threads)
+//   - CrosstalkThread + msgs  (GET /crosstalk/threads/{id})
+// ---------------------------------------------------------------------------
+
+export interface CrosstalkThreadSummary {
+  id: string
+  subject: string
+  status: string
+  created_at: string
+  created_by_username: string
+  participants: string[]
+}
+
+export interface CrosstalkThreadListResponse {
+  items: CrosstalkThreadSummary[]
+  count: number
+}
+
+export interface CrosstalkThread {
+  id: string
+  subject: string
+  status: string
+  closed_at: string | null
+  closed_by_username: string | null
+  closed_reason: string | null
+  enterprise_id: string
+  group_id: string
+  created_at: string
+  created_by_username: string
+  participants: string[]
+}
+
+export interface CrosstalkMessage {
+  id: string
+  thread_id: string
+  from_username: string
+  from_persona: string | null
+  to_username: string | null
+  content: string
+  sent_at: string
+  read_at: string | null
+}
+
+export interface CrosstalkThreadWithMessages {
+  thread: CrosstalkThread
+  messages: CrosstalkMessage[]
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Enterprise consults (#171). Wire shapes mirror consults.py:
+//   - ConsultThreadOut        (GET /consults/inbox.threads)
+//   - ConsultMessageOut       (GET /consults/{id}/messages.messages)
+// ---------------------------------------------------------------------------
+
+export interface ConsultThread {
+  thread_id: string
+  from_l2_id: string
+  from_persona: string
+  to_l2_id: string
+  to_persona: string
+  subject: string | null
+  status: string
+  claimed_by: string | null
+  created_at: string
+  closed_at: string | null
+  resolution_summary: string | null
+}
+
+export interface ConsultInboxResponse {
+  self_l2_id: string
+  self_persona: string
+  threads: ConsultThread[]
+}
+
+export interface ConsultMessage {
+  message_id: string
+  thread_id: string
+  from_l2_id: string
+  from_persona: string
+  content: string
+  created_at: string
+}
+
+export interface ConsultMessagesResponse {
+  thread_id: string
+  messages: ConsultMessage[]
+}

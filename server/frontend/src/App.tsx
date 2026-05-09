@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from "./auth"
 import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
 import { ApiKeysPage } from "./pages/ApiKeysPage"
+import { CrosstalkPage } from "./pages/CrosstalkPage"
 import { DashboardPage } from "./pages/DashboardPage"
 import { InvitesPage } from "./pages/InvitesPage"
 import { LoginPage } from "./pages/LoginPage"
@@ -33,6 +34,7 @@ function AppRoutes() {
         <Route path="/review" element={<ReviewPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/network" element={<NetworkPage />} />
+        <Route path="/crosstalk" element={<CrosstalkPage />} />
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
         <Route path="/admin/personas" element={<PersonasPage />} />
         <Route path="/admin/invites" element={<InvitesPage />} />
