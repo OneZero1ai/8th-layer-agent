@@ -22,9 +22,9 @@ from cq_server import network
 from cq_server.app import _get_store, app
 
 ALICE = "alice"  # acme/engineering
-BOB = "bob"      # acme/engineering — same L2 as Alice
+BOB = "bob"  # acme/engineering — same L2 as Alice
 CARLA = "carla"  # acme/solutions  — different L2 from Alice (cross-team)
-DAN = "dan"      # also acme/engineering — third-party for participant gating
+DAN = "dan"  # also acme/engineering — third-party for participant gating
 
 
 @pytest.fixture()
@@ -281,9 +281,7 @@ def test_closed_thread_excluded_from_inbox_by_default(client: TestClient) -> Non
     assert thread_id not in [t["thread_id"] for t in inbox["threads"]]
 
     # include_closed=true — audit view includes it
-    inbox_all = client.get(
-        "/api/v1/consults/inbox?include_closed=true", headers=_headers(client, BOB)
-    ).json()
+    inbox_all = client.get("/api/v1/consults/inbox?include_closed=true", headers=_headers(client, BOB)).json()
     assert thread_id in [t["thread_id"] for t in inbox_all["threads"]]
 
 
