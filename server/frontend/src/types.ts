@@ -109,3 +109,43 @@ export interface ApiKeysList {
 export interface MessageResponse {
   message: string
 }
+
+// Activity log row — wire shape mirrors backend ActivityRow in
+// activity_routes.py. Used both directly (timeline view) and as the
+// source-of-truth for deriving the persona directory in the absence of
+// a dedicated /admin/personas endpoint.
+export interface ActivityRow {
+  id: string
+  ts: string
+  tenant_enterprise: string
+  tenant_group: string | null
+  persona: string | null
+  human: string | null
+  event_type: string
+  payload: Record<string, unknown>
+  result_summary: Record<string, unknown> | null
+  thread_or_chain_id: string | null
+}
+
+export interface ActivityListResponse {
+  items: ActivityRow[]
+  count: number
+  next_cursor: string | null
+}
+
+// Derived persona summary — assembled client-side from /activity rows
+// and (optionally) /review/units. Once a backend /admin/personas
+// endpoint lands, swap this for the wire shape and delete the
+// derivation in PersonasPage.
+export type PersonaStatus = "active" | "idle" | "departed" | "suspended"
+
+export interface PersonaSummary {
+  name: string
+  group: string | null
+  enterprise: string
+  status: PersonaStatus
+  joined: string | null
+  last_seen: string | null
+  ku_count: number
+  api_key_count: number
+}

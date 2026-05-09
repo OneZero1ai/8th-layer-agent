@@ -62,6 +62,7 @@ export function Layout() {
             {navLink("/review", "Review")}
             {navLink("/dashboard", "Dashboard")}
             {navLink("/network", "Network")}
+            {navLink("/personas", "Personas")}
             {navLink("/settings/api-keys", "API Keys")}
           </div>
           <div className="flex items-center gap-4">
