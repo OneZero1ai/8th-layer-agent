@@ -1,0 +1,26 @@
+2026-05-09T09:59:56.992229+00:00	=== cleanup run started 2026-05-09T09:59:56.992225+00:00 ===
+2026-05-09T09:59:56.992275+00:00	mode=execute filter=test-acme-fin-l2-cluster
+2026-05-09T09:59:59.538837+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-acme-fin-l2-cluster/test-acme-fin-l2-cq-server	queued	running=1
+2026-05-09T09:59:59.538890+00:00	ALB	arn:aws:elasticloadbalancing:us-east-1:124074140789:loadbalancer/app/test-acm-Alb-3z1VuBmK1VDX/e0dffc54ea4e3afa	queued	
+2026-05-09T09:59:59.538900+00:00	TG	arn:aws:elasticloadbalancing:us-east-1:124074140789:targetgroup/test-a-Targe-Y8UTCVAIYH0F/eb3821b6f8c7d5c6	queued	
+2026-05-09T09:59:59.538913+00:00	SG	sg-01813f3157370bab3 (test-acme-fin-l2-TaskSg-HPiVg2dE8g0B)	queued	
+2026-05-09T09:59:59.538924+00:00	SG	sg-0255dc23c72140cc7 (test-acme-fin-l2-EfsSg-6YduyoH00xPg)	queued	
+2026-05-09T09:59:59.538932+00:00	SG	sg-08b279162737997dc (test-acme-fin-l2-AlbSg-6cGYpq9c2MjW)	queued	
+2026-05-09T09:59:59.538944+00:00	EFS	fs-0f89489cd7eea7bda (test-acme-fin-l2-efs)	queued	
+2026-05-09T09:59:59.538952+00:00	LOGS	/aws/ecs/test-acme-fin-l2/cq-server	queued	
+2026-05-09T09:59:59.538958+00:00	ECS_CLUSTER	test-acme-fin-l2-cluster	queued	
+2026-05-09T09:59:59.952772+00:00	DIRECTORY	*	blocked	No DELETE endpoints exposed in directory OpenAPI. Cannot remove enterprises via API. Operator decision needed: (a) add DELETE /admin/api/enterprises/{id} to cq-directory server, (b) leave test entries in place as historical, (c) accept SQL-against-RDS as a one-shot — explicitly out of scope here.
+2026-05-09T10:00:00.629465+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-acme-fin-l2-cluster/test-acme-fin-l2-cq-server	scale_to_zero	ok
+2026-05-09T10:00:16.206480+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-acme-fin-l2-cluster/test-acme-fin-l2-cq-server	delete_service	ok
+2026-05-09T10:00:16.518878+00:00	ALB_LISTENER	arn:aws:elasticloadbalancing:us-east-1:124074140789:listener/app/test-acm-Alb-3z1VuBmK1VDX/e0dffc54ea4e3afa/c8661f205912c4cf	delete	ok
+2026-05-09T10:00:16.625367+00:00	ALB	arn:aws:elasticloadbalancing:us-east-1:124074140789:loadbalancer/app/test-acm-Alb-3z1VuBmK1VDX/e0dffc54ea4e3afa	delete	ok
+2026-05-09T10:00:16.994820+00:00	TG	arn:aws:elasticloadbalancing:us-east-1:124074140789:targetgroup/test-a-Targe-Y8UTCVAIYH0F/eb3821b6f8c7d5c6	delete	ok
+2026-05-09T10:00:17.364852+00:00	EFS_MT	fsmt-03195e53ccc6c09d0	delete	ok
+2026-05-09T10:00:17.665905+00:00	EFS_MT	fsmt-06478767bb2f7e11b	delete	ok
+2026-05-09T10:00:32.950596+00:00	EFS	fs-0f89489cd7eea7bda	delete	ok
+2026-05-09T10:00:33.376051+00:00	SG	sg-01813f3157370bab3 (test-acme-fin-l2-TaskSg-HPiVg2dE8g0B)	delete	error: An error occurred (DependencyViolation) when calling the DeleteSecurityGroup operation: resource sg-01813f3157370bab3 has a dependent object
+2026-05-09T10:00:33.850428+00:00	SG	sg-0255dc23c72140cc7 (test-acme-fin-l2-EfsSg-6YduyoH00xPg)	delete	ok
+2026-05-09T10:00:34.141222+00:00	SG	sg-08b279162737997dc (test-acme-fin-l2-AlbSg-6cGYpq9c2MjW)	delete	error: An error occurred (DependencyViolation) when calling the DeleteSecurityGroup operation: resource sg-08b279162737997dc has a dependent object
+2026-05-09T10:00:34.452676+00:00	LOGS	/aws/ecs/test-acme-fin-l2/cq-server	delete	ok
+2026-05-09T10:00:34.898240+00:00	ECS_CLUSTER	test-acme-fin-l2-cluster	delete	ok
+2026-05-09T10:00:34.900566+00:00	=== cleanup run finished 2026-05-09T10:00:34.900559+00:00 ===
