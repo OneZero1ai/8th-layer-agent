@@ -82,7 +82,7 @@ A future model (Phase 3+) where the L2 itself drives delivery — long-poll, SSE
 - L2 endpoints (companion, shipped): [#124](https://github.com/OneZero1ai/8th-layer-agent/issues/124)
 - L2 idempotency support: commit `f0905f4`
 - claude-mux validation partner: standing by; will re-run Plan-21 scenario 4 against this package once draft is up
-- TeamDW endpoint for live testing: `http://team-dw--Alb-byUUELeYenuZ-1431880588.us-east-1.elb.amazonaws.com/api/v1/crosstalk/*`
+- TeamDW endpoint for live testing: `https://team-dw.8th-layer.ai/api/v1/crosstalk/*` (canonical; raw ALB hostname is internal-only)
 - Plan-21 scenario 4 (cutover gate): `crosstalk-enterprise/docs/plans/21-teamdw-test-orchestration.md`
 
 ## License
