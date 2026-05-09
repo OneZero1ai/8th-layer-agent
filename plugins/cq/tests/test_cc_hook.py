@@ -356,8 +356,11 @@ def test_stop_fires_reminder_once(cc_hook, tmp_path, monkeypatch, capsys):
         capsys,
     )
     parsed = json.loads(out)
-    assert parsed["hookSpecificOutput"]["hookEventName"] == "Stop"
-    assert "/cq:reflect" in parsed["hookSpecificOutput"]["additionalContext"]
+    # Stop uses top-level systemMessage — hookSpecificOutput.hookEventName="Stop"
+    # is rejected by Claude Code's hook-output validator.
+    assert "systemMessage" in parsed
+    assert "hookSpecificOutput" not in parsed
+    assert "/cq:reflect" in parsed["systemMessage"]
 
     # Second stop in the same session is a no-op (compact/resume re-fire).
     _, out2 = _run(
@@ -439,7 +442,8 @@ def test_rate_limit_expired_does_not_suppress(cc_hook, tmp_path, monkeypatch, ca
     (state_dir / "rate429.json").write_text(json.dumps({"retry_after_until": int(time.time()) - 1}))
     _, out = _run(cc_hook, monkeypatch, "stop", state_dir, {"session_id": "s-rl-expired"}, capsys)
     parsed = json.loads(out)
-    assert parsed["hookSpecificOutput"]["hookEventName"] == "Stop"
+    assert "systemMessage" in parsed
+    assert "/cq:reflect" in parsed["systemMessage"]
 
 
 # ---------------------------------------------------------------------------
