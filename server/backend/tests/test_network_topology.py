@@ -183,7 +183,7 @@ class TestTopologyCache:
 class TestTopologyAuth:
     def test_no_auth_required_public_read(self, client: TestClient) -> None:
         # Topology is intentionally public for the marketing site at
-        # 8thlayer.onezero1.ai — no JWT required.
+        # 8th-layer.ai — no JWT required.
         resp = client.post("/api/v1/network/topology")
         assert resp.status_code == 200
 
