@@ -25,12 +25,12 @@ from starlette.responses import FileResponse
 from . import aigrp
 from .activity_logger import log_activity, summary_first_60
 from .activity_routes import router as activity_router
-from .auth import require_admin
+from .auth import get_current_user, require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
 from .crosstalk_routes import router as crosstalk_router
 from .db_url import resolve_sqlite_db_path
-from .deps import API_KEY_PEPPER_ENV, require_api_key
+from .deps import API_KEY_PEPPER_ENV
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
 from .migrations import run_migrations
@@ -416,7 +416,7 @@ class AigrpLookupResponse(BaseModel):
 @api_router.post("/aigrp/lookup")
 async def aigrp_lookup(
     request: AigrpLookupRequest,
-    _username: str = Depends(require_api_key),
+    _username: str = Depends(get_current_user),
 ) -> AigrpLookupResponse:
     """Automatic-trigger lookup for AIGRP-pull (Phase 2).
 
@@ -1050,7 +1050,7 @@ class ActivePeersResponse(BaseModel):
 @api_router.post("/peers/heartbeat")
 async def peers_heartbeat(
     request: PeerHeartbeatRequest,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> PeerHeartbeatResponse:
     """Register or refresh a persona's presence on this L2.
 
@@ -1089,7 +1089,7 @@ async def peers_active(
     since_minutes: Annotated[int, Query(gt=0, le=24 * 60)] = PEER_ACTIVE_DEFAULT_WINDOW_MIN,
     include_self: Annotated[bool, Query()] = False,
     self_persona: Annotated[str | None, Query(alias="self_persona")] = None,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> ActivePeersResponse:
     """Return discoverable peers in the caller's Enterprise.
 
@@ -1398,7 +1398,7 @@ async def consents_revoke(
 async def query_semantic(
     q: Annotated[str, Query(min_length=1)],
     limit: Annotated[int, Query(gt=0, le=50)] = 10,
-    _username: str = Depends(require_api_key),
+    _username: str = Depends(get_current_user),
 ) -> list[SemanticHit]:
     """Embed `q` and return top-N approved KUs by cosine similarity."""
     store = _get_store()
@@ -1420,7 +1420,7 @@ async def query_units(
     frameworks: Annotated[list[str] | None, Query()] = None,
     pattern: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(gt=0)] = 5,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> list[KnowledgeUnit]:
     """Search knowledge units by domain tags with relevance ranking.
 
@@ -1472,7 +1472,7 @@ async def query_units(
 async def propose_unit(
     request: ProposeRequest,
     background_tasks: BackgroundTasks,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> KnowledgeUnit:
     """Submit a new knowledge unit.
 
@@ -1494,8 +1494,8 @@ async def propose_unit(
     if user is None:
         # The auth layer accepted the bearer token but the user row is
         # gone (revocation race / cleanup). 401 is the right shape —
-        # ``require_api_key`` already 401'd if the key was invalid, so a
-        # caller hitting this branch has a half-deleted user.
+        # ``get_current_user`` already 401'd if the bearer was invalid,
+        # so a caller hitting this branch has a half-deleted user.
         raise HTTPException(status_code=401, detail="User not found")
     enterprise_id = user["enterprise_id"]
     group_id = user["group_id"]
@@ -1592,7 +1592,7 @@ async def propose_unit(
 async def confirm_unit(
     unit_id: str,
     background_tasks: BackgroundTasks,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> KnowledgeUnit:
     """Confirm a knowledge unit, boosting its confidence.
 
@@ -1619,7 +1619,7 @@ async def flag_unit(
     unit_id: str,
     request: FlagRequest,
     background_tasks: BackgroundTasks,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> KnowledgeUnit:
     """Flag a knowledge unit, reducing its confidence.
 
@@ -1645,7 +1645,7 @@ async def flag_unit(
 
 @api_router.get("/stats")
 async def stats(
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
 ) -> StatsResponse:
     """Return store statistics scoped to the caller's Enterprise.
 

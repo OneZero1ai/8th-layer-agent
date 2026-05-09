@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cq_server.app import _get_store, app
+from cq_server.auth import get_current_user
 from cq_server.deps import require_api_key
 
 ALICE = "alice"  # acme/engineering
@@ -56,6 +57,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 def _heartbeat(client: TestClient, *, as_user: str, persona: str, discoverable: bool = True) -> None:
     app.dependency_overrides[require_api_key] = lambda: as_user
+    app.dependency_overrides[get_current_user] = lambda: as_user
     try:
         client.post(
             "/api/v1/peers/heartbeat",
@@ -63,6 +65,7 @@ def _heartbeat(client: TestClient, *, as_user: str, persona: str, discoverable: 
         )
     finally:
         app.dependency_overrides.pop(require_api_key, None)
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def _set_last_seen(persona: str, when: datetime) -> None:
@@ -77,10 +80,12 @@ def _set_last_seen(persona: str, when: datetime) -> None:
 
 def _list_active(client: TestClient, *, as_user: str, **params: object) -> dict:
     app.dependency_overrides[require_api_key] = lambda: as_user
+    app.dependency_overrides[get_current_user] = lambda: as_user
     try:
         resp = client.get("/api/v1/peers/active", params=params)
     finally:
         app.dependency_overrides.pop(require_api_key, None)
+        app.dependency_overrides.pop(get_current_user, None)
     assert resp.status_code == 200, resp.text
     return resp.json()
 

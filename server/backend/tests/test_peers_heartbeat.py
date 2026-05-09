@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cq_server.app import _get_store, app
+from cq_server.auth import get_current_user
 from cq_server.deps import require_api_key
 
 ALICE = "alice"
@@ -50,10 +51,12 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 def _override_api_key(username: str) -> None:
     app.dependency_overrides[require_api_key] = lambda: username
+    app.dependency_overrides[get_current_user] = lambda: username
 
 
 def _clear_override() -> None:
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 class TestHeartbeatUpsert:
@@ -191,7 +194,7 @@ class TestExpertiseDomainsRoundtrip:
 
 class TestAuthRequired:
     def test_no_api_key_returns_401(self, client: TestClient) -> None:
-        # No override; the require_api_key dep should reject.
+        # No override; the get_current_user dep should reject.
         resp = client.post(
             "/api/v1/peers/heartbeat",
             json={"persona": "persona-naked", "discoverable": True},

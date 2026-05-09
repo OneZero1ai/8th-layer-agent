@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cq_server.app import app
+from cq_server.auth import get_current_user
 from cq_server.deps import require_api_key
 
 ALICE_USERNAME = "alice-reflect"
@@ -46,6 +47,7 @@ def alice_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
     # override to 0 when they want to bypass for sequential calls.
     monkeypatch.setenv("REFLECT_RATE_LIMIT_PER_HOURS", "4")
     app.dependency_overrides[require_api_key] = lambda: ALICE_USERNAME
+    app.dependency_overrides[get_current_user] = lambda: ALICE_USERNAME
     with TestClient(app) as client:
         from cq_server.app import _get_store
         from cq_server.auth import hash_password
@@ -69,6 +71,7 @@ def alice_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
                 )
         yield client
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def _submit_payload(**overrides: Any) -> dict[str, Any]:
@@ -225,6 +228,7 @@ class TestStatus:
         # Flip the auth override to Bob without rebuilding the client
         # (same DB, same TestClient).
         app.dependency_overrides[require_api_key] = lambda: BOB_USERNAME
+        app.dependency_overrides[get_current_user] = lambda: BOB_USERNAME
         try:
             bob_resp = alice_client.get(
                 "/api/v1/reflect/status",
@@ -233,6 +237,7 @@ class TestStatus:
             assert bob_resp.status_code == 404
         finally:
             app.dependency_overrides[require_api_key] = lambda: ALICE_USERNAME
+            app.dependency_overrides[get_current_user] = lambda: ALICE_USERNAME
 
 
 class TestLast:
@@ -274,6 +279,7 @@ class TestLast:
 
         # Bob queries /last for "shared-name" — should see null shape.
         app.dependency_overrides[require_api_key] = lambda: BOB_USERNAME
+        app.dependency_overrides[get_current_user] = lambda: BOB_USERNAME
         try:
             resp = alice_client.get(
                 "/api/v1/reflect/last",
@@ -284,6 +290,7 @@ class TestLast:
             assert body["submission_id"] is None
         finally:
             app.dependency_overrides[require_api_key] = lambda: ALICE_USERNAME
+            app.dependency_overrides[get_current_user] = lambda: ALICE_USERNAME
 
 
 class TestRouterMounting:
