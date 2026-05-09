@@ -62,9 +62,7 @@ def upgrade() -> None:
                     server_default=sa.text("'user'"),
                 ),
             )
-            op.execute(
-                sa.text("UPDATE users SET role = 'user' WHERE role IS NULL")
-            )
+            op.execute(sa.text("UPDATE users SET role = 'user' WHERE role IS NULL"))
             with op.batch_alter_table("users") as batch:
                 batch.alter_column(
                     "role",

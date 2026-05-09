@@ -37,9 +37,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         yield c
 
 
-def _seed_user(
-    *, username: str, password: str, enterprise_id: str, group_id: str, role: str = "user"
-) -> None:
+def _seed_user(*, username: str, password: str, enterprise_id: str, group_id: str, role: str = "user") -> None:
     store = _get_store()
     store.sync.create_user(username, hash_password(password))
     with store._engine.begin() as conn:
@@ -51,9 +49,7 @@ def _seed_user(
 
 def _login_and_mint(client: TestClient, username: str, password: str) -> str:
     """Log in, mint an API key, return the API-key bearer token."""
-    jwt_resp = client.post(
-        "/auth/login", json={"username": username, "password": password}
-    )
+    jwt_resp = client.post("/auth/login", json={"username": username, "password": password})
     assert jwt_resp.status_code == 200, jwt_resp.text
     jwt = jwt_resp.json()["token"]
 
@@ -119,9 +115,7 @@ def test_reply_appends_to_existing_thread(client: TestClient) -> None:
     assert reply.status_code == 201, reply.text
 
     # Alice retrieves the thread; should see both messages
-    thread = client.get(
-        f"/crosstalk/threads/{thread_id}", headers=_bearer(alice_key)
-    ).json()
+    thread = client.get(f"/crosstalk/threads/{thread_id}", headers=_bearer(alice_key)).json()
     assert thread["thread"]["status"] == "open"
     assert len(thread["messages"]) == 2
     assert thread["messages"][0]["content"] == "ping"
@@ -143,18 +137,14 @@ def test_non_participant_cannot_read_thread(client: TestClient) -> None:
     )
     thread_id = send.json()["thread_id"]
 
-    resp = client.get(
-        f"/crosstalk/threads/{thread_id}", headers=_bearer(charlie_key)
-    )
+    resp = client.get(f"/crosstalk/threads/{thread_id}", headers=_bearer(charlie_key))
     assert resp.status_code == 403
 
 
 def test_admin_sees_all_threads_in_tenant(client: TestClient) -> None:
     _seed_user(username="alice", password="pw", enterprise_id="acme", group_id="eng")
     _seed_user(username="bob", password="pw", enterprise_id="acme", group_id="eng")
-    _seed_user(
-        username="rootadmin", password="pw", enterprise_id="acme", group_id="eng", role="admin"
-    )
+    _seed_user(username="rootadmin", password="pw", enterprise_id="acme", group_id="eng", role="admin")
 
     alice_key = _login_and_mint(client, "alice", "pw")
     admin_key = _login_and_mint(client, "rootadmin", "pw")
@@ -169,9 +159,7 @@ def test_admin_sees_all_threads_in_tenant(client: TestClient) -> None:
     assert threads["count"] >= 1
     # Admin can read the thread even though they're not a participant
     thread_id = threads["items"][0]["id"]
-    resp = client.get(
-        f"/crosstalk/threads/{thread_id}", headers=_bearer(admin_key)
-    )
+    resp = client.get(f"/crosstalk/threads/{thread_id}", headers=_bearer(admin_key))
     assert resp.status_code == 200
 
 
@@ -192,9 +180,7 @@ def test_cross_enterprise_isolation(client: TestClient) -> None:
     thread_id = send.json()["thread_id"]
 
     # Eve (different enterprise) cannot see the thread
-    resp = client.get(
-        f"/crosstalk/threads/{thread_id}", headers=_bearer(eve_key)
-    )
+    resp = client.get(f"/crosstalk/threads/{thread_id}", headers=_bearer(eve_key))
     assert resp.status_code == 404
 
 
@@ -251,24 +237,18 @@ def test_inbox_mark_read_clears_unread(client: TestClient) -> None:
         json={"to": "bob", "content": "hi"},
     )
 
-    inbox = client.get(
-        "/crosstalk/inbox?mark_read=true", headers=_bearer(bob_key)
-    ).json()
+    inbox = client.get("/crosstalk/inbox?mark_read=true", headers=_bearer(bob_key)).json()
     assert inbox["count"] == 1
 
     inbox2 = client.get("/crosstalk/inbox", headers=_bearer(bob_key)).json()
     assert inbox2["count"] == 0  # marked read; no longer unread
 
 
-def test_activity_log_captures_crosstalk_events(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_activity_log_captures_crosstalk_events(client: TestClient, tmp_path: Path) -> None:
     """Send + reply + close should each fire the corresponding activity event."""
     _seed_user(username="alice", password="pw", enterprise_id="acme", group_id="eng")
     _seed_user(username="bob", password="pw", enterprise_id="acme", group_id="eng")
-    _seed_user(
-        username="rootadmin", password="pw", enterprise_id="acme", group_id="eng", role="admin"
-    )
+    _seed_user(username="rootadmin", password="pw", enterprise_id="acme", group_id="eng", role="admin")
 
     alice_key = _login_and_mint(client, "alice", "pw")
     bob_key = _login_and_mint(client, "bob", "pw")
@@ -299,8 +279,7 @@ def test_activity_log_captures_crosstalk_events(
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT event_type, persona FROM activity_log "
-            "WHERE thread_or_chain_id = ? ORDER BY ts ASC",
+            "SELECT event_type, persona FROM activity_log WHERE thread_or_chain_id = ? ORDER BY ts ASC",
             (thread_id,),
         ).fetchall()
     finally:
@@ -316,9 +295,7 @@ def test_activity_log_captures_crosstalk_events(
         "/activity?event_type=crosstalk_send",
         headers=_bearer(admin_key),
     ).json()
-    assert any(
-        e["thread_or_chain_id"] == thread_id for e in api_resp["items"]
-    )
+    assert any(e["thread_or_chain_id"] == thread_id for e in api_resp["items"])
 
 
 def test_idempotency_send_with_client_thread_and_message_ids(client: TestClient) -> None:
@@ -360,9 +337,7 @@ def test_idempotency_send_with_client_thread_and_message_ids(client: TestClient)
     assert second.json()["sent_at"] == first.json()["sent_at"]
 
     # Thread has only 1 message
-    thread = client.get(
-        f"/crosstalk/threads/{client_thread_id}", headers=_bearer(alice_key)
-    ).json()
+    thread = client.get(f"/crosstalk/threads/{client_thread_id}", headers=_bearer(alice_key)).json()
     assert len(thread["messages"]) == 1
     assert thread["messages"][0]["content"] == "first send"
 
@@ -390,9 +365,7 @@ def test_idempotency_append_to_existing_thread_via_send(client: TestClient) -> N
     assert second.json()["thread_id"] == thread_id
     assert second.json()["message_id"] != first.json()["message_id"]
 
-    thread = client.get(
-        f"/crosstalk/threads/{thread_id}", headers=_bearer(alice_key)
-    ).json()
+    thread = client.get(f"/crosstalk/threads/{thread_id}", headers=_bearer(alice_key)).json()
     assert len(thread["messages"]) == 2
 
 

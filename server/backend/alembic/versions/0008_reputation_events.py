@@ -102,10 +102,6 @@ def downgrade() -> None:
     if _table_exists(bind, "reputation_chain_meta"):
         op.drop_table("reputation_chain_meta")
     if _table_exists(bind, "reputation_events"):
-        op.drop_index(
-            "idx_reputation_events_type_ts", table_name="reputation_events"
-        )
-        op.drop_index(
-            "idx_reputation_events_enterprise_ts", table_name="reputation_events"
-        )
+        op.drop_index("idx_reputation_events_type_ts", table_name="reputation_events")
+        op.drop_index("idx_reputation_events_enterprise_ts", table_name="reputation_events")
         op.drop_table("reputation_events")

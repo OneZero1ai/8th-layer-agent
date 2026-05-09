@@ -83,9 +83,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 
 def _login(client: TestClient) -> str:
-    resp = client.post(
-        "/api/v1/auth/login", json={"username": ALICE, "password": "pw"}
-    )
+    resp = client.post("/api/v1/auth/login", json={"username": ALICE, "password": "pw"})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
 
@@ -162,9 +160,7 @@ class TestDsnResolveHappyPath:
 
 
 class TestDsnPolicyDecisions:
-    def test_same_enterprise_same_group_is_full_body(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_same_enterprise_same_group_is_full_body(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         # Alice = acme/engineering. Make her own L2 the top candidate.
         _stub_embed(monkeypatch, axis=0)
 
@@ -184,16 +180,19 @@ class TestDsnPolicyDecisions:
         resp = client.post(
             "/api/v1/network/dsn/resolve",
             headers={"Authorization": f"Bearer {jwt}"},
-            json={"intent": "anything", "max_candidates": 6, "caller_enterprise": "acme", "caller_group": "engineering"},
+            json={
+                "intent": "anything",
+                "max_candidates": 6,
+                "caller_enterprise": "acme",
+                "caller_group": "engineering",
+            },
         )
         body = resp.json()
         own = next(c for c in body["candidates"] if c["l2_id"] == "acme/engineering")
         assert own["policy_if_queried"] == "full_body"
         assert own["policy_reason"] == "same_enterprise_same_group"
 
-    def test_cross_enterprise_no_consent_is_denied(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cross_enterprise_no_consent_is_denied(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_embed(monkeypatch, axis=0)
         _stub_fanout_six_l2s(monkeypatch, target_axis=0)
         jwt = _login(client)
@@ -212,16 +211,19 @@ class TestDsnPolicyDecisions:
         assert orion["policy_if_queried"] == "denied"
         assert orion["policy_reason"] == "cross_enterprise_no_consent"
 
-    def test_same_enterprise_xgroup_is_summary_only(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_same_enterprise_xgroup_is_summary_only(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_embed(monkeypatch, axis=0)
         _stub_fanout_six_l2s(monkeypatch, target_axis=0)
         jwt = _login(client)
         resp = client.post(
             "/api/v1/network/dsn/resolve",
             headers={"Authorization": f"Bearer {jwt}"},
-            json={"intent": "anything", "max_candidates": 6, "caller_enterprise": "acme", "caller_group": "engineering"},
+            json={
+                "intent": "anything",
+                "max_candidates": 6,
+                "caller_enterprise": "acme",
+                "caller_group": "engineering",
+            },
         )
         body = resp.json()
         # acme/solutions vs Alice (acme/engineering) -> summary_only.
@@ -231,9 +233,7 @@ class TestDsnPolicyDecisions:
 
 
 class TestDsnEmbedFailure:
-    def test_503_when_embedding_unavailable(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_503_when_embedding_unavailable(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(network, "embed_text", lambda text: None)
         jwt = _login(client)
         resp = client.post(

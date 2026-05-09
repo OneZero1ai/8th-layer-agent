@@ -103,9 +103,7 @@ class TestAuthAndScoping:
         resp = client.get("/api/v1/activity")
         assert resp.status_code == 401
 
-    def test_admin_sees_every_persona_in_their_enterprise(
-        self, client: TestClient
-    ) -> None:
+    def test_admin_sees_every_persona_in_their_enterprise(self, client: TestClient) -> None:
         import asyncio
 
         _seed_user(username="alice3", password="pw")

@@ -94,9 +94,7 @@ def _login_jwt(client: TestClient, username: str, password: str) -> str:
 
 
 class TestSubmitPendingReview:
-    def test_submission_lands_with_status_and_reason_columns(
-        self, store: SqliteStore, tmp_path: Path
-    ) -> None:
+    def test_submission_lands_with_status_and_reason_columns(self, store: SqliteStore, tmp_path: Path) -> None:
         unit = _make_unit()
         expires = (datetime.now(UTC) + timedelta(days=30)).isoformat()
         store.sync.submit_pending_review(
@@ -130,9 +128,7 @@ class TestSubmitPendingReview:
 
 
 class TestPendingReviewListAndCount:
-    def test_listing_orders_by_expires_ascending(
-        self, store: SqliteStore
-    ) -> None:
+    def test_listing_orders_by_expires_ascending(self, store: SqliteStore) -> None:
         # Three pending-review rows with different expiries.
         soon = (datetime.now(UTC) + timedelta(days=1)).isoformat()
         mid = (datetime.now(UTC) + timedelta(days=15)).isoformat()
@@ -154,9 +150,7 @@ class TestPendingReviewListAndCount:
 
         assert store.sync.count_pending_review(enterprise_id="acme") == 3
 
-    def test_listing_scopes_by_enterprise(
-        self, store: SqliteStore
-    ) -> None:
+    def test_listing_scopes_by_enterprise(self, store: SqliteStore) -> None:
         """Cross-tenant: an acme pending-review row must NOT appear in
         moscowmul3's queue. Pin against accidental cross-tenant leak."""
         store.sync.submit_pending_review(
@@ -173,12 +167,8 @@ class TestPendingReviewListAndCount:
             enterprise_id="moscowmul3",
             group_id="engineering",
         )
-        acme_items = store.sync.list_pending_review(
-            enterprise_id="acme", limit=10, offset=0
-        )
-        moscow_items = store.sync.list_pending_review(
-            enterprise_id="moscowmul3", limit=10, offset=0
-        )
+        acme_items = store.sync.list_pending_review(enterprise_id="acme", limit=10, offset=0)
+        moscow_items = store.sync.list_pending_review(enterprise_id="moscowmul3", limit=10, offset=0)
         assert [i["knowledge_unit"].insight.summary for i in acme_items] == ["acme-only"]
         assert [i["knowledge_unit"].insight.summary for i in moscow_items] == ["moscow-only"]
 
@@ -206,9 +196,7 @@ class TestExpirePendingReviews:
         )
 
         now_iso = datetime.now(UTC).isoformat()
-        dropped = store.sync.expire_pending_reviews(
-            enterprise_id="acme", now_iso=now_iso
-        )
+        dropped = store.sync.expire_pending_reviews(enterprise_id="acme", now_iso=now_iso)
         assert dropped == [drop.id]
 
         # The non-expired row stays put; the expired row is now status=dropped.
@@ -267,9 +255,7 @@ class TestPendingReviewRoute:
         )
         assert resp.status_code == 403  # require_admin gate
 
-    def test_approve_from_pending_review_transitions_to_approved(
-        self, client: TestClient
-    ) -> None:
+    def test_approve_from_pending_review_transitions_to_approved(self, client: TestClient) -> None:
         _seed_user(username="admin_approve", password="pw", role="admin")
         s = _get_store()
         unit = _make_unit()
@@ -289,9 +275,7 @@ class TestPendingReviewRoute:
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "approved"
 
-    def test_reject_from_pending_review_transitions_to_dropped_not_rejected(
-        self, client: TestClient
-    ) -> None:
+    def test_reject_from_pending_review_transitions_to_dropped_not_rejected(self, client: TestClient) -> None:
         """The lifecycle distinction (#103): operator rejection of a
         pending_review row sets status='dropped', not 'rejected'.
         Pins the spec line "pending_review → dropped (operator rejects)".
@@ -316,9 +300,7 @@ class TestPendingReviewRoute:
         # Critical assertion: dropped, not rejected.
         assert resp.json()["status"] == "dropped"
 
-    def test_reject_from_regular_pending_still_uses_rejected(
-        self, client: TestClient
-    ) -> None:
+    def test_reject_from_regular_pending_still_uses_rejected(self, client: TestClient) -> None:
         """The dropped distinction is *only* for pending_review. A
         regular ``status='pending'`` rejection still goes to
         ``status='rejected'`` — unchanged from pre-#103 behaviour."""

@@ -151,9 +151,7 @@ def _step_to_0013(db_path: Path) -> subprocess.CompletedProcess[str]:
 
 
 class TestLegacyRowReassignment:
-    def test_default_enterprise_row_with_known_proposer_gets_reassigned(
-        self, db: Path
-    ) -> None:
+    def test_default_enterprise_row_with_known_proposer_gets_reassigned(self, db: Path) -> None:
         conn = sqlite3.connect(str(db))
         try:
             _seed_user(
@@ -178,9 +176,7 @@ class TestLegacyRowReassignment:
         assert ent == "moscowmul3"
         assert grp == "engineering"
 
-    def test_two_proposers_two_enterprises_each_row_lands_correctly(
-        self, db: Path
-    ) -> None:
+    def test_two_proposers_two_enterprises_each_row_lands_correctly(self, db: Path) -> None:
         """Pin per-row resolution. Two legacy KUs from two proposers
         in two enterprises — each row gets its own proposer's tenancy,
         not the wrong one (no thread-local cache, no cross-row leak).
@@ -265,9 +261,7 @@ class TestRowsLeftAlone:
         finally:
             conn.close()
 
-    def test_row_whose_proposer_is_also_default_stays_default(
-        self, db: Path
-    ) -> None:
+    def test_row_whose_proposer_is_also_default_stays_default(self, db: Path) -> None:
         """If the proposer is themselves at default tenancy, there's
         no useful signal — the migration shouldn't pretend to "fix"
         the row by re-tenanting it to default-enterprise (no-op).
@@ -280,9 +274,7 @@ class TestRowsLeftAlone:
                 enterprise_id="default-enterprise",
                 group_id="default-group",
             )
-            _seed_legacy_ku(
-                conn, unit_id="dual-default", created_by="default_user"
-            )
+            _seed_legacy_ku(conn, unit_id="dual-default", created_by="default_user")
             conn.commit()
         finally:
             conn.close()
@@ -299,9 +291,7 @@ class TestRowsLeftAlone:
         finally:
             conn.close()
 
-    def test_row_already_at_non_default_tenancy_is_not_overwritten(
-        self, db: Path
-    ) -> None:
+    def test_row_already_at_non_default_tenancy_is_not_overwritten(self, db: Path) -> None:
         """A row proposed *after* the #89 fix has the right tenancy
         already — the migration must not touch it (the WHERE clause's
         ``enterprise_id = 'default-enterprise'`` guard).

@@ -32,7 +32,7 @@ from cq_server import consults, network
 from cq_server.app import _get_store, app
 
 ALICE = "alice"  # acme/engineering — this L2
-DAN = "dan"      # acme/engineering — also this L2
+DAN = "dan"  # acme/engineering — also this L2
 
 ACME_PEER_KEY = "test-acme-peer-key-thirty-two-chars"
 
@@ -171,9 +171,7 @@ def test_cross_l2_request_mirrors_local_and_forwards_to_peer(
     assert payload["from_persona"] == ALICE
 
 
-def test_cross_l2_message_forwards_to_other_side(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cross_l2_message_forwards_to_other_side(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """When Alice replies on a cross-L2 thread, the reply forwards to the OTHER L2."""
     forwarded: list[dict[str, Any]] = []
 
@@ -354,27 +352,35 @@ def test_forward_request_rejects_anonymous(client: TestClient) -> None:
 def test_forward_message_appends_to_existing_thread(client: TestClient) -> None:
     h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
     # First, mirror the thread via /forward-request
-    client.post("/api/v1/consults/forward-request", headers=h, json={
-        "thread_id": "th_msg_a",
-        "message_id": "msg_msg_a_1",
-        "from_l2_id": "acme/solutions",
-        "from_persona": "carla",
-        "to_l2_id": "acme/engineering",
-        "to_persona": ALICE,
-        "content": "open",
-        "created_at": "2026-05-01T18:00:00+00:00",
-    })
+    client.post(
+        "/api/v1/consults/forward-request",
+        headers=h,
+        json={
+            "thread_id": "th_msg_a",
+            "message_id": "msg_msg_a_1",
+            "from_l2_id": "acme/solutions",
+            "from_persona": "carla",
+            "to_l2_id": "acme/engineering",
+            "to_persona": ALICE,
+            "content": "open",
+            "created_at": "2026-05-01T18:00:00+00:00",
+        },
+    )
     # Append a reply via /forward-message — note the reply is from
     # acme/engineering (forwarder identity must match body.from_l2_id).
     h_reply = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/engineering"}
-    r = client.post("/api/v1/consults/forward-message", headers=h_reply, json={
-        "thread_id": "th_msg_a",
-        "message_id": "msg_msg_a_2",
-        "from_l2_id": "acme/engineering",
-        "from_persona": ALICE,
-        "content": "reply",
-        "created_at": "2026-05-01T18:05:00+00:00",
-    })
+    r = client.post(
+        "/api/v1/consults/forward-message",
+        headers=h_reply,
+        json={
+            "thread_id": "th_msg_a",
+            "message_id": "msg_msg_a_2",
+            "from_l2_id": "acme/engineering",
+            "from_persona": ALICE,
+            "content": "reply",
+            "created_at": "2026-05-01T18:05:00+00:00",
+        },
+    )
     assert r.status_code == 201, r.text
 
     # Both messages visible to alice
@@ -388,20 +394,24 @@ def test_forward_message_appends_to_existing_thread(client: TestClient) -> None:
 def test_forward_message_lazily_creates_missing_thread(client: TestClient) -> None:
     """If /forward-request was lost, /forward-message backfills the thread row."""
     h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
-    r = client.post("/api/v1/consults/forward-message", headers=h, json={
-        "thread_id": "th_lazy_a",
-        "message_id": "msg_lazy_a",
-        "from_l2_id": "acme/solutions",
-        "from_persona": "carla",
-        "content": "reply (asker-side init lost)",
-        "created_at": "2026-05-01T19:00:00+00:00",
-        "thread_subject": "recovered",
-        "thread_to_l2_id": "acme/engineering",
-        "thread_to_persona": ALICE,
-        "thread_from_l2_id": "acme/solutions",
-        "thread_from_persona": "carla",
-        "thread_created_at": "2026-05-01T18:55:00+00:00",
-    })
+    r = client.post(
+        "/api/v1/consults/forward-message",
+        headers=h,
+        json={
+            "thread_id": "th_lazy_a",
+            "message_id": "msg_lazy_a",
+            "from_l2_id": "acme/solutions",
+            "from_persona": "carla",
+            "content": "reply (asker-side init lost)",
+            "created_at": "2026-05-01T19:00:00+00:00",
+            "thread_subject": "recovered",
+            "thread_to_l2_id": "acme/engineering",
+            "thread_to_persona": ALICE,
+            "thread_from_l2_id": "acme/solutions",
+            "thread_from_persona": "carla",
+            "thread_created_at": "2026-05-01T18:55:00+00:00",
+        },
+    )
     assert r.status_code == 201, r.text
 
     # Alice's inbox has the lazily-created thread
@@ -411,14 +421,18 @@ def test_forward_message_lazily_creates_missing_thread(client: TestClient) -> No
 
 def test_forward_message_missing_thread_no_metadata_400(client: TestClient) -> None:
     h = {"Authorization": f"Bearer {ACME_PEER_KEY}", "x-8l-forwarder-l2-id": "acme/solutions"}
-    r = client.post("/api/v1/consults/forward-message", headers=h, json={
-        "thread_id": "th_missing",
-        "message_id": "msg_x",
-        "from_l2_id": "acme/solutions",
-        "from_persona": "carla",
-        "content": "no thread no metadata",
-        "created_at": "2026-05-01T20:00:00+00:00",
-    })
+    r = client.post(
+        "/api/v1/consults/forward-message",
+        headers=h,
+        json={
+            "thread_id": "th_missing",
+            "message_id": "msg_x",
+            "from_l2_id": "acme/solutions",
+            "from_persona": "carla",
+            "content": "no thread no metadata",
+            "created_at": "2026-05-01T20:00:00+00:00",
+        },
+    )
     assert r.status_code == 400
 
 

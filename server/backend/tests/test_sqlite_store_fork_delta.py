@@ -49,12 +49,8 @@ class TestDirectoryPeerings:
             last_synced_at="2026-05-03T00:00:00Z",
         )
         # Bidirectional lookup
-        a_to_b = store.sync.find_active_directory_peering(
-            from_enterprise="acme", to_enterprise="globex"
-        )
-        b_to_a = store.sync.find_active_directory_peering(
-            from_enterprise="globex", to_enterprise="acme"
-        )
+        a_to_b = store.sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
+        b_to_a = store.sync.find_active_directory_peering(from_enterprise="globex", to_enterprise="acme")
         assert a_to_b is not None
         assert b_to_a is not None
         assert a_to_b["offer_id"] == "ofr_1"
@@ -79,9 +75,7 @@ class TestDirectoryPeerings:
             accept_signing_key_id="X",
             last_synced_at="2026-05-03T00:00:00Z",
         )
-        result = store.sync.find_active_directory_peering(
-            from_enterprise="acme", to_enterprise="globex"
-        )
+        result = store.sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
         assert result is None
 
     @pytest.mark.asyncio
@@ -135,9 +129,7 @@ class TestAigrpPeers:
         assert peer["last_signature_at"] is not None  # signature_received=True
 
     @pytest.mark.asyncio
-    async def test_unsigned_upsert_keeps_existing_signature(
-        self, store: SqliteStore
-    ) -> None:
+    async def test_unsigned_upsert_keeps_existing_signature(self, store: SqliteStore) -> None:
         # First upsert with signature
         store.sync.upsert_aigrp_peer(
             l2_id="acme/eng",
@@ -173,7 +165,5 @@ class TestAigrpPeers:
         assert second["endpoint_url"] == "https://acme.example/eng-v2"
 
     @pytest.mark.asyncio
-    async def test_get_pubkey_returns_none_for_unknown(
-        self, store: SqliteStore
-    ) -> None:
+    async def test_get_pubkey_returns_none_for_unknown(self, store: SqliteStore) -> None:
         assert store.sync.get_aigrp_peer_pubkey("ghost/eng") is None

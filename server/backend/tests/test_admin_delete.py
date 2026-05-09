@@ -1,4 +1,5 @@
 """Tests for the admin DELETE /review/{ku_id} endpoint."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -46,14 +47,14 @@ def _propose_payload(**overrides: Any) -> dict[str, Any]:
 
 def _admin_jwt(client: TestClient) -> str:
     """Bootstrap an admin user + return a JWT for /review/* endpoints."""
+    import contextlib
+
     from cq_server.app import _get_store
 
     store = _get_store()
     pw_hash = bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode()
-    try:
-        store.sync.create_user("admin", pw_hash)
-    except Exception:
-        pass  # already exists
+    with contextlib.suppress(Exception):
+        store.sync.create_user("admin", pw_hash)  # already exists is OK
     store.sync.set_user_role("admin", "admin")
     resp = client.post("/auth/login", json={"username": "admin", "password": "admin"})
     assert resp.status_code == 200, resp.text

@@ -33,9 +33,7 @@ def _run_alembic(db_path: Path, command: str, target: str) -> subprocess.Complet
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone()
     return row is not None
 
 
@@ -78,9 +76,7 @@ class TestUpgradeDowngradeEmpty:
 
 
 class TestUpgradeOnLegacyDb:
-    def test_upgrade_on_populated_legacy_db_adds_column_and_tables(
-        self, tmp_path: Path
-    ) -> None:
+    def test_upgrade_on_populated_legacy_db_adds_column_and_tables(self, tmp_path: Path) -> None:
         db = tmp_path / "alembic_legacy.db"
 
         # Pre-step-1 shape: knowledge_units / users without tenancy
@@ -109,6 +105,7 @@ class TestUpgradeOnLegacyDb:
         # The bare CLI path doesn't stamp, so it errors trying to
         # create knowledge_units a second time.
         from cq_server.migrations import run_migrations
+
         run_migrations(f"sqlite:///{db}")
 
         check = sqlite3.connect(str(db))

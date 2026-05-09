@@ -318,9 +318,7 @@ class TestExistingPreAlembicDatabase:
                 assert table in after_schema, f"original table {table} missing post-migration"
                 before_cols = {c[0] for c in before_shape["columns"]}
                 after_cols = {c[0] for c in after_schema[table]["columns"]}
-                assert before_cols <= after_cols, (
-                    f"columns lost on {table}: {before_cols - after_cols}"
-                )
+                assert before_cols <= after_cols, f"columns lost on {table}: {before_cols - after_cols}"
 
             # Original-table row counts unchanged.
             for table in before["counts"]:
@@ -349,9 +347,7 @@ class TestExistingPreAlembicDatabase:
         # Snapshot the post-first-run schema, then run a second time.
         with _open_ro(db) as conn:
             after_first_run = _normalized_schema(conn)
-            counts_first_run = _row_counts(
-                conn, _user_table_names(conn) - {"alembic_version"}
-            )
+            counts_first_run = _row_counts(conn, _user_table_names(conn) - {"alembic_version"})
 
         run_migrations(_sqlite_url(db))
 
@@ -466,8 +462,7 @@ class TestBaselineMatchesLegacySchema:
             cols_a = {(c[0], c[1]) for c in schema_a[table]["columns"]}
             cols_b = {(c[0], c[1]) for c in schema_b[table]["columns"]}
             assert cols_b == cols_a, (
-                f"column drift on {table}: "
-                f"legacy-only={cols_a - cols_b}, migration-only={cols_b - cols_a}"
+                f"column drift on {table}: legacy-only={cols_a - cols_b}, migration-only={cols_b - cols_a}"
             )
 
 

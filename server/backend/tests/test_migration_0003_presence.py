@@ -5,6 +5,7 @@ Mirrors the pattern in ``test_migration_0002_xgroup_consent.py``. Runs
 empty DB and a populated legacy DB; both cycles must complete without
 raising and end with the expected schema.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,9 +33,7 @@ def _run_alembic(db_path: Path, command: str, target: str) -> subprocess.Complet
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone()
     return row is not None
 
 
@@ -79,9 +78,7 @@ class TestUpgradeDowngradeEmpty:
 
 
 class TestUpgradeOnLegacyDb:
-    def test_upgrade_on_populated_legacy_db_adds_role_and_peers(
-        self, tmp_path: Path
-    ) -> None:
+    def test_upgrade_on_populated_legacy_db_adds_role_and_peers(self, tmp_path: Path) -> None:
         db = tmp_path / "alembic_legacy.db"
         # Pre-step-1 shape: minimal users/knowledge_units, no tenancy /
         # xgroup / role columns. Seed one user so the role-backfill is
@@ -106,6 +103,7 @@ class TestUpgradeOnLegacyDb:
         # Use the python runtime path so the legacy DB is stamped at
         # baseline before the chain walks; the bare CLI doesn't stamp.
         from cq_server.migrations import run_migrations
+
         run_migrations(f"sqlite:///{db}")
 
         check = sqlite3.connect(str(db))
@@ -116,9 +114,7 @@ class TestUpgradeOnLegacyDb:
             assert _column_exists(check, "users", "role")
             assert _table_exists(check, "peers")
             # Backfill: legacy user gets role='user'.
-            row = check.execute(
-                "SELECT role FROM users WHERE username = 'legacy-user'"
-            ).fetchone()
+            row = check.execute("SELECT role FROM users WHERE username = 'legacy-user'").fetchone()
             assert row is not None
             assert row[0] == "user"
         finally:

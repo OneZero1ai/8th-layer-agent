@@ -20,9 +20,7 @@ from cq_server.reputation_verifier import (
 
 
 @pytest.fixture()
-def conn_with_signing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> sqlite3.Connection:
+def conn_with_signing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
     """DB with an L2 signing key in place — events come out signed."""
     monkeypatch.setenv("CQ_ENTERPRISE", "test-corp")
     monkeypatch.setenv("CQ_GROUP", "engineering")
@@ -72,9 +70,7 @@ class TestChain:
         assert result["ok"] is True
         assert result["count"] == 0
 
-    def test_intact_chain_verifies(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
+    def test_intact_chain_verifies(self, conn_with_signing: sqlite3.Connection) -> None:
         for i in range(5):
             reputation.record_event(
                 conn_with_signing,
@@ -89,9 +85,7 @@ class TestChain:
         assert result["ok"] is True
         assert result["count"] == 5
 
-    def test_broken_chain_detected(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
+    def test_broken_chain_detected(self, conn_with_signing: sqlite3.Connection) -> None:
         for i in range(3):
             reputation.record_event(
                 conn_with_signing,
@@ -109,22 +103,14 @@ class TestChain:
 
 
 class TestPayloadHashes:
-    def test_intact_payloads_verify(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
-        reputation.record_event(
-            conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"}
-        )
+    def test_intact_payloads_verify(self, conn_with_signing: sqlite3.Connection) -> None:
+        reputation.record_event(conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"})
         conn_with_signing.commit()
         events = _read_events(conn_with_signing, "test-corp")
         assert verify_event_payload_hashes(events)["ok"] is True
 
-    def test_tampered_canonical_detected(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
-        reputation.record_event(
-            conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"}
-        )
+    def test_tampered_canonical_detected(self, conn_with_signing: sqlite3.Connection) -> None:
+        reputation.record_event(conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"})
         conn_with_signing.commit()
         events = _read_events(conn_with_signing, "test-corp")
         events[0]["payload_canonical"] = '{"tampered":true}'
@@ -134,12 +120,8 @@ class TestPayloadHashes:
 
 
 class TestSignatures:
-    def test_signed_events_verify(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
-        reputation.record_event(
-            conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"}
-        )
+    def test_signed_events_verify(self, conn_with_signing: sqlite3.Connection) -> None:
+        reputation.record_event(conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"})
         conn_with_signing.commit()
         events = _read_events(conn_with_signing, "test-corp")
         result = verify_event_signatures(events)
@@ -147,12 +129,8 @@ class TestSignatures:
         assert result["signed_count"] == 1
         assert result["unsigned_count"] == 0
 
-    def test_tampered_signature_detected(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
-        reputation.record_event(
-            conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"}
-        )
+    def test_tampered_signature_detected(self, conn_with_signing: sqlite3.Connection) -> None:
+        reputation.record_event(conn_with_signing, event_type="ku.event", body={"unit_id": "ku_x"})
         conn_with_signing.commit()
         events = _read_events(conn_with_signing, "test-corp")
         # Flip a character in the signature
@@ -164,9 +142,7 @@ class TestSignatures:
 
 
 class TestRoot:
-    def test_root_verifies_against_events(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
+    def test_root_verifies_against_events(self, conn_with_signing: sqlite3.Connection) -> None:
         today = datetime.now(UTC).date().isoformat()
         for i in range(4):
             reputation.record_event(
@@ -186,9 +162,7 @@ class TestRoot:
         assert result["root_matches_events"] is True
         assert result["signature_valid"] is True
 
-    def test_root_mismatch_detected_when_event_dropped(
-        self, conn_with_signing: sqlite3.Connection
-    ) -> None:
+    def test_root_mismatch_detected_when_event_dropped(self, conn_with_signing: sqlite3.Connection) -> None:
         today = datetime.now(UTC).date().isoformat()
         for i in range(3):
             reputation.record_event(

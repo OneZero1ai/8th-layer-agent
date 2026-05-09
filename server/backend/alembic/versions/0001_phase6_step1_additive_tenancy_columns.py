@@ -100,15 +100,12 @@ def _add_tenancy_columns(table_name: str) -> None:
     # leaves pre-existing rows NULL. Postgres backfills automatically
     # but the UPDATE is a no-op in that case.
     op.execute(
-        sa.text(
-            f"UPDATE {table_name} SET enterprise_id = :ent "
-            "WHERE enterprise_id IS NULL"
-        ).bindparams(ent=DEFAULT_ENTERPRISE_ID)
+        sa.text(f"UPDATE {table_name} SET enterprise_id = :ent WHERE enterprise_id IS NULL").bindparams(
+            ent=DEFAULT_ENTERPRISE_ID
+        )
     )
     op.execute(
-        sa.text(
-            f"UPDATE {table_name} SET group_id = :grp WHERE group_id IS NULL"
-        ).bindparams(grp=DEFAULT_GROUP_ID)
+        sa.text(f"UPDATE {table_name} SET group_id = :grp WHERE group_id IS NULL").bindparams(grp=DEFAULT_GROUP_ID)
     )
 
     # Promote to NOT NULL now that every row has a value.

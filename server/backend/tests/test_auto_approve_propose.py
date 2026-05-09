@@ -100,9 +100,7 @@ def _read_status(unit_id: str) -> str:
 
     conn = sqlite3.connect(os.environ["CQ_DB_PATH"])
     try:
-        row = conn.execute(
-            "SELECT status FROM knowledge_units WHERE id = ?", (unit_id,)
-        ).fetchone()
+        row = conn.execute("SELECT status FROM knowledge_units WHERE id = ?", (unit_id,)).fetchone()
         assert row is not None, f"unit {unit_id} not found"
         return row[0]
     finally:

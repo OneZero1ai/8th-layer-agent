@@ -98,12 +98,8 @@ def downgrade() -> None:
     """Drop the reflect_submissions table. Used by tests; not for production."""
     bind = op.get_bind()
     if _table_exists(bind, "reflect_submissions"):
-        op.drop_index(
-            "idx_reflect_submissions_state_batch", table_name="reflect_submissions"
-        )
-        op.drop_index(
-            "idx_reflect_submissions_dedup", table_name="reflect_submissions"
-        )
+        op.drop_index("idx_reflect_submissions_state_batch", table_name="reflect_submissions")
+        op.drop_index("idx_reflect_submissions_dedup", table_name="reflect_submissions")
         op.drop_index(
             "idx_reflect_submissions_session_submitted",
             table_name="reflect_submissions",

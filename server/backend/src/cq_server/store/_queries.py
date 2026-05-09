@@ -283,6 +283,5 @@ UPSERT_ACTIVITY_RETENTION_DAYS: TextClause = text(
 # Enterprise. Scoped per-tenant so a slow large-tenant sweep doesn't
 # block writes on every other tenant. Uses ``idx_activity_log_tenant_ts``.
 DELETE_ACTIVITY_OLDER_THAN: TextClause = text(
-    "DELETE FROM activity_log "
-    "WHERE tenant_enterprise = :tenant_enterprise AND ts < :cutoff_iso"
+    "DELETE FROM activity_log WHERE tenant_enterprise = :tenant_enterprise AND ts < :cutoff_iso"
 )

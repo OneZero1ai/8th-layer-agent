@@ -129,9 +129,7 @@ def _propose_one(client: TestClient, api_key: str) -> str:
 
 
 class TestProposeLogs:
-    def test_propose_writes_activity_row(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_propose_writes_activity_row(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="proposer", password="pw")
         api_key = _mint_api_key(client, _login_jwt(client, "proposer", "pw"))
         ku_id = _propose_one(client, api_key)
@@ -156,9 +154,7 @@ class TestProposeLogs:
 
 
 class TestQueryLogs:
-    def test_query_writes_activity_row_with_result_summary(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_query_writes_activity_row_with_result_summary(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="querier", password="pw")
         api_key = _mint_api_key(client, _login_jwt(client, "querier", "pw"))
         ku_id = _propose_one(client, api_key)
@@ -190,9 +186,7 @@ class TestQueryLogs:
 
 
 class TestConfirmFlagLogs:
-    def test_confirm_writes_activity_row(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_confirm_writes_activity_row(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="confirmer", password="pw")
         api_key = _mint_api_key(client, _login_jwt(client, "confirmer", "pw"))
         ku_id = _propose_one(client, api_key)
@@ -213,9 +207,7 @@ class TestConfirmFlagLogs:
 
         assert _json.loads(confirm_rows[0]["payload"])["ku_id"] == ku_id
 
-    def test_flag_writes_activity_row_with_reason(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_flag_writes_activity_row_with_reason(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="flagger", password="pw")
         api_key = _mint_api_key(client, _login_jwt(client, "flagger", "pw"))
         ku_id = _propose_one(client, api_key)
@@ -240,9 +232,7 @@ class TestConfirmFlagLogs:
 
 
 class TestReviewLogs:
-    def test_approve_writes_review_resolve_row(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_approve_writes_review_resolve_row(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="proposer2", password="pw")
         _seed_user(username="admin1", password="pw", role="admin")
 
@@ -267,9 +257,7 @@ class TestReviewLogs:
         assert rr[0]["thread_or_chain_id"] == ku_id  # correlates to the KU
         assert rr[0]["persona"] == "admin1"
 
-    def test_reject_writes_review_resolve_row(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_reject_writes_review_resolve_row(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="proposer3", password="pw")
         _seed_user(username="admin2", password="pw", role="admin")
 
@@ -293,9 +281,7 @@ class TestReviewLogs:
 
 
 class TestConsultLogs:
-    def test_consult_lifecycle_writes_open_reply_close(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_consult_lifecycle_writes_open_reply_close(self, client: TestClient, tmp_path: Path) -> None:
         _seed_user(username="alice2", password="pw")
         _seed_user(username="bob2", password="pw")
         alice_jwt = _login_jwt(client, "alice2", "pw")

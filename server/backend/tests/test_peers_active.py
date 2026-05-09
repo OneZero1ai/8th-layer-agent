@@ -8,6 +8,7 @@ Pins:
   - group filter narrows within the same Enterprise.
   - include_self=False + self_persona excludes the caller's own row.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -22,7 +23,7 @@ from cq_server.app import _get_store, app
 from cq_server.deps import require_api_key
 
 ALICE = "alice"  # acme/engineering
-BOB = "bob"      # acme/solutions
+BOB = "bob"  # acme/solutions
 CARLA = "carla"  # initech/r-and-d (cross-Enterprise)
 
 
@@ -135,7 +136,7 @@ class TestDiscoverableFilter:
 class TestGroupFilter:
     def test_group_param_narrows_to_one_group(self, client: TestClient) -> None:
         _heartbeat(client, as_user=ALICE, persona="persona-alice")  # acme/engineering
-        _heartbeat(client, as_user=BOB, persona="persona-bob")      # acme/solutions
+        _heartbeat(client, as_user=BOB, persona="persona-bob")  # acme/solutions
         body = _list_active(client, as_user=ALICE, include_self=True, group="solutions")
         personas = {p["persona"] for p in body["active_peers"]}
         assert personas == {"persona-bob"}
@@ -145,18 +146,14 @@ class TestIncludeSelf:
     def test_self_excluded_by_default_when_persona_passed(self, client: TestClient) -> None:
         _heartbeat(client, as_user=ALICE, persona="persona-me")
         _heartbeat(client, as_user=ALICE, persona="persona-other")
-        body = _list_active(
-            client, as_user=ALICE, include_self=False, self_persona="persona-me"
-        )
+        body = _list_active(client, as_user=ALICE, include_self=False, self_persona="persona-me")
         personas = {p["persona"] for p in body["active_peers"]}
         assert "persona-me" not in personas
         assert "persona-other" in personas
 
     def test_include_self_true_returns_self(self, client: TestClient) -> None:
         _heartbeat(client, as_user=ALICE, persona="persona-me")
-        body = _list_active(
-            client, as_user=ALICE, include_self=True, self_persona="persona-me"
-        )
+        body = _list_active(client, as_user=ALICE, include_self=True, self_persona="persona-me")
         personas = {p["persona"] for p in body["active_peers"]}
         assert "persona-me" in personas
 

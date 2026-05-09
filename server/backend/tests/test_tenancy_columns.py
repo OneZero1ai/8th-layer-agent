@@ -48,6 +48,7 @@ def _make_unit(**overrides: Any) -> KnowledgeUnit:
 @pytest.fixture()
 def store(tmp_path: Path) -> Iterator[SqliteStore]:
     from cq_server.migrations import run_migrations
+
     db = tmp_path / "tenancy.db"
     run_migrations(f"sqlite:///{db}")
     s = SqliteStore(db_path=db)
@@ -90,8 +91,7 @@ class TestNewRowDefaults:
             store._engine.begin() as conn,
         ):
             conn.exec_driver_sql(
-                "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO knowledge_units (id, data, enterprise_id, group_id) VALUES (?, ?, ?, ?)",
                 ("ku_null", "{}", None, "default-group"),
             )
 
@@ -164,6 +164,7 @@ class TestAlembicMigration:
         # Use the python runtime path so the legacy DB is stamped at
         # baseline before the upgrade walks the chain.
         from cq_server.migrations import run_migrations
+
         run_migrations(f"sqlite:///{db}")
 
         # Inspect the row scope post-migration.

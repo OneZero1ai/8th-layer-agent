@@ -33,12 +33,7 @@ def conn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sqlite3.Connection:
 
 class TestSchema:
     def test_migration_creates_reputation_tables(self, conn: sqlite3.Connection) -> None:
-        names = {
-            r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "reputation_events" in names
         assert "reputation_chain_meta" in names
 
@@ -139,9 +134,7 @@ class TestRecordEvent:
             "SELECT last_event_id, last_event_hash FROM reputation_chain_meta WHERE enterprise_id = ?",
             ("test-corp",),
         ).fetchone()
-        count_before = conn.execute(
-            "SELECT COUNT(*) FROM reputation_events"
-        ).fetchone()[0]
+        count_before = conn.execute("SELECT COUNT(*) FROM reputation_events").fetchone()[0]
 
         # Force the chain-meta upsert to raise mid-record_event. The
         # event-row INSERT will already have happened by then.
@@ -150,20 +143,14 @@ class TestRecordEvent:
 
         monkeypatch.setattr(reputation, "_upsert_chain_meta", _boom)
 
-        result = reputation.record_event(
-            conn, event_type="consult.closed", body={"i": 2}
-        )
+        result = reputation.record_event(conn, event_type="consult.closed", body={"i": 2})
         assert result is None  # best-effort returned None per contract
         # Caller's commit happens — verify nothing leaked.
         conn.commit()
 
         # Event row from the failed call must NOT have persisted.
-        count_after = conn.execute(
-            "SELECT COUNT(*) FROM reputation_events"
-        ).fetchone()[0]
-        assert count_after == count_before, (
-            "savepoint failed to roll back the orphan event row"
-        )
+        count_after = conn.execute("SELECT COUNT(*) FROM reputation_events").fetchone()[0]
+        assert count_after == count_before, "savepoint failed to roll back the orphan event row"
 
         # Chain meta still points at e1, NOT a fictitious advance.
         meta_after = conn.execute(
@@ -201,9 +188,7 @@ class TestSigning:
         forward_sign.reload_l2_privkey()  # picks up the new path
 
         try:
-            eid = reputation.record_event(
-                conn, event_type="consult.closed", body={"thread_id": "th_signed"}
-            )
+            eid = reputation.record_event(conn, event_type="consult.closed", body={"thread_id": "th_signed"})
             conn.commit()
             assert eid is not None
 
@@ -235,15 +220,12 @@ class TestSigning:
         forward_sign.reload_l2_privkey()
 
         try:
-            eid = reputation.record_event(
-                conn, event_type="ku.event", body={"unit_id": "ku_42", "verb": "approve"}
-            )
+            eid = reputation.record_event(conn, event_type="ku.event", body={"unit_id": "ku_42", "verb": "approve"})
             conn.commit()
             assert eid is not None
 
             row = conn.execute(
-                "SELECT payload_canonical, signature_b64u, signing_key_id "
-                "FROM reputation_events WHERE event_id = ?",
+                "SELECT payload_canonical, signature_b64u, signing_key_id FROM reputation_events WHERE event_id = ?",
                 (eid,),
             ).fetchone()
             canonical_str, sig, kid = row
@@ -271,9 +253,7 @@ class TestSigning:
         forward_sign.reload_l2_privkey()
 
         try:
-            eid = reputation.record_event(
-                conn, event_type="consult.closed", body={"thread_id": "th_unsigned"}
-            )
+            eid = reputation.record_event(conn, event_type="consult.closed", body={"thread_id": "th_unsigned"})
             conn.commit()
             if eid is None:
                 # If load_or_create_l2_privkey raised (ran on a system that

@@ -61,12 +61,7 @@ def upgrade() -> None:
                 ),
             )
             # Backfill — same SQLite ALTER quirk as Phase 6 step 1.
-            op.execute(
-                sa.text(
-                    "UPDATE knowledge_units SET cross_group_allowed = 0 "
-                    "WHERE cross_group_allowed IS NULL"
-                )
-            )
+            op.execute(sa.text("UPDATE knowledge_units SET cross_group_allowed = 0 WHERE cross_group_allowed IS NULL"))
             with op.batch_alter_table("knowledge_units") as batch:
                 batch.alter_column(
                     "cross_group_allowed",

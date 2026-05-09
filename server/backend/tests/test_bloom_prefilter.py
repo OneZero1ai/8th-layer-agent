@@ -155,18 +155,18 @@ def _stub_embed(monkeypatch: pytest.MonkeyPatch, axis: int = 0, dim: int = 8) ->
 def _seed_diverse_fleet() -> list[network._L2Snapshot]:
     """6 L2s, each with a distinct domain set so the prefilter is exercised."""
     return [
-        _snap_with_bloom(slug="orion-eng", enterprise="orion", group="engineering",
-                         axis=0, domains=["cloudfront", "lambda"]),
-        _snap_with_bloom(slug="orion-sol", enterprise="orion", group="solutions",
-                         axis=1, domains=["bedrock", "titan"]),
-        _snap_with_bloom(slug="orion-gtm", enterprise="orion", group="gtm",
-                         axis=2, domains=["sales", "outbound"]),
-        _snap_with_bloom(slug="acme-eng", enterprise="acme", group="engineering",
-                         axis=3, domains=["kubernetes", "istio"]),
-        _snap_with_bloom(slug="acme-sol", enterprise="acme", group="solutions",
-                         axis=4, domains=["cloudfront", "edge", "cdn"]),
-        _snap_with_bloom(slug="acme-fin", enterprise="acme", group="finance",
-                         axis=5, domains=["sap", "quickbooks"]),
+        _snap_with_bloom(
+            slug="orion-eng", enterprise="orion", group="engineering", axis=0, domains=["cloudfront", "lambda"]
+        ),
+        _snap_with_bloom(slug="orion-sol", enterprise="orion", group="solutions", axis=1, domains=["bedrock", "titan"]),
+        _snap_with_bloom(slug="orion-gtm", enterprise="orion", group="gtm", axis=2, domains=["sales", "outbound"]),
+        _snap_with_bloom(
+            slug="acme-eng", enterprise="acme", group="engineering", axis=3, domains=["kubernetes", "istio"]
+        ),
+        _snap_with_bloom(
+            slug="acme-sol", enterprise="acme", group="solutions", axis=4, domains=["cloudfront", "edge", "cdn"]
+        ),
+        _snap_with_bloom(slug="acme-fin", enterprise="acme", group="finance", axis=5, domains=["sap", "quickbooks"]),
     ]
 
 

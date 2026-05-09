@@ -132,11 +132,13 @@ def _capture_x_enterprise_forwards(
         target_endpoint: dict[str, Any],
         payload: dict[str, Any],
     ) -> None:
-        captured.append({
-            "peering": peering,
-            "target_endpoint": target_endpoint,
-            "payload": payload,
-        })
+        captured.append(
+            {
+                "peering": peering,
+                "target_endpoint": target_endpoint,
+                "payload": payload,
+            }
+        )
 
     monkeypatch.setattr(consults, "_x_enterprise_forward_request", _fake_x_enterprise_forward)
     return captured
@@ -177,9 +179,7 @@ def test_bearer_swap_yields_different_bearer() -> None:
 
 def test_find_active_peering_returns_match(client: TestClient) -> None:
     _seed_peering(offer_id="off_a")
-    p = _get_store().sync.find_active_directory_peering(
-        from_enterprise="acme", to_enterprise="globex"
-    )
+    p = _get_store().sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
     assert p is not None
     assert p["offer_id"] == "off_a"
 
@@ -187,9 +187,7 @@ def test_find_active_peering_returns_match(client: TestClient) -> None:
 def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
     """Peering from A→B is also queryable as B→A."""
     _seed_peering(offer_id="off_b", from_ent="acme", to_ent="globex")
-    p = _get_store().sync.find_active_directory_peering(
-        from_enterprise="globex", to_enterprise="acme"
-    )
+    p = _get_store().sync.find_active_directory_peering(from_enterprise="globex", to_enterprise="acme")
     assert p is not None
     assert p["offer_id"] == "off_b"
 
@@ -197,17 +195,13 @@ def test_find_active_peering_is_bidirectional(client: TestClient) -> None:
 def test_find_active_peering_skips_expired(client: TestClient) -> None:
     """Past expires_at = no row."""
     _seed_peering(offer_id="off_old", expires_at="2020-01-01T00:00:00Z")
-    p = _get_store().sync.find_active_directory_peering(
-        from_enterprise="acme", to_enterprise="globex"
-    )
+    p = _get_store().sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
     assert p is None
 
 
 def test_find_active_peering_skips_non_active(client: TestClient) -> None:
     _seed_peering(offer_id="off_pending", status="pending")
-    p = _get_store().sync.find_active_directory_peering(
-        from_enterprise="acme", to_enterprise="globex"
-    )
+    p = _get_store().sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
     assert p is None
 
 
@@ -216,9 +210,7 @@ def test_find_active_peering_skips_non_active(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cross_enterprise_routes_via_directory_peering(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cross_enterprise_routes_via_directory_peering(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_peering(offer_id="off_e2e")
     captured = _capture_x_enterprise_forwards(monkeypatch)
     token = _login(client)
@@ -241,9 +233,7 @@ def test_cross_enterprise_routes_via_directory_peering(
     assert forward["payload"]["content"] == "cross-enterprise hello"
 
 
-def test_cross_enterprise_no_peering_returns_403(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cross_enterprise_no_peering_returns_403(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _capture_x_enterprise_forwards(monkeypatch)
     token = _login(client)
     r = client.post(
@@ -342,9 +332,7 @@ def test_cross_enterprise_logging_policy_no_log_skips_message_row(
     assert body["messages"] == []
 
 
-def test_cross_enterprise_mutual_log_writes_full_body(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cross_enterprise_mutual_log_writes_full_body(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Default policy mutual_log_required → asker side sees full content."""
     _seed_peering(offer_id="off_mutual")
     _capture_x_enterprise_forwards(monkeypatch)
@@ -369,9 +357,7 @@ def test_cross_enterprise_mutual_log_writes_full_body(
     assert msgs.json()["messages"][0]["content"] == "full content visible"
 
 
-def test_malformed_to_l2_id_returns_400(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_malformed_to_l2_id_returns_400(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """to_l2_id without enterprise/group separator is rejected before lookup."""
     _capture_x_enterprise_forwards(monkeypatch)
     token = _login(client)
@@ -409,17 +395,13 @@ def test_x_enterprise_forward_request_sends_bearer_and_sig_headers(
         def __exit__(self, *_a: Any) -> None:
             pass
 
-        def post(
-            self, url: str, *, headers: dict[str, str], json: dict[str, Any]
-        ) -> httpx.Response:
+        def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> httpx.Response:
             captured.append({"url": url, "headers": headers, "json": json})
             return httpx.Response(201)
 
     monkeypatch.setattr(consults.httpx, "Client", _FakeClient)
 
-    peering = _get_store().sync.find_active_directory_peering(
-        from_enterprise="acme", to_enterprise="globex"
-    )
+    peering = _get_store().sync.find_active_directory_peering(from_enterprise="acme", to_enterprise="globex")
     assert peering is not None
     target_endpoint = json.loads(peering["to_l2_endpoints_json"])[0]
 

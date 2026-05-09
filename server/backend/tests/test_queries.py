@@ -33,6 +33,7 @@ from cq_server.store import _queries as q
 async def db(tmp_path: Path) -> AsyncIterator[tuple[SqliteStore, Engine]]:
     """Shared on-disk SQLite database with both a SqliteStore and an SA engine."""
     from cq_server.migrations import run_migrations
+
     db_path = tmp_path / "test.db"
     run_migrations(f"sqlite:///{db_path}")
     store = SqliteStore(db_path=db_path)

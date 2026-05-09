@@ -86,14 +86,10 @@ class TestCryptoHelpers:
         # Flip a byte in the canonical payload — sig over the original
         # payload should no longer verify.
         tampered = envelope["payload_canonical"].replace('"a":1', '"a":2')
-        ok = dc.verify_envelope_signature(
-            envelope["signing_key_id"], tampered, envelope["signature"]
-        )
+        ok = dc.verify_envelope_signature(envelope["signing_key_id"], tampered, envelope["signature"])
         assert ok is False
 
-    def test_verify_rejects_wrong_key(
-        self, keypair: Ed25519PrivateKey, keypair_b: Ed25519PrivateKey
-    ) -> None:
+    def test_verify_rejects_wrong_key(self, keypair: Ed25519PrivateKey, keypair_b: Ed25519PrivateKey) -> None:
         envelope = dc.sign_envelope(keypair, {"a": 1})
         ok = dc.verify_envelope_signature(
             dc.public_key_b64u(keypair_b),
@@ -102,9 +98,7 @@ class TestCryptoHelpers:
         )
         assert ok is False
 
-    def test_load_private_key_roundtrip(
-        self, tmp_path: Path, keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_load_private_key_roundtrip(self, tmp_path: Path, keypair: Ed25519PrivateKey) -> None:
         p = tmp_path / "k.key"
         p.write_bytes(keypair.private_bytes_raw())
         loaded = dc.load_private_key(p)
@@ -124,14 +118,10 @@ class TestCryptoHelpers:
 
 class TestFeatureFlag:
     @pytest.mark.asyncio
-    async def test_disabled_skips_bootstrap(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    async def test_disabled_skips_bootstrap(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("CQ_DIRECTORY_ENABLED", "false")
         called: list[str] = []
-        monkeypatch.setattr(
-            dc, "_announce_with_retries", lambda *a, **kw: called.append("announce")
-        )
+        monkeypatch.setattr(dc, "_announce_with_retries", lambda *a, **kw: called.append("announce"))
         # Should return immediately without any side effects.
         from cq_server.store import SqliteStore
 
@@ -141,9 +131,7 @@ class TestFeatureFlag:
         store.sync.close()
 
     @pytest.mark.asyncio
-    async def test_enabled_but_unconfigured_skips(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    async def test_enabled_but_unconfigured_skips(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # Enabled but no privkey path → graceful skip, not crash.
         monkeypatch.setenv("CQ_DIRECTORY_ENABLED", "true")
         monkeypatch.delenv("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", raising=False)
@@ -169,9 +157,7 @@ class TestFeatureFlag:
         # NB: no privkey path, no contact email — pull-only doesn't need them.
 
         announce_called: list[str] = []
-        monkeypatch.setattr(
-            dc, "_announce_with_retries", lambda *a, **kw: announce_called.append("nope")
-        )
+        monkeypatch.setattr(dc, "_announce_with_retries", lambda *a, **kw: announce_called.append("nope"))
         # Stub the pull loop to record-and-return immediately so the test
         # doesn't actually loop forever.
         pull_called: list[tuple] = []
@@ -201,9 +187,7 @@ class TestFeatureFlag:
 
 class TestAnnounce:
     @pytest.mark.asyncio
-    async def test_announce_201_first_time(
-        self, monkeypatch: pytest.MonkeyPatch, keypair: Ed25519PrivateKey
-    ) -> None:
+    async def test_announce_201_first_time(self, monkeypatch: pytest.MonkeyPatch, keypair: Ed25519PrivateKey) -> None:
         captured: dict[str, Any] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -244,9 +228,7 @@ class TestAnnounce:
         assert env["payload"]["enterprise_id"] == "acme"
         assert env["signing_key_id"] == dc.public_key_b64u(keypair)
         # Signature must verify against the canonical bytes.
-        assert dc.verify_envelope_signature(
-            env["signing_key_id"], env["payload_canonical"], env["signature"]
-        )
+        assert dc.verify_envelope_signature(env["signing_key_id"], env["payload_canonical"], env["signature"])
 
     @pytest.mark.asyncio
     async def test_announce_200_on_update(self, keypair: Ed25519PrivateKey) -> None:
@@ -269,9 +251,7 @@ class TestAnnounce:
                 display_name="Acme",
                 visibility="public",
                 contact_email="a@b.c",
-                l2_endpoints=[
-                    {"l2_id": "acme/eng", "endpoint_url": "https://x", "groups": ["eng"]}
-                ],
+                l2_endpoints=[{"l2_id": "acme/eng", "endpoint_url": "https://x", "groups": ["eng"]}],
                 discoverable_topics=[],
             )
         assert status == 200
@@ -388,13 +368,9 @@ class TestPullAndPersist:
                     },
                 )
             if path.endswith("/enterprises/acme/key"):
-                return httpx.Response(
-                    200, json={"root_pubkey": dc.public_key_b64u(keypair)}
-                )
+                return httpx.Response(200, json={"root_pubkey": dc.public_key_b64u(keypair)})
             if path.endswith("/enterprises/rival/key"):
-                return httpx.Response(
-                    200, json={"root_pubkey": dc.public_key_b64u(keypair_b)}
-                )
+                return httpx.Response(200, json={"root_pubkey": dc.public_key_b64u(keypair_b)})
             return httpx.Response(404)
 
         original_async_client = httpx.AsyncClient
@@ -441,13 +417,9 @@ class TestPullAndPersist:
                     },
                 )
             if path.endswith("/enterprises/acme/key"):
-                return httpx.Response(
-                    200, json={"root_pubkey": dc.public_key_b64u(keypair)}
-                )
+                return httpx.Response(200, json={"root_pubkey": dc.public_key_b64u(keypair)})
             if path.endswith("/enterprises/rival/key"):
-                return httpx.Response(
-                    200, json={"root_pubkey": dc.public_key_b64u(keypair_b)}
-                )
+                return httpx.Response(200, json={"root_pubkey": dc.public_key_b64u(keypair_b)})
             return httpx.Response(404)
 
         original_async_client = httpx.AsyncClient
@@ -507,9 +479,7 @@ class TestPullAndPersist:
 
 
 class TestSchema:
-    def test_directory_peerings_table_exists_and_upserts(
-        self, app_client: TestClient
-    ) -> None:
+    def test_directory_peerings_table_exists_and_upserts(self, app_client: TestClient) -> None:
         store = _get_store()
         store.sync.upsert_directory_peering(
             offer_id="off_schema",

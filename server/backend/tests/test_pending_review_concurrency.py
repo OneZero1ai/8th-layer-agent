@@ -118,9 +118,7 @@ class TestSetReviewStatusReturnValue:
         assert review["status"] == "approved"
         assert review["reviewed_by"] == "first"
 
-    def test_dropped_status_also_blocks_subsequent_writes(
-        self, store: SqliteStore
-    ) -> None:
+    def test_dropped_status_also_blocks_subsequent_writes(self, store: SqliteStore) -> None:
         """``dropped`` (the pending_review→reject terminal) must also
         block further transitions. Pins that the WHERE clause's
         terminal-state list covers all three values, not just
@@ -156,9 +154,7 @@ class TestSetReviewStatusReturnValue:
 
 
 class TestRouteRaceProduces409:
-    def test_concurrent_approve_then_reject_returns_409(
-        self, client: TestClient
-    ) -> None:
+    def test_concurrent_approve_then_reject_returns_409(self, client: TestClient) -> None:
         """Two admins race on the same KU. The first /approve wins; the
         second /reject must 409 with the terminal status, not silently
         overwrite the audit row.
@@ -210,9 +206,7 @@ class TestRouteRaceProduces409:
         assert b_resp.status_code == 409
         assert "approved" in b_resp.json()["detail"]
 
-    def test_concurrent_reject_after_approve_does_not_corrupt_audit(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_concurrent_reject_after_approve_does_not_corrupt_audit(self, client: TestClient, tmp_path: Path) -> None:
         """Pin the on-disk shape: after the racing reject 409s, the
         ``reviewed_by`` row in the DB is still the winning admin's
         username — not the loser's. This is the audit-corruption
@@ -237,9 +231,7 @@ class TestRouteRaceProduces409:
                     "action": "Inspect the SQLite row directly.",
                 },
             },
-            headers={
-                "Authorization": f"Bearer {prop_key_resp.json()['token']}"
-            },
+            headers={"Authorization": f"Bearer {prop_key_resp.json()['token']}"},
         )
         assert propose.status_code == 201, propose.text
         ku_id = propose.json()["id"]

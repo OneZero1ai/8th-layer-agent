@@ -39,9 +39,7 @@ from pathlib import Path
 import pytest
 
 
-def _run_alembic(
-    db_path: Path, command: str, target: str
-) -> subprocess.CompletedProcess[str]:
+def _run_alembic(db_path: Path, command: str, target: str) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).resolve().parents[1]
     return subprocess.run(
         ["uv", "run", "alembic", command, target],
@@ -58,9 +56,7 @@ def _run_alembic(
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)
-    ).fetchone()
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone()
     return row is not None
 
 
@@ -116,8 +112,7 @@ class TestUpgradeDowngradeEmpty:
 
             # Retention config has the 90-day default.
             row = check.execute(
-                "SELECT dflt_value FROM pragma_table_info('activity_retention_config') "
-                "WHERE name = 'retention_days'"
+                "SELECT dflt_value FROM pragma_table_info('activity_retention_config') WHERE name = 'retention_days'"
             ).fetchone()
             assert row is not None
             assert row[0] == "90"
@@ -148,9 +143,7 @@ class TestUpgradeOnLegacyDb:
     touching pre-existing rows.
     """
 
-    def test_upgrade_creates_tables_without_disturbing_legacy_rows(
-        self, tmp_path: Path
-    ) -> None:
+    def test_upgrade_creates_tables_without_disturbing_legacy_rows(self, tmp_path: Path) -> None:
         db = tmp_path / "alembic_legacy.db"
         conn = sqlite3.connect(str(db))
         conn.executescript(
@@ -171,6 +164,7 @@ class TestUpgradeOnLegacyDb:
         conn.close()
 
         from cq_server.migrations import run_migrations
+
         run_migrations(f"sqlite:///{db}")
 
         check = sqlite3.connect(str(db))
@@ -178,9 +172,7 @@ class TestUpgradeOnLegacyDb:
             assert _table_exists(check, "activity_log")
             assert _table_exists(check, "activity_retention_config")
             # Legacy row survived.
-            row = check.execute(
-                "SELECT id FROM knowledge_units WHERE id = 'legacy_ku'"
-            ).fetchone()
+            row = check.execute("SELECT id FROM knowledge_units WHERE id = 'legacy_ku'").fetchone()
             assert row is not None
             assert row[0] == "legacy_ku"
         finally:
@@ -212,9 +204,7 @@ class TestCheckConstraints:
             )
         conn.close()
 
-    def test_event_type_accepts_every_locked_enum_value(
-        self, tmp_path: Path
-    ) -> None:
+    def test_event_type_accepts_every_locked_enum_value(self, tmp_path: Path) -> None:
         db = tmp_path / "ck_event_ok.db"
         sqlite3.connect(str(db)).close()
         up = _run_alembic(db, "upgrade", "head")
@@ -225,9 +215,7 @@ class TestCheckConstraints:
         conn = sqlite3.connect(str(db))
         for i, et in enumerate(sorted(EVENT_TYPES)):
             conn.execute(
-                "INSERT INTO activity_log "
-                "(id, ts, tenant_enterprise, event_type, payload) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO activity_log (id, ts, tenant_enterprise, event_type, payload) VALUES (?, ?, ?, ?, ?)",
                 (f"act_ok_{i:02d}", "2026-05-06T00:00:00Z", "ent", et, "{}"),
             )
         conn.commit()
@@ -288,14 +276,18 @@ class TestSqliteStoreActivityHelpers:
                 thread_or_chain_id=None,
             )
 
-            row = store.sync._engine.connect().execute(
-                __import__("sqlalchemy").text(
-                    "SELECT id, tenant_enterprise, tenant_group, persona, human, "
-                    "event_type, payload, result_summary, thread_or_chain_id "
-                    "FROM activity_log WHERE id = :id"
-                ),
-                {"id": aid},
-            ).fetchone()
+            row = (
+                store.sync._engine.connect()
+                .execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT id, tenant_enterprise, tenant_group, persona, human, "
+                        "event_type, payload, result_summary, thread_or_chain_id "
+                        "FROM activity_log WHERE id = :id"
+                    ),
+                    {"id": aid},
+                )
+                .fetchone()
+            )
             assert row is not None
             assert row[0] == aid
             assert row[1] == "ent-1"
@@ -305,15 +297,14 @@ class TestSqliteStoreActivityHelpers:
             assert row[5] == "query"
             # JSON round-trip preserves shape.
             import json as _json
+
             assert _json.loads(row[6]) == {"domains": ["api"], "limit": 5}
             assert _json.loads(row[7]) == {"ku_ids": ["ku_x"], "cache_hit": False}
             assert row[8] is None
         finally:
             store.sync.close()
 
-    async def test_append_activity_rejects_unknown_event_type(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_activity_rejects_unknown_event_type(self, tmp_path: Path) -> None:
         from cq_server.activity import generate_activity_id, now_iso_z
         from cq_server.store import SqliteStore
 
@@ -333,9 +324,7 @@ class TestSqliteStoreActivityHelpers:
         finally:
             store.sync.close()
 
-    async def test_append_activity_allows_null_persona_and_group(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_append_activity_allows_null_persona_and_group(self, tmp_path: Path) -> None:
         """System events log without a persona / group / human."""
         from cq_server.activity import generate_activity_id, now_iso_z
         from cq_server.store import SqliteStore
@@ -358,9 +347,7 @@ class TestSqliteStoreActivityHelpers:
             cnt = (
                 store.sync._engine.connect()
                 .execute(
-                    __import__("sqlalchemy").text(
-                        "SELECT COUNT(*) FROM activity_log WHERE id = :id"
-                    ),
+                    __import__("sqlalchemy").text("SELECT COUNT(*) FROM activity_log WHERE id = :id"),
                     {"id": aid},
                 )
                 .scalar()
@@ -377,10 +364,7 @@ class TestRetentionConfigHelpers:
         db = tmp_path / "ret_default.db"
         store = SqliteStore(db_path=db)
         try:
-            assert (
-                await store.get_activity_retention_days(enterprise_id="any-ent")
-                == 90
-            )
+            assert await store.get_activity_retention_days(enterprise_id="any-ent") == 90
         finally:
             store.sync.close()
 
@@ -390,26 +374,13 @@ class TestRetentionConfigHelpers:
         db = tmp_path / "ret_set.db"
         store = SqliteStore(db_path=db)
         try:
-            await store.set_activity_retention_days(
-                enterprise_id="ent-1", retention_days=30
-            )
-            assert (
-                await store.get_activity_retention_days(enterprise_id="ent-1")
-                == 30
-            )
+            await store.set_activity_retention_days(enterprise_id="ent-1", retention_days=30)
+            assert await store.get_activity_retention_days(enterprise_id="ent-1") == 30
             # Upsert overrides existing value.
-            await store.set_activity_retention_days(
-                enterprise_id="ent-1", retention_days=180
-            )
-            assert (
-                await store.get_activity_retention_days(enterprise_id="ent-1")
-                == 180
-            )
+            await store.set_activity_retention_days(enterprise_id="ent-1", retention_days=180)
+            assert await store.get_activity_retention_days(enterprise_id="ent-1") == 180
             # Sibling enterprise still defaults.
-            assert (
-                await store.get_activity_retention_days(enterprise_id="ent-2")
-                == 90
-            )
+            assert await store.get_activity_retention_days(enterprise_id="ent-2") == 90
         finally:
             store.sync.close()
 
@@ -420,21 +391,15 @@ class TestRetentionConfigHelpers:
         store = SqliteStore(db_path=db)
         try:
             with pytest.raises(ValueError):
-                await store.set_activity_retention_days(
-                    enterprise_id="ent-1", retention_days=0
-                )
+                await store.set_activity_retention_days(enterprise_id="ent-1", retention_days=0)
             with pytest.raises(ValueError):
-                await store.set_activity_retention_days(
-                    enterprise_id="ent-1", retention_days=-7
-                )
+                await store.set_activity_retention_days(enterprise_id="ent-1", retention_days=-7)
         finally:
             store.sync.close()
 
 
 class TestPurgeOlderThan:
-    async def test_purge_deletes_only_old_rows_for_named_tenant(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_purge_deletes_only_old_rows_for_named_tenant(self, tmp_path: Path) -> None:
         from datetime import UTC, datetime, timedelta
 
         from cq_server.activity import generate_activity_id
@@ -478,19 +443,15 @@ class TestPurgeOlderThan:
             )
 
             # Purge ent-1 only.
-            deleted = await store.purge_activity_older_than(
-                tenant_enterprise="ent-1", cutoff_iso=cutoff_iso
-            )
+            deleted = await store.purge_activity_older_than(tenant_enterprise="ent-1", cutoff_iso=cutoff_iso)
             assert deleted == 1
 
             # ent-1 still has the recent row; ent-2 still has its old row.
             import sqlalchemy as _sa
+
             with store.sync._engine.connect() as conn:
                 rows = conn.execute(
-                    _sa.text(
-                        "SELECT tenant_enterprise, ts FROM activity_log "
-                        "ORDER BY tenant_enterprise, ts"
-                    )
+                    _sa.text("SELECT tenant_enterprise, ts FROM activity_log ORDER BY tenant_enterprise, ts")
                 ).fetchall()
             assert [(r[0], r[1]) for r in rows] == [
                 ("ent-1", recent_ts),

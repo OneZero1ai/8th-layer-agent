@@ -66,9 +66,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 
 def _login(client: TestClient) -> str:
-    resp = client.post(
-        "/api/v1/auth/login", json={"username": ALICE, "password": "pw"}
-    )
+    resp = client.post("/api/v1/auth/login", json={"username": ALICE, "password": "pw"})
     return resp.json()["token"]
 
 
@@ -118,9 +116,7 @@ def _patch_fleet_calls(
         captured["lookups"].append(l2["slug"])
         return ({"results": []}, 5)
 
-    async def _fake_forward(
-        client, target, *, requester, requester_persona, query_vec, query_text
-    ):
+    async def _fake_forward(client, target, *, requester, requester_persona, query_vec, query_text):
         captured["forward_query_targets"].append(target["slug"])
         if forward_query_status != 200:
             return None, 7
@@ -158,8 +154,12 @@ class TestCrossGroupScenario:
         captured = _patch_fleet_calls(
             monkeypatch,
             target_axis_for={
-                "orion-eng": 1, "orion-sol": 2, "orion-gtm": 3,
-                "acme-eng": 5, "acme-sol": 0, "acme-fin": 6,
+                "orion-eng": 1,
+                "orion-sol": 2,
+                "orion-gtm": 3,
+                "acme-eng": 5,
+                "acme-sol": 0,
+                "acme-fin": 6,
             },
         )
         jwt = _login(client)
@@ -192,8 +192,12 @@ class TestCrossEnterpriseBlocked:
         captured = _patch_fleet_calls(
             monkeypatch,
             target_axis_for={
-                "orion-eng": 0, "orion-sol": 2, "orion-gtm": 3,
-                "acme-eng": 5, "acme-sol": 4, "acme-fin": 6,
+                "orion-eng": 0,
+                "orion-sol": 2,
+                "orion-gtm": 3,
+                "acme-eng": 5,
+                "acme-sol": 4,
+                "acme-fin": 6,
             },
             forward_query_response={
                 "responder_l2_id": "orion/engineering",
@@ -223,15 +227,17 @@ class TestCrossEnterpriseBlocked:
 
 
 class TestCrossEnterpriseConsentedPrecondition:
-    def test_412_when_no_consent_row(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_412_when_no_consent_row(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_embed(monkeypatch, axis=0)
         _patch_fleet_calls(
             monkeypatch,
             target_axis_for={
-                "orion-eng": 0, "orion-sol": 2, "orion-gtm": 3,
-                "acme-eng": 5, "acme-sol": 4, "acme-fin": 6,
+                "orion-eng": 0,
+                "orion-sol": 2,
+                "orion-gtm": 3,
+                "acme-eng": 5,
+                "acme-sol": 4,
+                "acme-fin": 6,
             },
         )
         jwt = _login(client)
@@ -249,9 +255,7 @@ class TestCrossEnterpriseConsentedPrecondition:
         detail = body["detail"]
         assert detail["error"] == "no_consent"
 
-    def test_200_when_consent_exists(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_200_when_consent_exists(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         # Seed a consent row from acme/eng -> orion/eng.
         store = _get_store()
         store.sync.insert_cross_enterprise_consent(
@@ -270,8 +274,12 @@ class TestCrossEnterpriseConsentedPrecondition:
         _patch_fleet_calls(
             monkeypatch,
             target_axis_for={
-                "orion-eng": 0, "orion-sol": 2, "orion-gtm": 3,
-                "acme-eng": 5, "acme-sol": 4, "acme-fin": 6,
+                "orion-eng": 0,
+                "orion-sol": 2,
+                "orion-gtm": 3,
+                "acme-eng": 5,
+                "acme-sol": 4,
+                "acme-fin": 6,
             },
         )
         jwt = _login(client)
@@ -305,9 +313,7 @@ class TestUnknownScenario:
 
 
 class TestUnknownRequesterSlug:
-    def test_422_on_unknown_slug(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_422_on_unknown_slug(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_embed(monkeypatch, axis=0)
         jwt = _login(client)
         resp = client.post(
