@@ -164,6 +164,49 @@ def test_either_participant_can_reply(client: TestClient) -> None:
     assert [m["from_persona"] for m in msgs] == [ALICE, BOB, ALICE]
 
 
+def test_get_thread_metadata_by_id(client: TestClient) -> None:
+    """GET /consults/{thread_id} returns thread metadata for a participant."""
+    open_resp = client.post(
+        "/api/v1/consults/request",
+        headers=_headers(client, ALICE),
+        json={
+            "to_l2_id": "acme/engineering",
+            "to_persona": BOB,
+            "subject": "metadata fetch",
+            "content": "hi",
+        },
+    )
+    thread_id = open_resp.json()["thread_id"]
+
+    # Either participant can fetch
+    for caller in (ALICE, BOB):
+        r = client.get(
+            f"/api/v1/consults/{thread_id}",
+            headers=_headers(client, caller),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["thread_id"] == thread_id
+        assert body["from_persona"] == ALICE
+        assert body["to_persona"] == BOB
+        assert body["status"] == "open"
+        assert body["subject"] == "metadata fetch"
+
+    # Non-participant gets 403
+    r = client.get(
+        f"/api/v1/consults/{thread_id}",
+        headers=_headers(client, DAN),
+    )
+    assert r.status_code == 403, r.text
+
+    # Unknown thread → 404
+    r = client.get(
+        "/api/v1/consults/th_does_not_exist",
+        headers=_headers(client, ALICE),
+    )
+    assert r.status_code == 404, r.text
+
+
 def test_non_participant_403_on_messages(client: TestClient) -> None:
     open_resp = client.post(
         "/api/v1/consults/request",
