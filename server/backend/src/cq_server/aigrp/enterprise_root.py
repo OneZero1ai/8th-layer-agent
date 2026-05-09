@@ -56,6 +56,17 @@ def _ttl_sec() -> int:
 
 
 def _param_path(enterprise_id: str) -> str:
+    """Return the SSM SecureString path for ``enterprise_id``.
+
+    Phase 1.0d — operators can override the path via
+    ``CQ_ENTERPRISE_ROOT_SSM_PATH`` (e.g. when the SSM hierarchy in their
+    account collides with our default). When set, the override is used
+    verbatim; the ``enterprise_id`` slash check is bypassed because the
+    operator owns the path entirely. Empty / unset → default scheme.
+    """
+    override = os.environ.get("CQ_ENTERPRISE_ROOT_SSM_PATH", "").strip()
+    if override:
+        return override
     if not enterprise_id or "/" in enterprise_id:
         # SSM treats "/" as a path separator; an enterprise id with a slash
         # would either silently fan out under another path or 400 on PUT.

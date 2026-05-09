@@ -54,8 +54,17 @@ BLOOM_HASHES = 5
 
 
 def is_first_deploy() -> bool:
-    """Return True iff this L2 is the genesis node for its Enterprise."""
-    return os.environ.get("CQ_AIGRP_IS_FIRST_DEPLOY", "false").lower() == "true"
+    """Return True iff this L2 is the genesis node for its Enterprise.
+
+    Phase 1.0d — defers to ``runtime.is_first_deploy_runtime`` which honours
+    the legacy env when set but otherwise determines genesis status from
+    the presence of a seed-peer URL. Imported lazily to avoid the
+    runtime → _legacy import cycle.
+    """
+    # Lazy import: runtime imports from this module.
+    from . import runtime as _runtime
+
+    return _runtime.is_first_deploy_runtime()
 
 
 def seed_peer_url() -> str:
@@ -88,32 +97,86 @@ def self_l2_id() -> str:
 
 
 def aigrp_enabled() -> bool:
-    """Disable AIGRP entirely when no peer key is configured.
+    """Disable AIGRP entirely when no peer key + no Enterprise root configured.
 
-    Lets the cq Remote run in legacy single-L2 mode (e.g., the existing
-    `mvp` stack with no AIGRP wiring) without crashing or hammering /aigrp
-    against itself.
+    Phase 1.0d — pair-secret runtime makes AIGRP usable WITHOUT
+    ``CQ_AIGRP_PEER_KEY`` as long as the Enterprise root is reachable in
+    SSM. The legacy env var stays a valid signal for back-compat (cross-
+    Enterprise aggregator + legacy single-L2 stacks); presence of either
+    flips the loop on. Single-L2 ``mvp`` stacks with neither still get
+    the AIGRP-disabled fast-path.
     """
-    return bool(os.environ.get("CQ_AIGRP_PEER_KEY"))
+    if os.environ.get("CQ_AIGRP_PEER_KEY"):
+        return True
+    # Lazy import — avoids cost on hot module load when AIGRP is disabled.
+    from . import runtime as _runtime
+
+    try:
+        return _runtime.runtime_root_present()
+    except Exception:  # noqa: BLE001 — defensive; bad config shouldn't crash boot
+        logger.exception("aigrp_enabled: runtime_root_present probe raised; treating as disabled")
+        return False
 
 
 def require_peer_key(request: Request) -> None:
-    """FastAPI dependency: validate the shared EnterprisePeerKey on /aigrp/* calls."""
-    expected = os.environ.get("CQ_AIGRP_PEER_KEY", "")
-    if not expected:
-        raise HTTPException(status_code=503, detail="AIGRP not configured on this L2")
+    """FastAPI dependency: validate the caller's authority on /aigrp/* calls.
+
+    Phase 1.0d — accepts EITHER:
+
+    1. Pair-secret bearer (intra-Enterprise, Decision 28). The caller
+       declares its identity in ``X-8L-Forwarder-L2-Id``; we derive the
+       expected bearer from ``HMAC(pair_secret, "aigrp-bearer-v1")`` and
+       constant-time compare. Both sides compute the same value because
+       ``pair_secret`` is HKDF-derived from the Enterprise root with a
+       lex-canonical info string.
+
+    2. Legacy shared bearer (``CQ_AIGRP_PEER_KEY``). Used by the cross-
+       Enterprise aggregator (``network.py``) and during the cutover
+       window before every sibling is on the new image. Falls through to
+       this path when (a) no forwarder header, OR (b) the forwarder
+       declares a different Enterprise (cross-Enterprise call), OR (c)
+       the pair-secret bearer didn't match — so a transient SSM/KMS
+       failure on this L2 doesn't dark-out the legacy path.
+
+    401 on auth failure; 503 only when neither auth mode is configured at
+    all (no env, no Enterprise root reachable).
+    """
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing peer key")
     presented = auth[7:]
-    # constant-time compare
-    if len(presented) != len(expected):
+
+    # Mode 1 — pair-secret. Only attempted when forwarder header present
+    # AND declares same Enterprise. Cross-Enterprise headers (aggregator)
+    # legitimately differ, so we skip mode 1 there.
+    declared = request.headers.get(FORWARDER_HEADER, "").strip()
+    if declared:
+        declared_enterprise, sep, _ = declared.partition("/")
+        if sep and declared_enterprise == enterprise() and declared != self_l2_id():
+            from . import runtime as _runtime
+
+            if _runtime.verify_bearer_against_peer(declared, presented):
+                return  # authorised via pair-secret
+
+    # Mode 2 — legacy shared bearer.
+    legacy = os.environ.get("CQ_AIGRP_PEER_KEY", "")
+    if legacy:
+        # constant-time compare
+        if len(presented) == len(legacy):
+            diff = 0
+            for a, b in zip(presented, legacy, strict=True):
+                diff |= ord(a) ^ ord(b)
+            if diff == 0:
+                return  # authorised via legacy bearer
         raise HTTPException(status_code=401, detail="invalid peer key")
-    diff = 0
-    for a, b in zip(presented, expected, strict=True):
-        diff |= ord(a) ^ ord(b)
-    if diff != 0:
+
+    # Neither mode configured / matched.
+    # If forwarder header was present and intra-Enterprise but mode 1 failed,
+    # surface 401 (caller possesses neither secret); if no forwarder + no
+    # legacy, AIGRP simply isn't configured here — 503.
+    if declared:
         raise HTTPException(status_code=401, detail="invalid peer key")
+    raise HTTPException(status_code=503, detail="AIGRP not configured on this L2")
 
 
 # SEC-CRIT #34 — forward-endpoint identity binding.

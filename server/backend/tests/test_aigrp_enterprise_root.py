@@ -129,3 +129,20 @@ class TestPathValidation:
     def test_empty_id_rejected(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):
             enterprise_root._param_path("")
+
+
+class TestPathOverride:
+    """Phase 1.0d — operators can pin the SSM path via env."""
+
+    def test_env_override_used_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CQ_ENTERPRISE_ROOT_SSM_PATH", "/custom/path/acme-root")
+        assert enterprise_root._param_path("acme") == "/custom/path/acme-root"
+
+    def test_env_override_bypasses_slash_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Operator's override path can contain slashes — we trust them.
+        monkeypatch.setenv("CQ_ENTERPRISE_ROOT_SSM_PATH", "/foo/bar/baz")
+        assert enterprise_root._param_path("acme") == "/foo/bar/baz"
+
+    def test_empty_override_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CQ_ENTERPRISE_ROOT_SSM_PATH", "")
+        assert enterprise_root._param_path("acme") == "/8th-layer/aigrp/enterprise-root/acme"
