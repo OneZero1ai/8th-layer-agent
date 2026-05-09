@@ -50,7 +50,7 @@ def _seed_user(client: TestClient) -> str:
         )
     jwt = client.post(
         "/api/v1/auth/login",
-        json={"username": "alice", "password": "alice-pw-123"},
+        json={"username": "alice", "password": "alice-pw-123"},  # pragma: allowlist secret
     ).json()["token"]
     key_resp = client.post(
         "/api/v1/auth/api-keys",
@@ -89,9 +89,7 @@ def _propose(client: TestClient, token: str, *, tier: str | None = None) -> str:
 def _read_tier(unit_id: str) -> str:
     conn = sqlite3.connect(os.environ["CQ_DB_PATH"])
     try:
-        row = conn.execute(
-            "SELECT tier FROM knowledge_units WHERE id = ?", (unit_id,)
-        ).fetchone()
+        row = conn.execute("SELECT tier FROM knowledge_units WHERE id = ?", (unit_id,)).fetchone()
         assert row is not None
         return row[0]
     finally:
