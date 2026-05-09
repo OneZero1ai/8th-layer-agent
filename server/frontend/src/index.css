@@ -1,2 +1,217 @@
+/*
+ * 8th-Layer.ai theme — Layer 8 admin UI tokens.
+ *
+ * Upstream cq theme is light-mode; the 8th-Layer fork is dark with a vertical
+ * radial gradient backdrop. Switch via the `data-theme` attribute on <html>:
+ *   data-theme="8th-layer"     (default; set in main.tsx from VITE_THEME)
+ *   data-theme="mainline-cq"   (fallback / A-B; preserves upstream visuals)
+ *
+ * License-wise this is a derivative of the mainline cq frontend (Apache-2.0).
+ * See ../../../NOTICE and FORK_DELTA.md.
+ */
+
 @import "tailwindcss";
 @custom-variant pointer-fine (@media (pointer: fine));
+
+/* ── 8th-Layer brand tokens ─────────────────────────────────────────────── */
+:root[data-theme="8th-layer"] {
+  --bg-from: #0a0612;
+  --bg-via: #07070b;
+  --bg-to: #040810;
+
+  --ink: #e6e6e6;
+  --ink-dim: rgba(230, 230, 230, 0.65);
+  --ink-mute: rgba(230, 230, 230, 0.42);
+  --ink-faint: rgba(230, 230, 230, 0.28);
+
+  --rule: rgba(255, 255, 255, 0.06);
+  --rule-strong: rgba(255, 255, 255, 0.14);
+
+  --cyan: #5bd0ff;
+  --violet: #a685ff;
+  --emerald: #10b981;
+  --gold: #fcd34d;
+  --rose: #ff5c7c;
+
+  --surface: rgba(255, 255, 255, 0.025);
+  --surface-raised: rgba(255, 255, 255, 0.04);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "JetBrains Mono", monospace;
+
+  --backdrop: radial-gradient(
+    120% 80% at 50% 0%,
+    #1a0e2c 0%,
+    var(--bg-from) 38%,
+    var(--bg-via) 64%,
+    var(--bg-to) 100%
+  );
+}
+
+/* ── mainline-cq fallback (light, neutral) ──────────────────────────────── */
+:root[data-theme="mainline-cq"] {
+  --bg-from: #f9fafb;
+  --bg-via: #ffffff;
+  --bg-to: #ffffff;
+
+  --ink: #111827;
+  --ink-dim: #4b5563;
+  --ink-mute: #6b7280;
+  --ink-faint: #9ca3af;
+
+  --rule: #e5e7eb;
+  --rule-strong: #d1d5db;
+
+  --cyan: #4f46e5;
+  --violet: #7c3aed;
+  --emerald: #16a34a;
+  --gold: #f59e0b;
+  --rose: #dc2626;
+
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-hover: #f3f4f6;
+
+  --font-display: ui-sans-serif, system-ui, sans-serif;
+  --font-body: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", monospace;
+
+  --backdrop: #f9fafb;
+}
+
+/* Default when no data-theme set (SSR / pre-hydration). Mirror 8th-layer. */
+:root:not([data-theme]) {
+  --bg-from: #0a0612;
+  --bg-via: #07070b;
+  --bg-to: #040810;
+  --ink: #e6e6e6;
+  --ink-dim: rgba(230, 230, 230, 0.65);
+  --ink-mute: rgba(230, 230, 230, 0.42);
+  --ink-faint: rgba(230, 230, 230, 0.28);
+  --rule: rgba(255, 255, 255, 0.06);
+  --rule-strong: rgba(255, 255, 255, 0.14);
+  --cyan: #5bd0ff;
+  --violet: #a685ff;
+  --emerald: #10b981;
+  --gold: #fcd34d;
+  --rose: #ff5c7c;
+  --surface: rgba(255, 255, 255, 0.025);
+  --surface-raised: rgba(255, 255, 255, 0.04);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --backdrop: radial-gradient(
+    120% 80% at 50% 0%,
+    #1a0e2c 0%,
+    var(--bg-from) 38%,
+    var(--bg-via) 64%,
+    var(--bg-to) 100%
+  );
+}
+
+/* ── Body / global type ─────────────────────────────────────────────────── */
+html,
+body {
+  background: var(--backdrop);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme="mainline-cq"],
+:root[data-theme="mainline-cq"] body {
+  background: var(--bg-via);
+}
+
+/* Typography helpers — exposed as tailwind utilities via @utility. */
+@utility font-display {
+  font-family: var(--font-display);
+  font-weight: 300;
+  letter-spacing: -0.01em;
+}
+
+@utility font-body-brand {
+  font-family: var(--font-body);
+}
+
+@utility font-mono-brand {
+  font-family: var(--font-mono);
+}
+
+/* Eyebrow — IBM Plex Mono uppercase, used for "Confidence", "Action", section labels. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+/* ── Brand surface utilities ────────────────────────────────────────────── */
+
+@utility brand-surface {
+  background-color: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 0.75rem;
+}
+
+@utility brand-surface-raised {
+  background-color: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 0.75rem;
+}
+
+@utility brand-input {
+  background-color: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: 0.5rem;
+  color: var(--ink);
+  font-family: var(--font-body);
+  padding: 0.5rem 0.75rem;
+  outline: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+  &:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 25%, transparent);
+  }
+}
+
+/* Subtle scrollbars to fit the dark aesthetic. */
+:root[data-theme="8th-layer"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+:root[data-theme="8th-layer"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+:root[data-theme="8th-layer"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+:root[data-theme="8th-layer"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Selection. */
+:root[data-theme="8th-layer"] ::selection {
+  background: color-mix(in srgb, var(--cyan) 35%, transparent);
+  color: var(--ink);
+}
+
+/* Native autofill harmonisation in dark. */
+:root[data-theme="8th-layer"] input:-webkit-autofill,
+:root[data-theme="8th-layer"] input:-webkit-autofill:hover,
+:root[data-theme="8th-layer"] input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-via) inset;
+  caret-color: var(--ink);
+}

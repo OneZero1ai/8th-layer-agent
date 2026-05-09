@@ -2,9 +2,24 @@ import type { DragState } from "../hooks/useCardDrag"
 import { BADGE_APPEAR_RATIO } from "../hooks/useCardDrag"
 
 const INDICATORS = {
-  approve: { symbol: "\u2713", bg: "bg-green-600", label: "Approve" },
-  reject: { symbol: "\u2715", bg: "bg-red-600", label: "Reject" },
-  skip: { symbol: "\u2014", bg: "bg-slate-600", label: "Skip" },
+  approve: {
+    symbol: "✓",
+    bg: "bg-[var(--emerald)] text-[#04140c]",
+    label: "Approve",
+    color: "text-[var(--emerald)]",
+  },
+  reject: {
+    symbol: "✕",
+    bg: "bg-[var(--rose)] text-[#1a0a10]",
+    label: "Reject",
+    color: "text-[var(--rose)]",
+  },
+  skip: {
+    symbol: "—",
+    bg: "bg-[var(--ink-dim)] text-[var(--bg-via)]",
+    label: "Skip",
+    color: "text-[var(--ink-dim)]",
+  },
 } as const
 
 interface Props {
@@ -34,11 +49,13 @@ export function DragIndicators({ drag }: Props) {
         }}
       >
         <div
-          className={`w-10 h-10 ${INDICATORS.approve.bg} rounded-full flex items-center justify-center text-white text-lg`}
+          className={`w-10 h-10 ${INDICATORS.approve.bg} rounded-full flex items-center justify-center text-lg font-semibold shadow-lg`}
         >
           {INDICATORS.approve.symbol}
         </div>
-        <span className="text-xs font-semibold text-green-600">
+        <span
+          className={`font-mono-brand text-[10px] uppercase tracking-[0.18em] ${INDICATORS.approve.color}`}
+        >
           {INDICATORS.approve.label}
         </span>
       </div>
@@ -52,11 +69,13 @@ export function DragIndicators({ drag }: Props) {
         }}
       >
         <div
-          className={`w-10 h-10 ${INDICATORS.reject.bg} rounded-full flex items-center justify-center text-white text-lg`}
+          className={`w-10 h-10 ${INDICATORS.reject.bg} rounded-full flex items-center justify-center text-lg font-semibold shadow-lg`}
         >
           {INDICATORS.reject.symbol}
         </div>
-        <span className="text-xs font-semibold text-red-600">
+        <span
+          className={`font-mono-brand text-[10px] uppercase tracking-[0.18em] ${INDICATORS.reject.color}`}
+        >
           {INDICATORS.reject.label}
         </span>
       </div>
@@ -70,11 +89,13 @@ export function DragIndicators({ drag }: Props) {
         }}
       >
         <div
-          className={`w-10 h-10 ${INDICATORS.skip.bg} rounded-full flex items-center justify-center text-white text-lg`}
+          className={`w-10 h-10 ${INDICATORS.skip.bg} rounded-full flex items-center justify-center text-lg font-semibold shadow-lg`}
         >
           {INDICATORS.skip.symbol}
         </div>
-        <span className="text-xs font-semibold text-slate-600">
+        <span
+          className={`font-mono-brand text-[10px] uppercase tracking-[0.18em] ${INDICATORS.skip.color}`}
+        >
           {INDICATORS.skip.label}
         </span>
       </div>
@@ -88,11 +109,13 @@ export function DragIndicators({ drag }: Props) {
         }}
       >
         <div
-          className={`w-10 h-10 ${INDICATORS.skip.bg} rounded-full flex items-center justify-center text-white text-lg`}
+          className={`w-10 h-10 ${INDICATORS.skip.bg} rounded-full flex items-center justify-center text-lg font-semibold shadow-lg`}
         >
           {INDICATORS.skip.symbol}
         </div>
-        <span className="text-xs font-semibold text-slate-600">
+        <span
+          className={`font-mono-brand text-[10px] uppercase tracking-[0.18em] ${INDICATORS.skip.color}`}
+        >
           {INDICATORS.skip.label}
         </span>
       </div>

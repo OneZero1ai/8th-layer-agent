@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router"
 import { api } from "../api"
 import { useAuth } from "../auth"
+import { Wordmark } from "./Wordmark"
 
 export function Layout() {
   const { username, logout } = useAuth()
@@ -29,41 +30,48 @@ export function Layout() {
     return (
       <Link
         to={path}
-        className={`px-3 py-1 text-sm font-medium whitespace-nowrap ${
+        className={`relative font-mono-brand text-[11px] uppercase tracking-[0.22em] py-1 whitespace-nowrap transition-colors ${
           active
-            ? "border-b-2 border-indigo-500 font-semibold text-gray-900"
-            : "text-gray-500 hover:text-gray-900"
+            ? "text-[var(--ink)]"
+            : "text-[var(--ink-mute)] hover:text-[var(--ink-dim)]"
         }`}
       >
         {label}
         {path === "/review" && pendingCount > 0 && (
-          <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+          <span className="ml-2 inline-flex items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-mono-brand text-[var(--gold)] bg-[color-mix(in_srgb,var(--gold)_14%,transparent)] border border-[color-mix(in_srgb,var(--gold)_28%,transparent)]">
             {pendingCount}
           </span>
+        )}
+        {active && (
+          <span className="absolute -bottom-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-[var(--cyan)] to-transparent" />
         )}
       </Link>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 overflow-x-hidden">
-      <nav className="bg-white border-b border-gray-200">
-        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3 md:gap-6">
-            <span className="text-lg font-bold text-indigo-600">cq</span>
+    <div className="min-h-screen overflow-x-hidden">
+      <nav className="border-b border-[var(--rule)] bg-[color-mix(in_srgb,var(--bg-via)_85%,transparent)] backdrop-blur sticky top-0 z-20">
+        <div
+          className={`${wide ? "w-full px-6" : "max-w-3xl mx-auto px-4"} py-3 flex items-center justify-between`}
+        >
+          <div className="flex items-center gap-3 md:gap-7">
+            <Link to="/dashboard" className="mr-2">
+              <Wordmark size="md" />
+            </Link>
             {navLink("/review", "Review")}
             {navLink("/dashboard", "Dashboard")}
             {navLink("/network", "Network")}
             {navLink("/settings/api-keys", "API Keys")}
           </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden md:inline text-sm text-gray-500">
+          <div className="flex items-center gap-4">
+            <span className="hidden md:inline font-mono-brand text-[11px] uppercase tracking-[0.18em] text-[var(--ink-mute)]">
               {username}
             </span>
             <button
               type="button"
               onClick={logout}
-              className="text-sm text-gray-400 hover:text-gray-700"
+              className="font-mono-brand text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)] hover:text-[var(--rose)] transition-colors"
             >
               Logout
             </button>
@@ -71,7 +79,7 @@ export function Layout() {
         </div>
       </nav>
       <main
-        className={wide ? "w-full px-0 py-0" : "max-w-2xl mx-auto py-8 px-4"}
+        className={wide ? "w-full px-0 py-0" : "max-w-3xl mx-auto py-10 px-4"}
       >
         <Outlet context={{ setPendingCount }} />
       </main>

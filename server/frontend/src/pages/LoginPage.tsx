@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from "react"
 import { useAuth } from "../auth"
+import { Wordmark } from "../components/Wordmark"
 
 export function LoginPage() {
   const { login } = useAuth()
@@ -22,45 +23,55 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <form
-        onSubmit={handleSubmit}
-        className="bg-white p-8 rounded-lg shadow-sm border border-gray-200 w-full max-w-sm"
-      >
-        <h1 className="text-3xl font-bold mb-6 text-center text-indigo-600">
-          cq
-        </h1>
-        {error && (
-          <p className="text-red-600 text-sm mb-4 text-center">{error}</p>
-        )}
-        <label className="block mb-4">
-          <span className="text-sm font-medium text-gray-700">Username</span>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500"
-            required
-          />
-        </label>
-        <label className="block mb-6">
-          <span className="text-sm font-medium text-gray-700">Password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500"
-            required
-          />
-        </label>
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50"
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center gap-6 mb-8">
+          <Wordmark size="lg" />
+          <p className="eyebrow">Layer 8 · Admin Console</p>
+        </div>
+        <form
+          onSubmit={handleSubmit}
+          className="brand-surface-raised p-7 backdrop-blur-sm shadow-[0_24px_60px_-24px_rgba(0,0,0,0.6)]"
         >
-          {loading ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
+          {error && (
+            <p className="mb-4 rounded-md border border-[color-mix(in_srgb,var(--rose)_40%,transparent)] bg-[color-mix(in_srgb,var(--rose)_8%,transparent)] px-3 py-2 text-center text-sm text-[var(--rose)]">
+              {error}
+            </p>
+          )}
+          <label className="block mb-4">
+            <span className="eyebrow block mb-1.5">Username</span>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              className="brand-input w-full"
+              required
+            />
+          </label>
+          <label className="block mb-7">
+            <span className="eyebrow block mb-1.5">Password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              className="brand-input w-full"
+              required
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-md bg-[color-mix(in_srgb,var(--cyan)_18%,transparent)] border border-[color-mix(in_srgb,var(--cyan)_45%,transparent)] py-2.5 font-mono-brand text-[11px] uppercase tracking-[0.22em] text-[var(--cyan)] hover:bg-[color-mix(in_srgb,var(--cyan)_28%,transparent)] disabled:opacity-50 transition-all"
+          >
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+        <p className="mt-6 text-center font-mono-brand text-[10px] uppercase tracking-[0.2em] text-[var(--ink-faint)]">
+          8th-layer.ai · semantic knowledge layer
+        </p>
+      </div>
     </div>
   )
 }

@@ -361,7 +361,7 @@ export function NetworkPage({ initialData }: NetworkPageProps = {}) {
   return (
     <DesktopOnlyGate>
       <div
-        className="relative flex flex-col bg-[#04040f]"
+        className="relative flex flex-col bg-[var(--bg-to)]"
         style={{ height: "calc(100vh - 49px)" }}
       >
         <TopBar
