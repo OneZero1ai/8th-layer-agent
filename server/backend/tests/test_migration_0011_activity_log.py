@@ -473,12 +473,13 @@ class TestHeadRevisionAndHistory:
         is the source of truth for ops scripts and stamp logic."""
         from cq_server.migrations import HEAD_REVISION
 
-        # Bumped by 0015_phase_1_0c_aigrp_peers_pair_secret_ref
-        # (Phase 1.0c — Decision 27/28 audit gap). Earlier bumps:
-        # 0014 (#124 L2 crosstalk MVP), 0011 (#108 Stage 1), 0012
-        # (#103), 0013 (#121 finding 3). Each new migration MUST
-        # move this constant.
-        assert HEAD_REVISION == "0015_phase_1_0c_aigrp_peers_pair_secret_ref"
+        # Bumped by 0016_xgroup_consent (Phase 1.0b — Decision 28
+        # intra-Enterprise xgroup_consent + AIGRP key protocols).
+        # Earlier bumps: 0015 (Phase 1.0c — Decision 27/28 audit gap),
+        # 0014 (#124 crosstalk tables), 0013 (#121 finding 3), 0012
+        # (#103), 0011 (#108 Stage 1). Each new migration MUST move
+        # this constant.
+        assert HEAD_REVISION == "0016_xgroup_consent"
 
     @pytest.mark.parametrize("invalid_dir", [None])
     def test_alembic_history_includes_0011(self, invalid_dir: object) -> None:

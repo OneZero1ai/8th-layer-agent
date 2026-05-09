@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException, Request
 
 if TYPE_CHECKING:
-    from .store._sqlite import SqliteStore
+    from ..store._sqlite import SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +219,7 @@ async def require_forwarder_identity(
     # every peer's pubkey), flip default of CQ_REQUIRE_SIGNED_FORWARDS
     # to true and deprecate the legacy code path.
     if body_for_sig is not None and store is not None:
-        from . import forward_sign
+        from .. import forward_sign
 
         peer_pubkey = None
         try:
