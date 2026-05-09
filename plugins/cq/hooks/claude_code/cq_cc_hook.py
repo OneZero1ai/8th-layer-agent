@@ -24,10 +24,18 @@ Both modes:
     server-side ``/api/v1/reflect/submit`` 429 response.
 
 Output: when injecting, the hook writes a JSON object to stdout matching
-Claude Code's hook-output schema:
+Claude Code's hook-output schema. The schema differs by event:
 
-    {"hookSpecificOutput": {"hookEventName": "<event>",
-                            "additionalContext": "<reminder>"}}
+    PostToolUse → {"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                          "additionalContext": "<reminder>"}}
+    Stop        → {"systemMessage": "<reminder>"}
+
+Why two shapes: ``hookSpecificOutput.hookEventName`` only accepts
+``PreToolUse``, ``UserPromptSubmit``, ``PostToolUse``, ``PostToolBatch``.
+Emitting that envelope with ``hookEventName="Stop"`` triggers Claude
+Code's "Hook JSON output validation failed" error and silently drops the
+reminder. ``systemMessage`` is a top-level field accepted by every hook
+event, so Stop mode uses that instead.
 
 Otherwise the hook exits 0 with empty stdout (Claude Code treats this as
 "no opinion").
@@ -147,6 +155,22 @@ def run_post_tool_use(state_dir: Path, payload: dict) -> int:
     return 0
 
 
+def _emit_system_message(reminder: str) -> None:
+    """Write a Claude-Code hook-output JSON object using the top-level
+    ``systemMessage`` field.
+
+    Used for Stop mode: Claude Code's Stop hook schema does NOT accept
+    ``hookSpecificOutput.hookEventName="Stop"`` (only PreToolUse,
+    UserPromptSubmit, PostToolUse, PostToolBatch are valid for that field).
+    Emitting the deprecated shape produces a "Hook JSON output validation
+    failed" error in the user's terminal AND silently drops the reminder.
+
+    ``systemMessage`` is a top-level field accepted by every hook event,
+    so the reminder lands as an injected system note without schema noise.
+    """
+    sys.stdout.write(json.dumps({"systemMessage": reminder}))
+
+
 def _detect_error(payload: dict, tool_response) -> bool:
     """True if the tool reported an error.
 
@@ -258,7 +282,7 @@ def run_stop(state_dir: Path, payload: dict) -> int:
     if marker.exists():
         return 0
     marker.write_text(json.dumps({"ts": int(time.time())}))
-    _emit_additional_context("Stop", STOP_REMINDER)
+    _emit_system_message(STOP_REMINDER)
     return 0
 
 
