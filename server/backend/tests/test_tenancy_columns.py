@@ -5,7 +5,7 @@ These tests pin two invariants:
   1. New rows written through the propose-time path land in the
      ``default-enterprise`` / ``default-group`` scope.
   2. Pre-existing rows on a "legacy" DB (the shape that production looks
-     like at https://8thlayer.onezero1.ai right now — no tenancy
+     like at https://8th-layer.ai right now — no tenancy
      columns) get backfilled to the same defaults when the migration /
      the runtime ``ensure_tenancy_columns`` helper runs.
 
