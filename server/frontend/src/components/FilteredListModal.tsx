@@ -78,7 +78,7 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
         tabIndex={-1}
         aria-hidden="true"
         onClick={onClose}
-        className="absolute inset-0 bg-black/40 cursor-default"
+        className="absolute inset-0 bg-black/65 backdrop-blur-sm cursor-default"
       />
       <div
         ref={dialogRef}
@@ -86,28 +86,33 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
         aria-modal="true"
         aria-labelledby={MODAL_TITLE_ID}
         tabIndex={-1}
-        className="relative bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col outline-none"
+        className="relative brand-surface-raised w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col outline-none shadow-[0_30px_80px_-20px_rgba(0,0,0,0.7)]"
       >
-        <div className="flex items-center justify-between p-4 border-b border-gray-200">
-          <h2
-            id={MODAL_TITLE_ID}
-            className="text-lg font-semibold text-gray-900"
-          >
-            {filter.title}
-          </h2>
+        <div className="flex items-center justify-between p-5 border-b border-[var(--rule)]">
+          <div>
+            <p className="eyebrow">Filtered list</p>
+            <h2
+              id={MODAL_TITLE_ID}
+              className="font-display text-xl text-[var(--ink)] mt-0.5"
+            >
+              {filter.title}
+            </h2>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+            className="text-[var(--ink-mute)] hover:text-[var(--ink)] text-xl leading-none transition-colors"
             aria-label="Close"
           >
-            &times;
+            ×
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-5">
           {error && (
-            <p className="text-red-600 text-sm text-center py-4">{error}</p>
+            <p className="text-[var(--rose)] text-sm text-center py-4">
+              {error}
+            </p>
           )}
 
           {!items && !error && (
@@ -115,16 +120,24 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
               {[1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className="h-16 animate-pulse bg-gray-100 rounded-lg"
+                  className="h-16 animate-pulse bg-[var(--surface-hover)] rounded-lg"
                 />
               ))}
             </div>
           )}
 
           {items && items.length === 0 && (
-            <p className="text-gray-400 text-sm text-center py-8">
-              No knowledge units found.
-            </p>
+            <div className="flex flex-col items-center justify-center py-12 gap-3">
+              <span
+                aria-hidden="true"
+                className="font-display text-3xl text-[var(--ink-faint)]"
+              >
+                ∅
+              </span>
+              <span className="eyebrow text-[var(--cyan)]">
+                No knowledge units found
+              </span>
+            </div>
           )}
 
           {items && items.length > 0 && (
@@ -133,18 +146,18 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
                 <button
                   type="button"
                   key={item.knowledge_unit.id}
-                  className="w-full text-left p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-colors"
+                  className="w-full text-left p-3 rounded-lg border border-[var(--rule)] bg-[var(--surface)] hover:border-[var(--cyan)] hover:bg-[var(--surface-hover)] transition-colors"
                   onClick={() => onSelectUnit(item.knowledge_unit.id)}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <StatusBadge status={item.status} />
-                    <span className="text-sm font-medium text-gray-900 truncate">
+                    <span className="text-sm font-medium text-[var(--ink)] truncate">
                       {item.knowledge_unit.insight.summary}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
                     <DomainTags domains={item.knowledge_unit.domains} />
-                    <span className="text-xs text-gray-400 ml-auto shrink-0">
+                    <span className="font-mono-brand text-[11px] text-[var(--ink-faint)] ml-auto shrink-0 tabular-nums">
                       {confidenceLabel(item.knowledge_unit.evidence.confidence)}
                     </span>
                   </div>
