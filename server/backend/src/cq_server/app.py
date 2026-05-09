@@ -25,10 +25,10 @@ from starlette.responses import FileResponse
 from . import aigrp
 from .activity_logger import log_activity, summary_first_60
 from .activity_routes import router as activity_router
-from .crosstalk_routes import router as crosstalk_router
 from .auth import require_admin
 from .auth import router as auth_router
 from .consults import router as consults_router
+from .crosstalk_routes import router as crosstalk_router
 from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV, require_api_key
 from .embed import compose_text, embed_text
