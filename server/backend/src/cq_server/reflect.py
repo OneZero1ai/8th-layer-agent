@@ -31,7 +31,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .deps import get_store, require_api_key
+from .auth import get_current_user
+from .deps import get_store
 from .store._sqlite import SqliteStore
 
 # Contract caps. ``CONTEXT_MAX_BYTES`` is the 1 MB hard cap from the
@@ -211,7 +212,7 @@ def _ensure_unrecognised_state_safe(state: str) -> str:
 @router.post("/submit", status_code=202, response_model=None)
 async def submit_reflection(
     body: ReflectSubmitRequest,
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
     store: SqliteStore = Depends(get_store),
 ) -> ReflectSubmitResponse | JSONResponse:
     """Enqueue a reflection job. See contract §"POST /api/v1/reflect/submit"."""
@@ -328,7 +329,7 @@ async def submit_reflection(
 @router.get("/status")
 async def get_status(
     submission_id: Annotated[str, Query(min_length=1)],
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
     store: SqliteStore = Depends(get_store),
 ) -> ReflectStatusResponse:
     """Return state for one submission. 404 when unknown.
@@ -359,7 +360,7 @@ async def get_status(
 )
 async def get_last(
     session_id: Annotated[str, Query(min_length=1, max_length=128, pattern=SESSION_ID_REGEX)],
-    username: str = Depends(require_api_key),
+    username: str = Depends(get_current_user),
     store: SqliteStore = Depends(get_store),
 ) -> ReflectStatusResponse | ReflectLastEmptyResponse:
     """Most-recent submission for a session-id within the caller's Enterprise.

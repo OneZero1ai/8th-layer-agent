@@ -5,12 +5,34 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 
 from cq_server.app import app
-from cq_server.deps import require_api_key
+from cq_server.auth import _resolve_caller, get_current_user
+from cq_server.deps import get_store, require_api_key
 
 TEST_USERNAME = "test-user"
+
+
+async def _smart_get_current_user(  # type: ignore[no-untyped-def]
+    request: Request,
+    store=Depends(get_store),  # noqa: B008 — FastAPI dep
+) -> str:
+    """Header-aware test override.
+
+    When the caller passed an Authorization header (real JWT or API key),
+    fall through to the live auth path so tests that exercise the
+    bearer-shape contract — TestReviewLifecycleEndToEnd,
+    TestApiKeyEnforcement — pin the right caller. When no header is
+    present, fall back to ``TEST_USERNAME`` so the legacy auth-less
+    helpers in this file (post-/propose without an explicit token)
+    continue to work.
+    """
+    if request.headers.get("Authorization"):
+        caller = await _resolve_caller(request, store)
+        return caller.username
+    return TEST_USERNAME
 
 
 @pytest.fixture()
@@ -19,6 +41,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides[require_api_key] = lambda: TEST_USERNAME
+    app.dependency_overrides[get_current_user] = _smart_get_current_user
     with TestClient(app) as c:
         # Endpoints that resolve tenancy from the user row (e.g. /query,
         # /peers/heartbeat) need the test user to exist. Seeded in the
@@ -31,15 +54,17 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
             store.sync.create_user(TEST_USERNAME, hash_password("test-pw"))
         yield c
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture()
 def enforced_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    """TestClient with real API key enforcement (no dep override)."""
+    """TestClient with real auth enforcement (no dep override)."""
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
     with TestClient(app) as c:
         yield c
 

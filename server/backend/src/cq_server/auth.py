@@ -23,7 +23,7 @@ from typing import Any
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import aigrp
@@ -222,6 +222,7 @@ def _get_jwt_secret() -> str:
 
 async def get_current_user(
     request: Request,
+    background_tasks: BackgroundTasks,
     store: SqliteStore = Depends(get_store),
 ) -> str:
     """FastAPI dependency: authenticate the caller and return their username.
@@ -232,8 +233,14 @@ async def get_current_user(
     dispatch matches ``_resolve_caller`` so every route protected by
     this dep gets both bearer shapes for free.
 
+    For API-key callers, this also schedules a non-blocking
+    ``touch_api_key_last_used`` write — preserving the audit-trail
+    behavior of the pre-#161 ``require_api_key`` dep so observability
+    isn't lost when the JWT-fanout swap happens.
+
     Args:
         request: The incoming FastAPI request.
+        background_tasks: FastAPI background tasks used to record API-key usage.
         store: The store dependency, used to resolve API-key rows.
 
     Returns:
@@ -243,6 +250,8 @@ async def get_current_user(
         HTTPException: 401 on missing header or either-shape failure.
     """
     caller = await _resolve_caller(request, store)
+    if caller.auth_kind == "api_key" and caller.api_key_id is not None:
+        background_tasks.add_task(store.touch_api_key_last_used, caller.api_key_id)
     return caller.username
 
 

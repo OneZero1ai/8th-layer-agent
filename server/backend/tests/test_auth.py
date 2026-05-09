@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cq_server.app import app
-from cq_server.auth import create_token, hash_password, verify_password, verify_token
+from cq_server.auth import create_token, get_current_user, hash_password, verify_password, verify_token
 from cq_server.deps import require_api_key
 
 
@@ -19,9 +19,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides[require_api_key] = lambda: "test-user"
+    app.dependency_overrides[get_current_user] = lambda: "test-user"
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 def _seed_user(client: TestClient, username: str = "peter", password: str = "secret123") -> None:
@@ -187,6 +189,7 @@ def api_key_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
     app.dependency_overrides.pop(require_api_key, None)
+    app.dependency_overrides.pop(get_current_user, None)
     with TestClient(app) as c:
         yield c
 

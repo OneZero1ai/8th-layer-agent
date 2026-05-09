@@ -16,6 +16,13 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
+    # The require_api_key override is retained for any callsite that
+    # still routes through it (vestigial — none of the routes the review
+    # tests touch use it post-#161, but harmless to leave in place).
+    # Note: get_current_user is NOT overridden — these tests log in for
+    # real and pass JWTs in Authorization headers, and the
+    # ``test_*_requires_auth`` cases assert 401-on-missing-header
+    # semantics that an override would break.
     app.dependency_overrides[require_api_key] = lambda: "test-user"
     with TestClient(app) as c:
         from cq_server.app import _get_store
@@ -65,7 +72,7 @@ def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _propose(client: TestClient, **overrides: Any) -> dict[str, Any]:
+def _propose(client: TestClient, token: str | None = None, **overrides: Any) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "domains": ["api", "testing"],
         "insight": {
@@ -74,7 +81,8 @@ def _propose(client: TestClient, **overrides: Any) -> dict[str, Any]:
             "action": "Use schema-aware assertions in API tests.",
         },
     }
-    resp = client.post("/propose", json={**defaults, **overrides})
+    headers = _auth_header(token) if token else _auth_header(_login(client))
+    resp = client.post("/propose", json={**defaults, **overrides}, headers=headers)
     assert resp.status_code == 201
     return resp.json()
 
@@ -125,9 +133,9 @@ class TestApprove:
 
     def test_approved_unit_appears_in_query(self, client: TestClient) -> None:
         token = _login(client)
-        unit = _propose(client, domains=["searchable"])
+        unit = _propose(client, token=token, domains=["searchable"])
         client.post(f"/review/{unit['id']}/approve", headers=_auth_header(token))
-        resp = client.get("/query", params={"domains": ["searchable"]})
+        resp = client.get("/query", params={"domains": ["searchable"]}, headers=_auth_header(token))
         assert len(resp.json()) == 1
 
 
@@ -142,9 +150,9 @@ class TestReject:
 
     def test_rejected_unit_not_in_query(self, client: TestClient) -> None:
         token = _login(client)
-        unit = _propose(client, domains=["hidden"])
+        unit = _propose(client, token=token, domains=["hidden"])
         client.post(f"/review/{unit['id']}/reject", headers=_auth_header(token))
-        resp = client.get("/query", params={"domains": ["hidden"]})
+        resp = client.get("/query", params={"domains": ["hidden"]}, headers=_auth_header(token))
         assert len(resp.json()) == 0
 
 
