@@ -80,6 +80,26 @@ def _get_store() -> SqliteStore:
     return _store
 
 
+def _aigrp_outbound_bearer(peer_l2_id: str | None) -> str:
+    """Resolve the bearer for an outbound /aigrp/* call.
+
+    Phase 1.0d: when ``peer_l2_id`` is a known sibling under our
+    Enterprise, derive the per-pair bearer from the Enterprise root
+    (Decision 28). Falls back to the legacy ``CQ_AIGRP_PEER_KEY`` env
+    when the peer is unknown (e.g. seed bootstrap before we have the
+    seed's L2 id) OR derivation fails.
+    """
+    if peer_l2_id and peer_l2_id != aigrp.self_l2_id():
+        peer_enterprise, sep, _ = peer_l2_id.partition("/")
+        if sep and peer_enterprise == aigrp.enterprise():
+            try:
+                return aigrp.derive_bearer_token(peer_l2_id)
+            except Exception:  # noqa: BLE001
+                # Falls through to legacy below — log via root logger.
+                pass
+    return os.environ.get("CQ_AIGRP_PEER_KEY", "")
+
+
 async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
     """Bootstrap into the Enterprise mesh on first start, then poll
     every known peer's /aigrp/signature on a 5-min interval forever.
@@ -94,7 +114,12 @@ async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
 
     log = logging.getLogger("aigrp")
     poll_interval = int(os.environ.get("CQ_AIGRP_POLL_INTERVAL_SEC", "300"))
+    # Phase 1.0d — first-deploy is now runtime-determined (no seed peer),
+    # not a hardcoded env. Genesis L2 has no seed_peer_url, skips bootstrap.
     needs_bootstrap = (not aigrp.is_first_deploy()) and bool(aigrp.seed_peer_url())
+    # Optional: seed L2 id for pair-secret bearer on the bootstrap call.
+    # When unset, legacy bearer is used (operator transition).
+    seed_l2_id = os.environ.get("CQ_AIGRP_SEED_PEER_L2_ID", "").strip() or None
 
     async def _try_bootstrap() -> bool:
         """Hit the seed's /aigrp/hello and absorb its peer table.
@@ -125,7 +150,8 @@ async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
                 data=hello_payload,
                 headers={
                     "content-type": "application/json",
-                    "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                    "authorization": f"Bearer {_aigrp_outbound_bearer(seed_l2_id)}",
+                    aigrp.FORWARDER_HEADER: aigrp.self_l2_id(),
                 },
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -161,12 +187,17 @@ async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
     #    pending; gives self-healing if the seed was down at start.
     import base64
 
-    def _rehello_peer(peer_endpoint: str) -> None:
+    def _rehello_peer(peer_endpoint: str, peer_l2_id: str | None = None) -> None:
         """Re-send hello to a known peer so they pick up our pubkey.
 
         Sprint 4 (#44) — re-hello on every poll cycle, idempotent on the
         receiver. This is the recovery path for a peer that joined
         before this L2 generated its key, or whose row was rebuilt.
+
+        Phase 1.0d — when ``peer_l2_id`` is known (call sites in the
+        poll loop have it), the Authorization bearer is derived from
+        the per-pair secret. Bootstrap first-hello calls without a
+        known peer fall back to legacy bearer.
         """
         from . import forward_sign
 
@@ -186,7 +217,8 @@ async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
                 data=payload,
                 headers={
                     "content-type": "application/json",
-                    "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                    "authorization": f"Bearer {_aigrp_outbound_bearer(peer_l2_id)}",
+                    aigrp.FORWARDER_HEADER: aigrp.self_l2_id(),
                 },
             )
             with urllib.request.urlopen(req, timeout=5):
@@ -206,12 +238,16 @@ async def _aigrp_bootstrap_and_poll(store: SqliteStore) -> None:
                 if not p["endpoint_url"]:
                     continue
                 # Sprint 4 — push our pubkey to this peer (cheap, idempotent).
-                _rehello_peer(p["endpoint_url"])
+                # Phase 1.0d — pass peer's l2_id so we derive the per-pair bearer.
+                _rehello_peer(p["endpoint_url"], p["l2_id"])
                 try:
                     req = urllib.request.Request(
                         f"{p['endpoint_url'].rstrip('/')}/api/v1/aigrp/signature",
                         method="GET",
-                        headers={"authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}"},
+                        headers={
+                            "authorization": f"Bearer {_aigrp_outbound_bearer(p['l2_id'])}",
+                            aigrp.FORWARDER_HEADER: aigrp.self_l2_id(),
+                        },
                     )
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         sig = json.loads(resp.read())
@@ -285,6 +321,18 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     _store = SqliteStore(db_path=db_path)
     app_instance.state.store = _store
     app_instance.state.api_key_pepper = pepper
+
+    # Phase 1.0d — first-boot Enterprise root mint (Decision 28).
+    # No-op when CQ_ENTERPRISE_ROOT_BOOTSTRAP=false (default) or when the
+    # SSM param already exists. Genesis L2s set the env at deploy time.
+    try:
+        aigrp.bootstrap_root_if_needed()
+    except Exception:  # noqa: BLE001 — boot must not crash on bootstrap failure
+        # Logged inside the helper; surface here only if we want to fail
+        # closed. We don't — the L2 still serves AIGRP-disabled paths.
+        import logging as _logging
+
+        _logging.getLogger("aigrp").exception("bootstrap_root_if_needed raised; continuing")
 
     aigrp_task = None
     if aigrp.aigrp_enabled():
@@ -646,7 +694,8 @@ async def aigrp_hello(
                     data=announce_payload,
                     headers={
                         "content-type": "application/json",
-                        "authorization": f"Bearer {os.environ.get('CQ_AIGRP_PEER_KEY', '')}",
+                        "authorization": f"Bearer {_aigrp_outbound_bearer(p['l2_id'])}",
+                        aigrp.FORWARDER_HEADER: aigrp.self_l2_id(),
                     },
                 )
                 try:

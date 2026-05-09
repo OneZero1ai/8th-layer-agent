@@ -36,6 +36,14 @@ from ._legacy import (
     self_l2_id,
     self_url,
 )
+from .runtime import (
+    bootstrap_root_if_needed,
+    derive_bearer_token,
+    invalidate_pair_cache,
+    is_first_deploy_runtime,
+    runtime_root_present,
+    verify_bearer_against_peer,
+)
 
 __all__ = [
     "BLOOM_BITS",
@@ -44,15 +52,21 @@ __all__ = [
     "aigrp_enabled",
     "bloom_contains",
     "bloom_matches_any",
+    "bootstrap_root_if_needed",
     "compute_centroid",
     "compute_domain_bloom",
+    "derive_bearer_token",
     "enterprise",
     "group",
+    "invalidate_pair_cache",
     "is_first_deploy",
+    "is_first_deploy_runtime",
     "now_iso",
     "require_forwarder_identity",
     "require_peer_key",
+    "runtime_root_present",
     "seed_peer_url",
     "self_l2_id",
     "self_url",
+    "verify_bearer_against_peer",
 ]

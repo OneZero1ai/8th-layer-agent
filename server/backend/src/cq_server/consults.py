@@ -158,9 +158,42 @@ def _self_l2_id() -> str:
     return f"{aigrp_mod.enterprise()}/{aigrp_mod.group()}"
 
 
-def _build_forward_headers(peer_key: str, payload: dict[str, Any]) -> dict[str, str]:
+def _bearer_for_target(target_l2_id: str) -> str:
+    """Resolve the Authorization-Bearer value for an outbound cross-L2 call.
+
+    Phase 1.0d preference:
+
+    1. Pair-secret bearer (intra-Enterprise, Decision 28). Tries
+       ``aigrp.derive_bearer_token`` first when ``target_l2_id`` is a
+       sibling under our Enterprise. Any SSM/KMS read failure falls
+       through to the legacy bearer — operator can still recover by
+       leaving ``CQ_AIGRP_PEER_KEY`` set during cutover.
+    2. Legacy ``CQ_AIGRP_PEER_KEY`` env var (cross-Enterprise + cutover
+       fallback).
+
+    Returns an empty string if neither path resolves; caller surfaces 503.
+    """
+    self_id = _self_l2_id()
+    if target_l2_id and target_l2_id != self_id:
+        target_enterprise, sep, _ = target_l2_id.partition("/")
+        if sep and target_enterprise == aigrp_mod.enterprise():
+            try:
+                return aigrp_mod.derive_bearer_token(target_l2_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "consults forward: pair-secret derive failed for target=%s; "
+                    "falling back to legacy CQ_AIGRP_PEER_KEY",
+                    target_l2_id,
+                )
+    return os.environ.get("CQ_AIGRP_PEER_KEY", "")
+
+
+def _build_forward_headers(target_l2_id: str, payload: dict[str, Any]) -> dict[str, str]:
     """Compose authorization + forwarder-identity + (sprint 4) signature
     headers for outbound /consults/forward-* calls.
+
+    Phase 1.0d — bearer is per-target (HKDF-derived pair-secret) when the
+    target is an intra-Enterprise sibling; legacy shared bearer otherwise.
 
     The signature header is omitted when no L2 keypair is available on
     disk — receivers fall back to legacy unsigned mode (until they flip
@@ -168,9 +201,10 @@ def _build_forward_headers(peer_key: str, payload: dict[str, Any]) -> dict[str, 
     """
     from . import forward_sign
 
+    bearer = _bearer_for_target(target_l2_id)
     forwarder_id = _self_l2_id()
     headers = {
-        "authorization": f"Bearer {peer_key}",
+        "authorization": f"Bearer {bearer}",
         aigrp_mod.FORWARDER_HEADER: forwarder_id,
     }
     sig = forward_sign.sign_forward_request(payload, forwarder_id)
@@ -191,10 +225,11 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
     request body is signed and the sig travels in ``X-8L-Forwarder-Sig``.
     """
     base = target["endpoint_url"].rstrip("/")
-    peer_key = os.environ.get("CQ_AIGRP_PEER_KEY", "")
-    if not peer_key:
-        raise HTTPException(503, detail="cross-L2 routing requires CQ_AIGRP_PEER_KEY")
-    headers = _build_forward_headers(peer_key, payload)
+    headers = _build_forward_headers(target["l2_id"], payload)
+    if not headers["authorization"].removeprefix("Bearer ").strip():
+        raise HTTPException(
+            503, detail="cross-L2 routing requires either Enterprise root SSM access or CQ_AIGRP_PEER_KEY"
+        )
     try:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
@@ -229,10 +264,11 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
     Sprint 4 (#44) — same Ed25519 signature treatment as forward-request.
     """
     base = target["endpoint_url"].rstrip("/")
-    peer_key = os.environ.get("CQ_AIGRP_PEER_KEY", "")
-    if not peer_key:
-        raise HTTPException(503, detail="cross-L2 routing requires CQ_AIGRP_PEER_KEY")
-    headers = _build_forward_headers(peer_key, payload)
+    headers = _build_forward_headers(target["l2_id"], payload)
+    if not headers["authorization"].removeprefix("Bearer ").strip():
+        raise HTTPException(
+            503, detail="cross-L2 routing requires either Enterprise root SSM access or CQ_AIGRP_PEER_KEY"
+        )
     try:
         with httpx.Client(timeout=L2_FORWARD_TIMEOUT) as client:
             r = client.post(
