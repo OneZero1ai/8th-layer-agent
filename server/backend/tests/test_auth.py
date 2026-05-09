@@ -165,7 +165,7 @@ class TestAuthMe:
         _get_store().sync.set_user_role("peter", "admin")
         jwt_token = api_key_client.post(
             "/auth/login",
-            json={"username": "peter", "password": "secret123"},
+            json={"username": "peter", "password": "secret123"},  # pragma: allowlist secret
         ).json()["token"]
         created = api_key_client.post(
             "/auth/api-keys",
