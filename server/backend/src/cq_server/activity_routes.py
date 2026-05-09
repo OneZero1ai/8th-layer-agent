@@ -179,10 +179,7 @@ async def list_activity(
     if event_type is not None and event_type not in EVENT_TYPES:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"unknown event_type {event_type!r}; "
-                f"expected one of {sorted(EVENT_TYPES)}"
-            ),
+            detail=(f"unknown event_type {event_type!r}; expected one of {sorted(EVENT_TYPES)}"),
         )
 
     since_iso = _normalise_iso(since, field_name="since")
@@ -200,11 +197,7 @@ async def list_activity(
     )
 
     items = [ActivityRow(**row) for row in rows]
-    next_cursor = (
-        _encode_cursor(items[-1].ts, items[-1].id)
-        if len(items) == limit and items
-        else None
-    )
+    next_cursor = _encode_cursor(items[-1].ts, items[-1].id) if len(items) == limit and items else None
     # Defensive: if `len(items) == limit` but we know there aren't more
     # rows, the next call returns empty and the second-to-last cursor
     # naturally terminates. Cheap one extra round-trip on the boundary
