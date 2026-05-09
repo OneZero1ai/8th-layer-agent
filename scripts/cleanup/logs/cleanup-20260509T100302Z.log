@@ -1,0 +1,26 @@
+2026-05-09T10:03:02.400530+00:00	=== cleanup run started 2026-05-09T10:03:02.400527+00:00 ===
+2026-05-09T10:03:02.400575+00:00	mode=execute filter=test-orion-gtm-l2-cluster
+2026-05-09T10:03:04.864597+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-orion-gtm-l2-cluster/test-orion-gtm-l2-cq-server	queued	running=1
+2026-05-09T10:03:04.864645+00:00	ALB	arn:aws:elasticloadbalancing:us-east-1:124074140789:loadbalancer/app/test-ori-Alb-D7CVfG04aGRc/50357dcb44bd45fc	queued	
+2026-05-09T10:03:04.864656+00:00	TG	arn:aws:elasticloadbalancing:us-east-1:124074140789:targetgroup/test-o-Targe-KIWWRDVO6WYS/63d097e12348c623	queued	
+2026-05-09T10:03:04.864665+00:00	SG	sg-030a0e62af890d575 (test-orion-gtm-l2-AlbSg-dEcxjWwsIli6)	queued	
+2026-05-09T10:03:04.864677+00:00	SG	sg-080eb42f983339459 (test-orion-gtm-l2-TaskSg-RMKEBz1yd26m)	queued	
+2026-05-09T10:03:04.864684+00:00	SG	sg-0e4fe2167540894cb (test-orion-gtm-l2-EfsSg-zEJfqIOI3Gog)	queued	
+2026-05-09T10:03:04.864692+00:00	EFS	fs-0126cde827c2c8092 (test-orion-gtm-l2-efs)	queued	
+2026-05-09T10:03:04.864699+00:00	LOGS	/aws/ecs/test-orion-gtm-l2/cq-server	queued	
+2026-05-09T10:03:04.864707+00:00	ECS_CLUSTER	test-orion-gtm-l2-cluster	queued	
+2026-05-09T10:03:05.317925+00:00	DIRECTORY	*	blocked	No DELETE endpoints exposed in directory OpenAPI. Cannot remove enterprises via API. Operator decision needed: (a) add DELETE /admin/api/enterprises/{id} to cq-directory server, (b) leave test entries in place as historical, (c) accept SQL-against-RDS as a one-shot — explicitly out of scope here.
+2026-05-09T10:03:05.831919+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-orion-gtm-l2-cluster/test-orion-gtm-l2-cq-server	scale_to_zero	ok
+2026-05-09T10:03:21.386815+00:00	ECS_SERVICE	arn:aws:ecs:us-east-1:124074140789:service/test-orion-gtm-l2-cluster/test-orion-gtm-l2-cq-server	delete_service	ok
+2026-05-09T10:03:21.658101+00:00	ALB_LISTENER	arn:aws:elasticloadbalancing:us-east-1:124074140789:listener/app/test-ori-Alb-D7CVfG04aGRc/50357dcb44bd45fc/06e77f96582e4092	delete	ok
+2026-05-09T10:03:21.771548+00:00	ALB	arn:aws:elasticloadbalancing:us-east-1:124074140789:loadbalancer/app/test-ori-Alb-D7CVfG04aGRc/50357dcb44bd45fc	delete	ok
+2026-05-09T10:03:22.198306+00:00	TG	arn:aws:elasticloadbalancing:us-east-1:124074140789:targetgroup/test-o-Targe-KIWWRDVO6WYS/63d097e12348c623	delete	ok
+2026-05-09T10:03:22.598253+00:00	EFS_MT	fsmt-04d1b616873ed6678	delete	ok
+2026-05-09T10:03:22.962632+00:00	EFS_MT	fsmt-056b19b15d4ecbf28	delete	ok
+2026-05-09T10:03:38.295159+00:00	EFS	fs-0126cde827c2c8092	delete	ok
+2026-05-09T10:03:38.715267+00:00	SG	sg-030a0e62af890d575 (test-orion-gtm-l2-AlbSg-dEcxjWwsIli6)	delete	error: An error occurred (DependencyViolation) when calling the DeleteSecurityGroup operation: resource sg-030a0e62af890d575 has a dependent object
+2026-05-09T10:03:39.041692+00:00	SG	sg-080eb42f983339459 (test-orion-gtm-l2-TaskSg-RMKEBz1yd26m)	delete	error: An error occurred (DependencyViolation) when calling the DeleteSecurityGroup operation: resource sg-080eb42f983339459 has a dependent object
+2026-05-09T10:03:39.731373+00:00	SG	sg-0e4fe2167540894cb (test-orion-gtm-l2-EfsSg-zEJfqIOI3Gog)	delete	ok
+2026-05-09T10:03:40.022148+00:00	LOGS	/aws/ecs/test-orion-gtm-l2/cq-server	delete	ok
+2026-05-09T10:03:40.410990+00:00	ECS_CLUSTER	test-orion-gtm-l2-cluster	delete	ok
+2026-05-09T10:03:40.413633+00:00	=== cleanup run finished 2026-05-09T10:03:40.413627+00:00 ===
