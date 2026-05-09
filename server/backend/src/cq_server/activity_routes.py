@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from .activity import EVENT_TYPES
-from .auth import get_current_user
+from .auth import get_current_user, scope_filter
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
@@ -158,7 +158,12 @@ async def list_activity(
         # Auth accepted the bearer but the user row vanished. Same shape
         # as the ``propose_unit`` defensive 401.
         raise HTTPException(status_code=401, detail="User not found")
-    enterprise_id = user["enterprise_id"]
+    # Decision 27: under PER_L2_ISOLATION the activity log read tightens
+    # to ``(tenant_enterprise, tenant_group)``. The base index covers
+    # both columns + ts so the new clause is index-friendly. Admin
+    # callers stay scoped per-L2 — directory federation is the
+    # Enterprise-level oversight surface, not /activity.
+    enterprise_id, group_id = scope_filter(enterprise_id=user["enterprise_id"], group_id=user.get("group_id"))
     role = user.get("role") or "user"
 
     # Scope the persona filter:
@@ -188,6 +193,7 @@ async def list_activity(
 
     rows = await store.list_activity(
         tenant_enterprise=enterprise_id,
+        tenant_group=group_id,
         persona=effective_persona,
         since_iso=since_iso,
         until_iso=until_iso,
