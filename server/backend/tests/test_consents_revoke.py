@@ -8,6 +8,7 @@ Pins:
   - Once revoked, the consent is no longer "active" — /consents lists
     excludes it by default but include_expired=true still returns it.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -89,8 +90,7 @@ class TestRevokeHappyPath:
         store = _get_store()
         with store._engine.begin() as _c:
             rows = _c.exec_driver_sql(
-                "SELECT policy_applied FROM cross_l2_audit "
-                "WHERE consent_id = ? ORDER BY ts ASC",
+                "SELECT policy_applied FROM cross_l2_audit WHERE consent_id = ? ORDER BY ts ASC",
                 (cid,),
             ).fetchall()
         # One row from sign, one from revoke.

@@ -44,9 +44,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         yield c
 
 
-def _seed_user(
-    *, username: str, password: str, enterprise_id: str, group_id: str
-) -> None:
+def _seed_user(*, username: str, password: str, enterprise_id: str, group_id: str) -> None:
     """Create a user, then UPDATE their tenancy columns to non-default values.
 
     ``store.sync.create_user`` lands the row at ``default-enterprise`` /
@@ -124,9 +122,7 @@ def _read_scope(db_path: Path, ku_id: str) -> tuple[str, str]:
 
 
 class TestProposeHonoursAuthClaims:
-    def test_ku_lands_in_authed_users_enterprise_not_default(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_ku_lands_in_authed_users_enterprise_not_default(self, client: TestClient, tmp_path: Path) -> None:
         """The bug: the KU lands in default-enterprise. The fix: it lands in moscowmul3.
 
         Verbatim the bug-report repro shape — same user setup, same
@@ -147,13 +143,9 @@ class TestProposeHonoursAuthClaims:
             "The propose handler must derive enterprise_id from the user "
             "row, not the schema-level server_default."
         )
-        assert grp == "engineering", (
-            f"#89 regression: KU group_id is {grp!r} instead of engineering"
-        )
+        assert grp == "engineering", f"#89 regression: KU group_id is {grp!r} instead of engineering"
 
-    def test_ku_never_lands_in_default_enterprise_for_authed_user(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_ku_never_lands_in_default_enterprise_for_authed_user(self, client: TestClient, tmp_path: Path) -> None:
         """Cover the inverse: even with an obviously-non-default user,
         the row never falls back to ``default-enterprise``.
 
@@ -176,9 +168,7 @@ class TestProposeHonoursAuthClaims:
         assert grp != "default-group"
         assert (ent, grp) == ("acme", "solutions")
 
-    def test_two_users_two_enterprises_no_cross_contamination(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_two_users_two_enterprises_no_cross_contamination(self, client: TestClient, tmp_path: Path) -> None:
         """Two users in two different Enterprises propose; each KU lands
         in its own user's tenant. Pins that the resolution is per-call,
         not cached or thread-local.
@@ -206,9 +196,7 @@ class TestProposeHonoursAuthClaims:
         assert moscow_scope == ("moscowmul3", "engineering")
         assert acme_scope == ("acme", "solutions")
 
-    def test_propose_rejects_when_user_row_missing_tenancy(
-        self, client: TestClient, tmp_path: Path
-    ) -> None:
+    def test_propose_rejects_when_user_row_missing_tenancy(self, client: TestClient, tmp_path: Path) -> None:
         """Defensive: if a future migration somehow leaves a user row
         with NULL tenancy, the handler should fail loudly rather than
         silently writing the KU into the schema default. We simulate
@@ -223,10 +211,7 @@ class TestProposeHonoursAuthClaims:
             # rebuilt the column; we simulate the malformed-row state
             # by writing empty strings (the handler treats them the
             # same way: 500 rather than silent default).
-            conn.exec_driver_sql(
-                "UPDATE users SET enterprise_id = '', group_id = '' "
-                "WHERE username = 'nullable'"
-            )
+            conn.exec_driver_sql("UPDATE users SET enterprise_id = '', group_id = '' WHERE username = 'nullable'")
 
         api_key = _login_and_mint(client, "nullable", "pw")
         resp = client.post(
@@ -252,9 +237,7 @@ class TestProposeHonoursAuthClaims:
 
 
 class TestLegacyInsertPathPreserved:
-    def test_no_kwargs_insert_still_uses_server_defaults(
-        self, tmp_path: Path
-    ) -> None:
+    def test_no_kwargs_insert_still_uses_server_defaults(self, tmp_path: Path) -> None:
         """The legacy fixture path (``store.sync.insert(unit)``) doesn't
         carry tenancy — by design, since unit-test fixtures don't always
         manufacture a tenant. The fix preserves that behaviour: the row

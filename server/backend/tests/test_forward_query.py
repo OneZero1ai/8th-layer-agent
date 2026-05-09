@@ -97,8 +97,7 @@ def _seed_ku(
     # Set tenancy scope + xgroup flag explicitly.
     with store._engine.begin() as _c:
         _c.exec_driver_sql(
-            "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
-            "cross_group_allowed = ? WHERE id = ?",
+            "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, cross_group_allowed = ? WHERE id = ?",
             (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit.id),
         )
     return unit.id
@@ -376,9 +375,7 @@ class TestAuth:
 
 
 class TestDefaultsSafety:
-    def test_legacy_default_scope_does_not_leak_to_strangers(
-        self, aigrp_client: TestClient
-    ) -> None:
+    def test_legacy_default_scope_does_not_leak_to_strangers(self, aigrp_client: TestClient) -> None:
         # A KU with default-enterprise / default-group is in a different
         # Enterprise from the responder (acme). Must not leak.
         _seed_ku(
@@ -465,10 +462,11 @@ class TestSchemaConstraints:
         import sqlalchemy.exc
 
         store = _get_store()
-        with pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)):
-            with store._engine.begin() as conn:
-                conn.exec_driver_sql(
-                    "INSERT INTO knowledge_units (id, data, cross_group_allowed) "
-                    "VALUES (?, ?, ?)",
-                    ("ku_null_xgroup", "{}", None),
-                )
+        with (
+            pytest.raises((sqlite3.IntegrityError, sqlalchemy.exc.IntegrityError)),
+            store._engine.begin() as conn,
+        ):
+            conn.exec_driver_sql(
+                "INSERT INTO knowledge_units (id, data, cross_group_allowed) VALUES (?, ?, ?)",
+                ("ku_null_xgroup", "{}", None),
+            )

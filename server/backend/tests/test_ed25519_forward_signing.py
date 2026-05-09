@@ -84,9 +84,7 @@ def other_keypair() -> Ed25519PrivateKey:
 
 
 class TestKeypairBootstrap:
-    def test_generates_new_key_when_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_generates_new_key_when_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = tmp_path / "fresh.key"
         monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(path))
         forward_sign.reload_l2_privkey()
@@ -95,9 +93,7 @@ class TestKeypairBootstrap:
         assert path.exists()
         assert len(path.read_bytes()) == 32
 
-    def test_loads_existing_key(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_loads_existing_key(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = tmp_path / "existing.key"
         seeded = Ed25519PrivateKey.generate()
         path.write_bytes(seeded.private_bytes_raw())
@@ -107,9 +103,7 @@ class TestKeypairBootstrap:
         assert pk is not None
         assert public_key_b64u(pk) == public_key_b64u(seeded)
 
-    def test_corrupt_key_disables_signing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_corrupt_key_disables_signing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = tmp_path / "corrupt.key"
         path.write_bytes(b"too-short")
         monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(path))
@@ -126,9 +120,7 @@ class TestKeypairBootstrap:
 
 
 class TestHelloPubkeyExchange:
-    def test_hello_records_pubkey(
-        self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_hello_records_pubkey(self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey) -> None:
         peer_pub = public_key_b64u(peer_keypair)
         r = aigrp_client.post(
             "/api/v1/aigrp/hello",
@@ -145,9 +137,7 @@ class TestHelloPubkeyExchange:
         store = _get_store()
         assert store.sync.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
 
-    def test_peers_endpoint_exposes_pubkey(
-        self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_peers_endpoint_exposes_pubkey(self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey) -> None:
         peer_pub = public_key_b64u(peer_keypair)
         # The /aigrp/hello response is what new joiners use to learn the
         # mesh topology — it must include our own pubkey in the self_entry
@@ -166,16 +156,12 @@ class TestHelloPubkeyExchange:
         hello_peers = {p["l2_id"]: p for p in hello.json()["peers"]}
         assert hello_peers[SELF_L2]["public_key_ed25519"] == forward_sign.self_public_key_b64u()
         # /aigrp/peers reflects the recorded peer rows — joiner is in there.
-        r = aigrp_client.get(
-            "/api/v1/aigrp/peers", headers={"authorization": f"Bearer {PEER_KEY}"}
-        )
+        r = aigrp_client.get("/api/v1/aigrp/peers", headers={"authorization": f"Bearer {PEER_KEY}"})
         assert r.status_code == 200
         peers = {p["l2_id"]: p for p in r.json()["peers"]}
         assert peers[PEER_L2]["public_key_ed25519"] == peer_pub
 
-    def test_rehello_same_key_is_idempotent(
-        self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_rehello_same_key_is_idempotent(self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey) -> None:
         peer_pub = public_key_b64u(peer_keypair)
         body = {
             "l2_id": PEER_L2,
@@ -194,9 +180,7 @@ class TestHelloPubkeyExchange:
         store = _get_store()
         assert store.sync.get_aigrp_peer_pubkey(PEER_L2) == peer_pub
 
-    def test_legacy_hello_without_pubkey_yields_null(
-        self, aigrp_client: TestClient
-    ) -> None:
+    def test_legacy_hello_without_pubkey_yields_null(self, aigrp_client: TestClient) -> None:
         r = aigrp_client.post(
             "/api/v1/aigrp/hello",
             headers={"authorization": f"Bearer {PEER_KEY}"},
@@ -222,9 +206,7 @@ def _pack_vec(vec: list[float]) -> bytes:
 
 
 class TestSenderSideSignatures:
-    def test_forward_query_sender_signs_body(
-        self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_forward_query_sender_signs_body(self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """``network._call_forward_query`` adds X-8L-Forwarder-Sig that
         verifies against this L2's pubkey + JCS(body) || forwarder id."""
         captured: dict[str, Any] = {}
@@ -264,13 +246,9 @@ class TestSenderSideSignatures:
         # Verify it against this L2's own pubkey.
         self_pub = forward_sign.self_public_key_b64u()
         assert self_pub
-        assert forward_sign.verify_forward_signature(
-            self_pub, captured["json"], "acme/solutions", sig_header
-        )
+        assert forward_sign.verify_forward_signature(self_pub, captured["json"], "acme/solutions", sig_header)
 
-    def test_consult_forward_request_signed(
-        self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_consult_forward_request_signed(self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
 
         class StubResp:
@@ -287,9 +265,7 @@ class TestSenderSideSignatures:
             def __exit__(self, *a: Any) -> None:
                 return None
 
-            def post(
-                self, url: str, *, headers: dict[str, str], json: dict[str, Any]
-            ) -> StubResp:
+            def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> StubResp:
                 captured.append({"headers": headers, "json": json})
                 return StubResp()
 
@@ -357,9 +333,7 @@ def _forward_query_body(axis: int = 0) -> dict[str, Any]:
 
 
 class TestReceiverVerification:
-    def test_valid_signature_accepted(
-        self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_valid_signature_accepted(self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey) -> None:
         store = _get_store()
         _seed_peer(store, public_key_b64u(peer_keypair))
         body = _forward_query_body()
@@ -392,9 +366,7 @@ class TestReceiverVerification:
         assert r.status_code == 403
         assert "missing" in r.json()["detail"].lower()
 
-    def test_tampered_body_rejected(
-        self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey
-    ) -> None:
+    def test_tampered_body_rejected(self, aigrp_client: TestClient, peer_keypair: Ed25519PrivateKey) -> None:
         store = _get_store()
         _seed_peer(store, public_key_b64u(peer_keypair))
         body = _forward_query_body()
@@ -458,9 +430,7 @@ class TestReceiverVerification:
         assert r.status_code == 200
         assert any("legacy unsigned forward" in m for m in caplog.messages)
 
-    def test_strict_mode_rejects_legacy(
-        self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_strict_mode_rejects_legacy(self, aigrp_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         store = _get_store()
         _seed_peer(store, None)  # legacy peer
         monkeypatch.setenv("CQ_REQUIRE_SIGNED_FORWARDS", "true")

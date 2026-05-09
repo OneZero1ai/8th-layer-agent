@@ -93,9 +93,7 @@ def _login_jwt(client: TestClient, username: str, password: str) -> str:
 
 
 class TestListFiltersExpiredRows:
-    def test_expired_row_invisible_in_list_even_before_sweep(
-        self, store: SqliteStore
-    ) -> None:
+    def test_expired_row_invisible_in_list_even_before_sweep(self, store: SqliteStore) -> None:
         """Submit a row whose TTL has already passed at insert time
         (sweeper has not run). The list query must not include it.
         Pre-fix the row appeared in the result; the read filter closes
@@ -123,18 +121,13 @@ class TestListFiltersExpiredRows:
         # The sweeper has NOT run yet; the on-disk status of the
         # expired row is still 'pending_review'. The read filter is
         # what keeps it out of the response.
-        items = store.sync.list_pending_review(
-            enterprise_id="acme", limit=10, offset=0
-        )
+        items = store.sync.list_pending_review(enterprise_id="acme", limit=10, offset=0)
         summaries = [i["knowledge_unit"].insight.summary for i in items]
         assert summaries == ["fresh"], (
-            f"#121 finding 2: expired pending_review row leaked into "
-            f"list. Got {summaries!r}; expected only ['fresh']."
+            f"#121 finding 2: expired pending_review row leaked into list. Got {summaries!r}; expected only ['fresh']."
         )
 
-    def test_count_matches_list_under_ttl_filter(
-        self, store: SqliteStore
-    ) -> None:
+    def test_count_matches_list_under_ttl_filter(self, store: SqliteStore) -> None:
         """count_pending_review must agree with list_pending_review on
         which rows are visible — otherwise dashboard pagination breaks
         (total: 5 with only 3 items rendered).
@@ -154,15 +147,11 @@ class TestListFiltersExpiredRows:
                 group_id="engineering",
             )
 
-        listed = store.sync.list_pending_review(
-            enterprise_id="acme", limit=10, offset=0
-        )
+        listed = store.sync.list_pending_review(enterprise_id="acme", limit=10, offset=0)
         counted = store.sync.count_pending_review(enterprise_id="acme")
         assert len(listed) == counted == 1
 
-    def test_null_expires_at_continues_to_appear(
-        self, store: SqliteStore, tmp_path: Path
-    ) -> None:
+    def test_null_expires_at_continues_to_appear(self, store: SqliteStore, tmp_path: Path) -> None:
         """Defensive: a row with NULL ``pending_review_expires_at``
         means "no TTL configured". The read filter uses
         ``IS NULL OR > now`` so those rows still appear — same shape
@@ -185,17 +174,14 @@ class TestListFiltersExpiredRows:
         conn = sqlite3.connect(str(tmp_path / "ttl.db"))
         try:
             conn.execute(
-                "UPDATE knowledge_units SET pending_review_expires_at = NULL "
-                "WHERE id = ?",
+                "UPDATE knowledge_units SET pending_review_expires_at = NULL WHERE id = ?",
                 (unit.id,),
             )
             conn.commit()
         finally:
             conn.close()
 
-        items = store.sync.list_pending_review(
-            enterprise_id="acme", limit=10, offset=0
-        )
+        items = store.sync.list_pending_review(enterprise_id="acme", limit=10, offset=0)
         assert [i["knowledge_unit"].id for i in items] == [unit.id]
         assert store.sync.count_pending_review(enterprise_id="acme") == 1
 
@@ -237,14 +223,10 @@ class TestEndpointEnforcesTTL:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["total"] == 1
-        summaries = [
-            i["knowledge_unit"]["insight"]["summary"] for i in body["items"]
-        ]
+        summaries = [i["knowledge_unit"]["insight"]["summary"] for i in body["items"]]
         assert summaries == ["route-fresh"]
 
-    def test_endpoint_triggers_background_sweep(
-        self, client: TestClient
-    ) -> None:
+    def test_endpoint_triggers_background_sweep(self, client: TestClient) -> None:
         """The route schedules a background sweep so on-disk state
         eventually catches up. Verify that after a request the
         previously-expired row's status moved to 'dropped' on disk —

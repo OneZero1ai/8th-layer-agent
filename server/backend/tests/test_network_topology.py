@@ -81,22 +81,15 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 
 def _login(client: TestClient, username: str = ALICE) -> str:
-    resp = client.post(
-        "/api/v1/auth/login", json={"username": username, "password": "pw"}
-    )
+    resp = client.post("/api/v1/auth/login", json={"username": username, "password": "pw"})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
 
 
 class TestTopologyHappyPath:
-    def test_all_six_l2s_aggregated(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_all_six_l2s_aggregated(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _fake_fan_out(fleet):
-            return [
-                _snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"])
-                for l2 in fleet
-            ]
+            return [_snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"]) for l2 in fleet]
 
         monkeypatch.setattr(network, "_fan_out_all", _fake_fan_out)
         jwt = _login(client)
@@ -139,9 +132,7 @@ class TestPartialFleetFailure:
                     )
                     snaps.append(snap)
                 else:
-                    snaps.append(
-                        _snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"])
-                    )
+                    snaps.append(_snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"]))
             return snaps
 
         monkeypatch.setattr(network, "_fan_out_all", _fake_fan_out)
@@ -170,10 +161,7 @@ class TestTopologyCache:
 
         async def _fake_fan_out(fleet):
             call_count["n"] += 1
-            return [
-                _snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"])
-                for l2 in fleet
-            ]
+            return [_snapshot(slug=l2["slug"], enterprise=l2["enterprise"], group=l2["group"]) for l2 in fleet]
 
         monkeypatch.setattr(network, "_fan_out_all", _fake_fan_out)
         jwt = _login(client)

@@ -140,21 +140,25 @@ class TestPropose:
         assert "placeholder" in resp.json()["detail"].lower()
 
     def test_propose_with_placeholder_summary_rejected(self, client: TestClient) -> None:
-        payload = _propose_payload(insight={
-            "summary": "test",
-            "detail": "this is a long enough detail that it would normally pass length checks",
-            "action": "do the thing",
-        })
+        payload = _propose_payload(
+            insight={
+                "summary": "test",
+                "detail": "this is a long enough detail that it would normally pass length checks",
+                "action": "do the thing",
+            }
+        )
         resp = client.post("/propose", json=payload)
         assert resp.status_code == 422
         assert "placeholder" in resp.json()["detail"].lower()
 
     def test_propose_with_summary_eq_detail_rejected(self, client: TestClient) -> None:
-        payload = _propose_payload(insight={
-            "summary": "Connections are expensive to create at request time",
-            "detail": "Connections are expensive to create at request time",
-            "action": "Use a connection pool with max size 10.",
-        })
+        payload = _propose_payload(
+            insight={
+                "summary": "Connections are expensive to create at request time",
+                "detail": "Connections are expensive to create at request time",
+                "action": "Use a connection pool with max size 10.",
+            }
+        )
         resp = client.post("/propose", json=payload)
         assert resp.status_code == 422
 
@@ -269,8 +273,7 @@ class TestQueryTenantScope:
         store = _get_store()
         with store._engine.begin() as _c:
             _c.exec_driver_sql(
-                "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, "
-                "cross_group_allowed = ? WHERE id = ?",
+                "UPDATE knowledge_units SET enterprise_id = ?, group_id = ?, cross_group_allowed = ? WHERE id = ?",
                 (enterprise_id, group_id, 1 if cross_group_allowed else 0, unit_id),
             )
 
@@ -315,9 +318,7 @@ class TestQueryTenantScope:
         blocked = self._seed_unit(client, domains=["xgroup-test"])
         allowed = self._seed_unit(client, domains=["xgroup-test"])
         self._set_ku_tenancy(blocked["id"], enterprise_id="acme", group_id="finance")
-        self._set_ku_tenancy(
-            allowed["id"], enterprise_id="acme", group_id="finance", cross_group_allowed=True
-        )
+        self._set_ku_tenancy(allowed["id"], enterprise_id="acme", group_id="finance", cross_group_allowed=True)
         self._set_user_tenancy(TEST_USERNAME, enterprise_id="acme", group_id="engineering")
         resp = client.get("/query", params={"domains": ["xgroup-test"]})
         assert resp.status_code == 200

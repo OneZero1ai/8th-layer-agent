@@ -96,6 +96,7 @@ class SqliteStore:
             return
         self._closed = True
         self._engine.dispose()
+
     @property
     def _lock(self):  # type: ignore[no-untyped-def]
         """Compat shim: legacy callers used ``with store._lock:`` to serialise.
@@ -122,7 +123,6 @@ class SqliteStore:
             self._compat_conn = self._engine.raw_connection()
         return self._compat_conn
 
-
     @property
     def sync(self) -> _SyncStoreProxy:
         """Sync proxy for callers not in an async context.
@@ -134,9 +134,7 @@ class SqliteStore:
         """
         return _SyncStoreProxy(self)
 
-    async def confidence_distribution(
-        self, *, enterprise_id: str | None = None
-    ) -> dict[str, int]:
+    async def confidence_distribution(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         return await self._run_sync(self._confidence_distribution_sync)
 
     async def count(self) -> int:
@@ -145,14 +143,10 @@ class SqliteStore:
     async def count_active_api_keys_for_user(self, user_id: int) -> int:
         return await self._run_sync(self._count_active_api_keys_for_user_sync, user_id)
 
-    async def counts_by_status(
-        self, *, enterprise_id: str | None = None
-    ) -> dict[str, int]:
+    async def counts_by_status(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         return await self._run_sync(self._counts_by_status_sync, enterprise_id=enterprise_id)
 
-    async def counts_by_tier(
-        self, *, enterprise_id: str | None = None
-    ) -> dict[str, int]:
+    async def counts_by_tier(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         return await self._run_sync(self._counts_by_tier_sync)
 
     async def create_api_key(
@@ -182,16 +176,12 @@ class SqliteStore:
     async def create_user(self, username: str, password_hash: str) -> None:
         await self._run_sync(self._create_user_sync, username, password_hash)
 
-    async def daily_counts(
-        self, *, days: int = 30, enterprise_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def daily_counts(self, *, days: int = 30, enterprise_id: str | None = None) -> list[dict[str, Any]]:
         if days <= 0:
             raise ValueError("days must be positive")
         return await self._run_sync(self._daily_counts_sync, days=days)
 
-    async def domain_counts(
-        self, *, enterprise_id: str | None = None
-    ) -> dict[str, int]:
+    async def domain_counts(self, *, enterprise_id: str | None = None) -> dict[str, int]:
         return await self._run_sync(self._domain_counts_sync)
 
     async def get(self, unit_id: str) -> KnowledgeUnit | None:
@@ -200,9 +190,7 @@ class SqliteStore:
     async def get_active_api_key_by_id(self, key_id: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_active_api_key_by_id_sync, key_id)
 
-    async def get_any(
-        self, unit_id: str, *, enterprise_id: str | None = None
-    ) -> KnowledgeUnit | None:
+    async def get_any(self, unit_id: str, *, enterprise_id: str | None = None) -> KnowledgeUnit | None:
         return await self._run_sync(self._get_any_sync, unit_id, enterprise_id=enterprise_id)
 
     async def get_api_key_for_user(self, *, user_id: int, key_id: str) -> dict[str, Any] | None:
@@ -269,9 +257,7 @@ class SqliteStore:
             limit=limit,
         )
 
-    async def pending_count(
-        self, *, enterprise_id: str | None = None
-    ) -> int:
+    async def pending_count(self, *, enterprise_id: str | None = None) -> int:
         return await self._run_sync(self._pending_count_sync, enterprise_id=enterprise_id)
 
     async def pending_queue(
@@ -281,9 +267,7 @@ class SqliteStore:
         offset: int = 0,
         enterprise_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._run_sync(
-            self._pending_queue_sync, limit=limit, offset=offset, enterprise_id=enterprise_id
-        )
+        return await self._run_sync(self._pending_queue_sync, limit=limit, offset=offset, enterprise_id=enterprise_id)
 
     async def query(
         self,
@@ -307,9 +291,7 @@ class SqliteStore:
             group_id=group_id,
         )
 
-    async def recent_activity(
-        self, limit: int = 20, *, enterprise_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def recent_activity(self, limit: int = 20, *, enterprise_id: str | None = None) -> list[dict[str, Any]]:
         return await self._run_sync(self._recent_activity_sync, limit=limit)
 
     async def revoke_api_key(self, *, user_id: int, key_id: str) -> bool:
@@ -388,13 +370,9 @@ class SqliteStore:
 
     async def count_pending_review(self, *, enterprise_id: str) -> int:
         """Return the size of the pending_review queue for one tenant."""
-        return await self._run_sync(
-            self._count_pending_review_sync, enterprise_id=enterprise_id
-        )
+        return await self._run_sync(self._count_pending_review_sync, enterprise_id=enterprise_id)
 
-    async def expire_pending_reviews(
-        self, *, enterprise_id: str, now_iso: str
-    ) -> list[str]:
+    async def expire_pending_reviews(self, *, enterprise_id: str, now_iso: str) -> list[str]:
         """Sweep expired pending_review rows for one tenant.
 
         Transitions every row with ``status='pending_review'`` AND
@@ -610,7 +588,11 @@ class SqliteStore:
         )
 
     async def semantic_query_with_scope(
-        self, query_vec: list[float], *, limit: int = 10, status: str = "approved",
+        self,
+        query_vec: list[float],
+        *,
+        limit: int = 10,
+        status: str = "approved",
     ) -> list[dict[str, Any]]:
         """Cosine-rank approved KUs returning scope + xgroup flag per row.
 
@@ -619,7 +601,9 @@ class SqliteStore:
         """
         return await self._run_sync(
             self._semantic_query_with_scope_sync,
-            query_vec=query_vec, limit=limit, status=status,
+            query_vec=query_vec,
+            limit=limit,
+            status=status,
         )
 
     async def delete(
@@ -947,10 +931,7 @@ class SqliteStore:
         from ..activity import EVENT_TYPES
 
         if event_type not in EVENT_TYPES:
-            raise ValueError(
-                f"unknown activity event_type {event_type!r}; "
-                f"expected one of {sorted(EVENT_TYPES)}"
-            )
+            raise ValueError(f"unknown activity event_type {event_type!r}; expected one of {sorted(EVENT_TYPES)}")
         await self._run_sync(
             self._append_activity_sync,
             activity_id=activity_id,
@@ -965,9 +946,7 @@ class SqliteStore:
             thread_or_chain_id=thread_or_chain_id,
         )
 
-    async def get_activity_retention_days(
-        self, *, enterprise_id: str
-    ) -> int:
+    async def get_activity_retention_days(self, *, enterprise_id: str) -> int:
         """Return the configured retention window for an Enterprise.
 
         Falls back to ``DEFAULT_RETENTION_DAYS`` (90) when no override
@@ -979,9 +958,7 @@ class SqliteStore:
             enterprise_id=enterprise_id,
         )
 
-    async def set_activity_retention_days(
-        self, *, enterprise_id: str, retention_days: int
-    ) -> None:
+    async def set_activity_retention_days(self, *, enterprise_id: str, retention_days: int) -> None:
         """Upsert the retention window for one Enterprise."""
         if retention_days <= 0:
             raise ValueError("retention_days must be positive")
@@ -991,9 +968,7 @@ class SqliteStore:
             retention_days=retention_days,
         )
 
-    async def purge_activity_older_than(
-        self, *, tenant_enterprise: str, cutoff_iso: str
-    ) -> int:
+    async def purge_activity_older_than(self, *, tenant_enterprise: str, cutoff_iso: str) -> int:
         """Delete activity rows for one tenant older than ``cutoff_iso``.
 
         Returns the number of deleted rows so the cron can log
@@ -1108,9 +1083,7 @@ class SqliteStore:
             group_id=group_id,
         )
 
-    async def get_crosstalk_thread(
-        self, *, thread_id: str, tenant_enterprise: str
-    ) -> dict[str, Any] | None:
+    async def get_crosstalk_thread(self, *, thread_id: str, tenant_enterprise: str) -> dict[str, Any] | None:
         """Fetch one thread row by id, tenancy-scoped.
 
         Returns ``None`` when the thread doesn't exist OR exists in a
@@ -1240,12 +1213,8 @@ class SqliteStore:
             submitted_at=submitted_at,
         )
 
-    async def get_reflect_submission(
-        self, submission_id: str
-    ) -> dict[str, Any] | None:
-        return await self._run_sync(
-            self._get_reflect_submission_sync, submission_id
-        )
+    async def get_reflect_submission(self, submission_id: str) -> dict[str, Any] | None:
+        return await self._run_sync(self._get_reflect_submission_sync, submission_id)
 
     async def find_recent_reflect_dedup(
         self,
@@ -1299,9 +1268,7 @@ class SqliteStore:
             enterprise_id=enterprise_id,
         )
 
-    async def list_reflect_submissions_for_recovery(
-        self, *, lookback_iso: str
-    ) -> list[dict[str, Any]]:
+    async def list_reflect_submissions_for_recovery(self, *, lookback_iso: str) -> list[dict[str, Any]]:
         """Return non-terminal submissions with non-null ``anthropic_batch_id`` newer than ``lookback_iso``.
 
         Used by the worker's R6 startup recovery scan; not exercised by
@@ -1519,8 +1486,7 @@ class SqliteStore:
         with self._engine.connect() as conn:
             if enterprise_id is not None:
                 row = conn.exec_driver_sql(
-                    "SELECT status, reviewed_by, reviewed_at FROM knowledge_units "
-                    "WHERE id = ? AND enterprise_id = ?",
+                    "SELECT status, reviewed_by, reviewed_at FROM knowledge_units WHERE id = ? AND enterprise_id = ?",
                     (unit_id, enterprise_id),
                 ).fetchone()
             else:
@@ -1615,10 +1581,7 @@ class SqliteStore:
                     conn.execute(INSERT_UNIT_DOMAIN, {"unit_id": unit.id, "domain": d})
                 if embedding is not None and embedding_model is not None:
                     conn.execute(
-                        text(
-                            "UPDATE knowledge_units SET embedding = :emb, "
-                            "embedding_model = :model WHERE id = :id"
-                        ),
+                        text("UPDATE knowledge_units SET embedding = :emb, embedding_model = :model WHERE id = :id"),
                         {"emb": embedding, "model": embedding_model, "id": unit.id},
                     )
         except IntegrityError as e:
@@ -1712,7 +1675,8 @@ class SqliteStore:
                     conn.exec_driver_sql(
                         "SELECT COUNT(*) FROM knowledge_units WHERE status = 'pending' AND enterprise_id = ?",
                         (enterprise_id,),
-                    ).scalar() or 0
+                    ).scalar()
+                    or 0
                 )
             return int(conn.execute(SELECT_PENDING_COUNT).scalar() or 0)
 
@@ -1984,12 +1948,11 @@ class SqliteStore:
                     "AND (pending_review_expires_at IS NULL "
                     "     OR pending_review_expires_at > ?)",
                     (enterprise_id, now_iso),
-                ).scalar() or 0
+                ).scalar()
+                or 0
             )
 
-    def _expire_pending_reviews_sync(
-        self, *, enterprise_id: str, now_iso: str
-    ) -> list[str]:
+    def _expire_pending_reviews_sync(self, *, enterprise_id: str, now_iso: str) -> list[str]:
         """Two-step sweep: SELECT the row ids first, then UPDATE.
 
         We return the ids so the caller can emit one ``review_resolve``
@@ -2852,7 +2815,11 @@ class SqliteStore:
         return scored[:limit]
 
     def _semantic_query_with_scope_sync(
-        self, *, query_vec: list[float], limit: int, status: str,
+        self,
+        *,
+        query_vec: list[float],
+        limit: int,
+        status: str,
     ) -> list[dict[str, Any]]:
         import numpy as np
 
@@ -3054,9 +3021,7 @@ class SqliteStore:
         from ._queries import INSERT_ACTIVITY_LOG
 
         payload_json = json.dumps(payload if payload is not None else {})
-        result_json = (
-            None if result_summary is None else json.dumps(result_summary)
-        )
+        result_json = None if result_summary is None else json.dumps(result_summary)
         with self._engine.begin() as conn:
             conn.execute(
                 INSERT_ACTIVITY_LOG,
@@ -3074,9 +3039,7 @@ class SqliteStore:
                 },
             )
 
-    def _get_activity_retention_days_sync(
-        self, *, enterprise_id: str
-    ) -> int:
+    def _get_activity_retention_days_sync(self, *, enterprise_id: str) -> int:
         from ..activity import DEFAULT_RETENTION_DAYS
         from ._queries import SELECT_ACTIVITY_RETENTION_DAYS
 
@@ -3089,9 +3052,7 @@ class SqliteStore:
             return DEFAULT_RETENTION_DAYS
         return int(row[0])
 
-    def _set_activity_retention_days_sync(
-        self, *, enterprise_id: str, retention_days: int
-    ) -> None:
+    def _set_activity_retention_days_sync(self, *, enterprise_id: str, retention_days: int) -> None:
         from ._queries import UPSERT_ACTIVITY_RETENTION_DAYS
 
         updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -3105,9 +3066,7 @@ class SqliteStore:
                 },
             )
 
-    def _purge_activity_older_than_sync(
-        self, *, tenant_enterprise: str, cutoff_iso: str
-    ) -> int:
+    def _purge_activity_older_than_sync(self, *, tenant_enterprise: str, cutoff_iso: str) -> int:
         from ._queries import DELETE_ACTIVITY_OLDER_THAN
 
         with self._engine.begin() as conn:
@@ -3187,9 +3146,7 @@ class SqliteStore:
             except (TypeError, ValueError):
                 payload = {}
             try:
-                result_summary = (
-                    json.loads(result_raw) if result_raw is not None else None
-                )
+                result_summary = json.loads(result_raw) if result_raw is not None else None
             except (TypeError, ValueError):
                 result_summary = None
             results.append(
@@ -3277,9 +3234,7 @@ class SqliteStore:
                 },
             )
 
-    def _get_crosstalk_thread_sync(
-        self, *, thread_id: str, tenant_enterprise: str
-    ) -> dict[str, Any] | None:
+    def _get_crosstalk_thread_sync(self, *, thread_id: str, tenant_enterprise: str) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(
@@ -3565,15 +3520,10 @@ class SqliteStore:
                 },
             )
 
-    def _get_reflect_submission_sync(
-        self, submission_id: str
-    ) -> dict[str, Any] | None:
+    def _get_reflect_submission_sync(self, submission_id: str) -> dict[str, Any] | None:
         with self._engine.connect() as conn:
             row = conn.execute(
-                text(
-                    f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions "
-                    "WHERE id = :id"
-                ),
+                text(f"SELECT {self._REFLECT_COLUMNS} FROM reflect_submissions WHERE id = :id"),
                 {"id": submission_id},
             ).fetchone()
         return None if row is None else self._reflect_row_to_dict(row)
@@ -3605,10 +3555,7 @@ class SqliteStore:
     ) -> int:
         with self._engine.connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM reflect_submissions "
-                    "WHERE session_id = :sid AND submitted_at >= :since"
-                ),
+                text("SELECT COUNT(*) FROM reflect_submissions WHERE session_id = :sid AND submitted_at >= :since"),
                 {"sid": session_id, "since": window_start_iso},
             ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -3647,9 +3594,7 @@ class SqliteStore:
             ).fetchone()
         return None if row is None else self._reflect_row_to_dict(row)
 
-    def _list_reflect_submissions_for_recovery_sync(
-        self, *, lookback_iso: str
-    ) -> list[dict[str, Any]]:
+    def _list_reflect_submissions_for_recovery_sync(self, *, lookback_iso: str) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(
                 text(

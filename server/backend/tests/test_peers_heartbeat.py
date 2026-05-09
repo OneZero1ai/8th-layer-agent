@@ -8,6 +8,7 @@ Pins:
   - persona is the primary key — two heartbeats with the same persona
     end up as one row.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,8 +42,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         # Promote Alice to a foreign tenancy scope. Bob stays default.
         with store._engine.begin() as _c:
             _c.exec_driver_sql(
-                "UPDATE users SET enterprise_id = 'acme', group_id = 'engineering' "
-                "WHERE username = ?",
+                "UPDATE users SET enterprise_id = 'acme', group_id = 'engineering' WHERE username = ?",
                 (ALICE,),
             )
         yield c
@@ -95,9 +95,7 @@ class TestHeartbeatUpsert:
             # And there should be exactly one row in the DB.
             store = _get_store()
             with store._engine.begin() as _c:
-                count = _c.exec_driver_sql(
-                    "SELECT COUNT(*) FROM peers WHERE persona = 'persona-x'"
-                ).fetchone()[0]
+                count = _c.exec_driver_sql("SELECT COUNT(*) FROM peers WHERE persona = 'persona-x'").fetchone()[0]
             assert count == 1
         finally:
             _clear_override()

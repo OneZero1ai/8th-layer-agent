@@ -90,13 +90,9 @@ def upgrade() -> None:
     existing = _column_names(bind, "knowledge_units")
     with op.batch_alter_table("knowledge_units") as batch:
         if "pending_review_reason" not in existing:
-            batch.add_column(
-                sa.Column("pending_review_reason", sa.Text(), nullable=True)
-            )
+            batch.add_column(sa.Column("pending_review_reason", sa.Text(), nullable=True))
         if "pending_review_expires_at" not in existing:
-            batch.add_column(
-                sa.Column("pending_review_expires_at", sa.Text(), nullable=True)
-            )
+            batch.add_column(sa.Column("pending_review_expires_at", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:

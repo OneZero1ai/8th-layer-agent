@@ -1,4 +1,5 @@
 """Tests for the propose-time content quality guards."""
+
 from __future__ import annotations
 
 from cq.models import Insight
@@ -122,8 +123,9 @@ class TestAcceptanceCases:
             ["lambda", "vpc", "cold-start"],
             Insight(
                 summary="VPC-attached Lambda functions cannot reach public APIs by default",
-                detail="When a Lambda is configured with a VPC, outbound traffic routes through the VPC. Without a NAT gateway or VPC endpoint, public APIs are unreachable. The error appears as a generic timeout, not a network-error, masking the cause.",
-                action="Add a NAT gateway in a public subnet and route the Lambda's private subnet through it, OR add VPC endpoints for the specific AWS services the Lambda calls.",
+                # Long fixture strings mirror real Strands probe payloads — wrapping would distort the test data.
+                detail="When a Lambda is configured with a VPC, outbound traffic routes through the VPC. Without a NAT gateway or VPC endpoint, public APIs are unreachable. The error appears as a generic timeout, not a network-error, masking the cause.",  # noqa: E501
+                action="Add a NAT gateway in a public subnet and route the Lambda's private subnet through it, OR add VPC endpoints for the specific AWS services the Lambda calls.",  # noqa: E501
             ),
         )
         assert reason is None

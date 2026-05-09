@@ -121,9 +121,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 
 def _login(client: TestClient) -> str:
-    resp = client.post(
-        "/api/v1/auth/login", json={"username": ALICE, "password": "pw"}
-    )
+    resp = client.post("/api/v1/auth/login", json={"username": ALICE, "password": "pw"})
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
 

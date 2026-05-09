@@ -44,6 +44,7 @@ def _payload(data_str: str) -> tuple[str, str, str]:
 
 
 def main() -> int:
+    """Backfill embeddings for knowledge units missing them; return process exit code."""
     db_path = Path(os.environ.get("CQ_DB_PATH", "/data/cq.db"))
     batch = int(os.environ.get("BACKFILL_BATCH", "50"))
     cap = int(os.environ.get("BACKFILL_LIMIT", "0"))

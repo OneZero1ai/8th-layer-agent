@@ -94,9 +94,7 @@ def upgrade() -> None:
     # Step 1: pull every still-default-enterprise KU id + data blob.
     # We need data because that's where ``created_by`` lives.
     candidates = bind.exec_driver_sql(
-        "SELECT id, data FROM knowledge_units "
-        "WHERE enterprise_id = 'default-enterprise' "
-        "AND group_id = 'default-group'"
+        "SELECT id, data FROM knowledge_units WHERE enterprise_id = 'default-enterprise' AND group_id = 'default-group'"
     ).fetchall()
     if not candidates:
         return
@@ -110,9 +108,7 @@ def upgrade() -> None:
         "WHERE enterprise_id != 'default-enterprise' "
         "OR group_id != 'default-group'"
     ).fetchall()
-    user_map: dict[str, tuple[str, str]] = {
-        row[0]: (row[1], row[2]) for row in user_rows
-    }
+    user_map: dict[str, tuple[str, str]] = {row[0]: (row[1], row[2]) for row in user_rows}
     if not user_map:
         # No users with non-default tenancy => no signal to backfill on.
         return
@@ -154,8 +150,7 @@ def upgrade() -> None:
     # Surface the count in alembic output for the operator's audit log.
     # Alembic captures stdout when running migrations.
     print(  # noqa: T201 — migration audit signal, not application logging
-        f"[0013] backfilled {backfilled} of {len(candidates)} "
-        f"default-enterprise KUs to their proposer's tenancy"
+        f"[0013] backfilled {backfilled} of {len(candidates)} default-enterprise KUs to their proposer's tenancy"
     )
 
 

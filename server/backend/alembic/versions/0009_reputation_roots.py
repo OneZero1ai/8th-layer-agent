@@ -69,7 +69,5 @@ def downgrade() -> None:
     """Drop the roots table. Used by tests; not for production."""
     bind = op.get_bind()
     if _table_exists(bind, "reputation_roots"):
-        op.drop_index(
-            "idx_reputation_roots_published", table_name="reputation_roots"
-        )
+        op.drop_index("idx_reputation_roots_published", table_name="reputation_roots")
         op.drop_table("reputation_roots")

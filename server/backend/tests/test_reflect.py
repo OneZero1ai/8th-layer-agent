@@ -64,10 +64,7 @@ def alice_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Te
                 from sqlalchemy import text as _text
 
                 conn.execute(
-                    _text(
-                        "UPDATE users SET enterprise_id = 'ent-bob' "
-                        "WHERE username = :u"
-                    ),
+                    _text("UPDATE users SET enterprise_id = 'ent-bob' WHERE username = :u"),
                     {"u": BOB_USERNAME},
                 )
         yield client
@@ -215,9 +212,7 @@ class TestStatus:
         )
         assert resp.status_code == 404
 
-    def test_status_cross_enterprise_isolation(
-        self, alice_client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_status_cross_enterprise_isolation(self, alice_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         # Alice creates a submission. Bob (different Enterprise) tries
         # to read it via the same submission_id and sees 404.
         submit_resp = alice_client.post(

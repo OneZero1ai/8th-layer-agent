@@ -17,9 +17,7 @@ class TestEmptyAndSingle:
 
     def test_empty_constant_is_stable(self) -> None:
         # Locking the constant down — any change is a wire-format change.
-        expected = "sha256:" + hashlib.sha256(
-            b"8l-reputation-empty-day-v1"
-        ).hexdigest()
+        expected = "sha256:" + hashlib.sha256(b"8l-reputation-empty-day-v1").hexdigest()
         assert expected == EMPTY_DAY_ROOT
 
     def test_single_leaf_root_is_just_that_leaf(self) -> None:
@@ -34,7 +32,7 @@ class TestPairAndOdd:
         b = _h("b")
         # Manual computation: sha256(a_bytes || b_bytes)
         expected_root_bytes = hashlib.sha256(
-            bytes.fromhex(a[len("sha256:"):]) + bytes.fromhex(b[len("sha256:"):])
+            bytes.fromhex(a[len("sha256:") :]) + bytes.fromhex(b[len("sha256:") :])
         ).digest()
         assert merkle_root([a, b]) == "sha256:" + expected_root_bytes.hex()
 
@@ -42,12 +40,8 @@ class TestPairAndOdd:
         a, b, c = _h("a"), _h("b"), _h("c")
         # Tree shape with 3 leaves:
         #   root = H(H(a||b) || H(c||c))
-        ab = hashlib.sha256(
-            bytes.fromhex(a[7:]) + bytes.fromhex(b[7:])
-        ).digest()
-        cc = hashlib.sha256(
-            bytes.fromhex(c[7:]) + bytes.fromhex(c[7:])
-        ).digest()
+        ab = hashlib.sha256(bytes.fromhex(a[7:]) + bytes.fromhex(b[7:])).digest()
+        cc = hashlib.sha256(bytes.fromhex(c[7:]) + bytes.fromhex(c[7:])).digest()
         root = hashlib.sha256(ab + cc).digest()
         assert merkle_root([a, b, c]) == "sha256:" + root.hex()
 

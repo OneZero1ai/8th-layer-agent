@@ -8,6 +8,7 @@ Pins:
   - Admin-only — non-admin users get 403.
   - expires_at is honored (not echoed as the row's signed_at).
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -91,8 +92,7 @@ class TestSignHappyPath:
         store = _get_store()
         with store._engine.begin() as _c:
             rows = _c.exec_driver_sql(
-                "SELECT policy_applied, consent_id FROM cross_l2_audit "
-                "WHERE consent_id = ?",
+                "SELECT policy_applied, consent_id FROM cross_l2_audit WHERE consent_id = ?",
                 (consent_id,),
             ).fetchall()
         assert len(rows) == 1
