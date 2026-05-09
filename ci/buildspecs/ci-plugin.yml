@@ -1,0 +1,37 @@
+version: 0.2
+
+# CodeBuild equivalent of .github/workflows/ci-plugin.yaml.
+# Triggers (PR + push paths: plugins/cq/**, schema/**, ci-plugin workflow file)
+# are encoded on the CodeBuild project's webhook FilterGroups, not here —
+# see templates/codebuild-project.yaml in the same repo.
+#
+# Behavioural parity with the GHA workflow:
+#   - astral-sh/setup-uv@v7 (with cache enabled) → install uv via the official
+#     installer; cache uv's wheel/installer cache on the .uv-cache path.
+#   - `make setup-plugin lint-plugin` → identical command sequence.
+
+env:
+  variables:
+    UV_CACHE_DIR: /codebuild/output/.uv-cache
+    UV_NO_PROGRESS: "1"
+
+phases:
+  install:
+    commands:
+      - echo "Installing uv (mirrors astral-sh/setup-uv@v7)"
+      - curl -LsSf https://astral.sh/uv/install.sh | sh
+      - export PATH="$HOME/.local/bin:$PATH"
+      - uv --version
+  build:
+    commands:
+      - export PATH="$HOME/.local/bin:$PATH"
+      - echo "Running make setup-plugin lint-plugin"
+      - make setup-plugin lint-plugin
+
+cache:
+  paths:
+    # Mirror enable-cache:true on astral-sh/setup-uv — cache the uv install
+    # cache between builds. CodeBuild local cache only (no S3 needed at
+    # this scale).
+    - /codebuild/output/.uv-cache/**/*
+    - /root/.cache/uv/**/*
