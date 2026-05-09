@@ -104,8 +104,7 @@ class SendMessageRequest(BaseModel):
     message_id: str | None = Field(
         default=None,
         description=(
-            "Client-provided message_id (idempotency-key). If exists, "
-            "returns the existing record without inserting."
+            "Client-provided message_id (idempotency-key). If exists, returns the existing record without inserting."
         ),
     )
 
@@ -218,9 +217,7 @@ def _new_message_id() -> str:
     return f"msg_{secrets.token_hex(16)}"
 
 
-async def _resolve_caller(
-    username: str, store: SqliteStore
-) -> tuple[str, str, str]:
+async def _resolve_caller(username: str, store: SqliteStore) -> tuple[str, str, str]:
     """Return (enterprise_id, group_id, role) from caller's user row.
 
     Raises 401 if the user row is missing tenancy claims (defensive,
@@ -281,9 +278,7 @@ async def send_message(
     # Idempotency: if the message_id already exists, return the existing
     # record without inserting (covers retries on flaky L2 connectivity).
     if request.message_id is not None:
-        existing_thread = await store.get_crosstalk_thread(
-            thread_id=thread_id, tenant_enterprise=enterprise_id
-        )
+        existing_thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
         if existing_thread is not None:
             existing_msgs = await store.list_crosstalk_messages(
                 thread_id=thread_id,
@@ -302,9 +297,7 @@ async def send_message(
     # tenant AND caller is a participant, this is an append. Otherwise
     # create the thread.
     existing = (
-        await store.get_crosstalk_thread(
-            thread_id=thread_id, tenant_enterprise=enterprise_id
-        )
+        await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
         if request.thread_id is not None
         else None
     )
@@ -365,9 +358,7 @@ async def reply_on_thread(
     """Reply on an existing thread. Caller must be a participant."""
     enterprise_id, group_id, role = await _resolve_caller(username, store)
 
-    thread = await store.get_crosstalk_thread(
-        thread_id=thread_id, tenant_enterprise=enterprise_id
-    )
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread["status"] != "open":
@@ -457,17 +448,13 @@ async def get_thread(
     """Fetch one thread + its messages."""
     enterprise_id, _group_id, role = await _resolve_caller(username, store)
 
-    thread = await store.get_crosstalk_thread(
-        thread_id=thread_id, tenant_enterprise=enterprise_id
-    )
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if username not in thread["participants"] and role != "admin":
         raise HTTPException(status_code=403, detail="Not a participant")
 
-    msgs = await store.list_crosstalk_messages(
-        thread_id=thread_id, tenant_enterprise=enterprise_id, limit=limit
-    )
+    msgs = await store.list_crosstalk_messages(thread_id=thread_id, tenant_enterprise=enterprise_id, limit=limit)
     return ThreadWithMessagesResponse(
         thread=CrosstalkThread(**thread),
         messages=[CrosstalkMessage(**m) for m in msgs],
@@ -485,9 +472,7 @@ async def close_thread(
     """Mark a thread closed. Caller must be a participant or admin."""
     enterprise_id, _group_id, role = await _resolve_caller(username, store)
 
-    thread = await store.get_crosstalk_thread(
-        thread_id=thread_id, tenant_enterprise=enterprise_id
-    )
+    thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=enterprise_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if username not in thread["participants"] and role != "admin":

@@ -61,7 +61,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
 DEFAULT_RETENTION_DAYS: int = 90
 
 
-_CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # pragma: allowlist secret
 
 
 def generate_activity_id() -> str:

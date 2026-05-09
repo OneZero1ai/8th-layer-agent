@@ -88,8 +88,7 @@ async def log_activity(
     """
     if event_type not in EVENT_TYPES:
         logger.warning(
-            "activity log: refusing to append unknown event_type %r "
-            "(expected one of %s)",
+            "activity log: refusing to append unknown event_type %r (expected one of %s)",
             event_type,
             sorted(EVENT_TYPES),
         )
@@ -115,9 +114,7 @@ async def log_activity(
                 tenant_group = aigrp.group()
                 persona = username
             else:
-                tenant_enterprise = str(
-                    user.get("enterprise_id") or aigrp.enterprise()
-                )
+                tenant_enterprise = str(user.get("enterprise_id") or aigrp.enterprise())
                 # ``group_id`` is column-NOT-NULL on the users table per
                 # migration 0001_phase6_step1, but defensive cast keeps
                 # the helper safe if a future schema makes it nullable.

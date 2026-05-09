@@ -147,9 +147,7 @@ async def _sweep_pending_review_ttl(store: "SqliteStore", enterprise_id: str) ->
 
     try:
         now_iso = _dt.now(UTC).isoformat()
-        await store.expire_pending_reviews(
-            enterprise_id=enterprise_id, now_iso=now_iso
-        )
+        await store.expire_pending_reviews(enterprise_id=enterprise_id, now_iso=now_iso)
     except Exception as exc:  # noqa: BLE001 — best-effort by design
         logging.getLogger(__name__).warning(
             "pending_review TTL sweep failed for enterprise=%s: %s",
@@ -206,15 +204,11 @@ async def approve_unit(
     # another admin transitioned the row between our SELECT above and
     # our UPDATE — the WHERE clause's terminal-state guard refuses the
     # second write. Re-read and 409 with the winning admin's outcome.
-    won = await store.set_review_status(
-        unit_id, "approved", username, enterprise_id=enterprise_id
-    )
+    won = await store.set_review_status(unit_id, "approved", username, enterprise_id=enterprise_id)
     if not won:
         current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
         terminal = current["status"] if current else "resolved"
-        raise HTTPException(
-            status_code=409, detail=f"Knowledge unit already {terminal}"
-        )
+        raise HTTPException(status_code=409, detail=f"Knowledge unit already {terminal}")
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "approve", enterprise_id, username)
@@ -261,15 +255,11 @@ async def reject_unit(
     # Optimistic concurrency: see ``approve_unit`` for the rationale —
     # if another admin won the race we 409 with the terminal status
     # rather than silently overwriting their decision.
-    won = await store.set_review_status(
-        unit_id, target_status, username, enterprise_id=enterprise_id
-    )
+    won = await store.set_review_status(unit_id, target_status, username, enterprise_id=enterprise_id)
     if not won:
         current = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
         terminal = current["status"] if current else "resolved"
-        raise HTTPException(
-            status_code=409, detail=f"Knowledge unit already {terminal}"
-        )
+        raise HTTPException(status_code=409, detail=f"Knowledge unit already {terminal}")
     updated = await store.get_review_status(unit_id, enterprise_id=enterprise_id)
     assert updated is not None  # Unit exists; we just wrote to it.
     await _hook_ku_event(store, unit_id, "reject", enterprise_id, username)
@@ -339,9 +329,7 @@ async def pending_review_queue(
     response (best-effort, same pattern as the activity-log writes).
     """
     enterprise_id = await _admin_enterprise(username, store)
-    items = await store.list_pending_review(
-        enterprise_id=enterprise_id, limit=limit, offset=offset
-    )
+    items = await store.list_pending_review(enterprise_id=enterprise_id, limit=limit, offset=offset)
     total = await store.count_pending_review(enterprise_id=enterprise_id)
     # Best-effort TTL sweep — runs after the response is sent so the
     # eventual on-disk transition lines up with the activity log
