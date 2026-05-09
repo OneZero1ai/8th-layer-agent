@@ -53,6 +53,31 @@ class ProposeRequest(BaseModel):
     insight: Insight
     context: Context = Field(default_factory=Context)
     created_by: str = ""
+    tier: Tier | None = Field(
+        default=None,
+        description=(
+            "Visibility tier for the new KU. Defaults to the server-side "
+            "CQ_DEFAULT_KU_TIER env var, or 'private' when unset."
+        ),
+    )
+
+
+def _default_ku_tier() -> Tier:
+    """Resolve the server-side default tier for newly-proposed KUs.
+
+    Set ``CQ_DEFAULT_KU_TIER`` to one of ``local|private|public`` to flip
+    the default for an L2; falls back to ``private`` for backwards
+    compatibility (issue #90).
+    """
+    raw = os.environ.get("CQ_DEFAULT_KU_TIER", "").strip().lower()
+    if not raw:
+        return Tier.PRIVATE
+    try:
+        return Tier(raw)
+    except ValueError:
+        # Unknown value — log via FastAPI's default channels would require
+        # a logger; keep this hot-path silent and fall back to private.
+        return Tier.PRIVATE
 
 
 class FlagRequest(BaseModel):
@@ -1519,7 +1544,7 @@ async def propose_unit(
         domains=normalized,
         insight=request.insight,
         context=request.context,
-        tier=Tier.PRIVATE,
+        tier=request.tier or _default_ku_tier(),
         created_by=username,
     )
     embed_payload = embed_text(
