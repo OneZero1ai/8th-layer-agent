@@ -407,6 +407,6 @@ class TestIdempotencyAndChain:
         ``run_migrations`` silently misses the new revision on stamped
         DBs. Pin the constant so the chain head is the source of truth.
         """
-        # Bumped to 0015_phase_1_0c_aigrp_peers_pair_secret_ref
-        # (Decision 27/28 audit gap).
-        assert HEAD_REVISION == "0015_phase_1_0c_aigrp_peers_pair_secret_ref"
+        # Bumped to 0016_xgroup_consent (Phase 1.0b — Decision 28).
+        # Chains after 0015_phase_1_0c_aigrp_peers_pair_secret_ref.
+        assert HEAD_REVISION == "0016_xgroup_consent"
