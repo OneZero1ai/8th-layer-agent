@@ -8,6 +8,23 @@
  *
  * License-wise this is a derivative of the mainline cq frontend (Apache-2.0).
  * See ../../../NOTICE and FORK_DELTA.md.
+ *
+ * ── Brand indirection (FO-1d, Decision 30) ──────────────────────────────
+ * Two layers of tokens:
+ *
+ *   PLATFORM tokens (--cyan, --violet, --gold, ...)  — the 8th-Layer.ai
+ *     palette. Stable; only changed when the platform brand itself changes.
+ *
+ *   BRAND tokens (--brand-primary, --brand-secondary) — DEFAULT to the
+ *     platform cyan/violet but can be overridden at runtime by the
+ *     ThemeProvider (which reads /api/v1/theme and sets the property on
+ *     :root). Components that represent BRAND surfaces (CTA buttons,
+ *     focus rings, hover accents) reference --brand-primary so per-
+ *     Enterprise / per-L2 overrides take effect without a recompile.
+ *
+ * Components that encode the 8th-Layer mark itself (Wordmark glyph base
+ * color, AAISN topology mark) keep referencing platform tokens directly
+ * — the platform mark is co-branded, not customer-rebrandable.
  */
 
 @import "tailwindcss";
@@ -32,6 +49,11 @@
   --emerald: #10b981;
   --gold: #fcd34d;
   --rose: #ff5c7c;
+
+  /* Brand indirection — default to platform palette; overridable at
+     runtime via ThemeProvider for per-Enterprise / per-L2 chrome. */
+  --brand-primary: var(--cyan);
+  --brand-secondary: var(--violet);
 
   --surface: rgba(255, 255, 255, 0.025);
   --surface-raised: rgba(255, 255, 255, 0.04);
@@ -70,6 +92,12 @@
   --gold: #f59e0b;
   --rose: #dc2626;
 
+  /* Brand indirection — mainline-cq stays platform-fixed (Decision 30
+     §"upstream-compatible fallback"); ThemeProvider only overrides
+     these under data-theme="8th-layer". */
+  --brand-primary: var(--cyan);
+  --brand-secondary: var(--violet);
+
   --surface: #ffffff;
   --surface-raised: #ffffff;
   --surface-hover: #f3f4f6;
@@ -97,6 +125,8 @@
   --emerald: #10b981;
   --gold: #fcd34d;
   --rose: #ff5c7c;
+  --brand-primary: var(--cyan);
+  --brand-secondary: var(--violet);
   --surface: rgba(255, 255, 255, 0.025);
   --surface-raised: rgba(255, 255, 255, 0.04);
   --surface-hover: rgba(255, 255, 255, 0.06);
@@ -180,8 +210,9 @@ body {
     border-color 150ms ease,
     box-shadow 150ms ease;
   &:focus {
-    border-color: var(--cyan);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 25%, transparent);
+    border-color: var(--brand-primary);
+    box-shadow: 0 0 0 3px
+      color-mix(in srgb, var(--brand-primary) 25%, transparent);
   }
 }
 

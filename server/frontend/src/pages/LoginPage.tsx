@@ -63,7 +63,7 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-md bg-[color-mix(in_srgb,var(--cyan)_18%,transparent)] border border-[color-mix(in_srgb,var(--cyan)_45%,transparent)] py-2.5 font-mono-brand text-[11px] uppercase tracking-[0.22em] text-[var(--cyan)] hover:bg-[color-mix(in_srgb,var(--cyan)_28%,transparent)] disabled:opacity-50 transition-all"
+            className="w-full rounded-md bg-[color-mix(in_srgb,var(--brand-primary)_18%,transparent)] border border-[color-mix(in_srgb,var(--brand-primary)_45%,transparent)] py-2.5 font-mono-brand text-[11px] uppercase tracking-[0.22em] text-[var(--brand-primary)] hover:bg-[color-mix(in_srgb,var(--brand-primary)_28%,transparent)] disabled:opacity-50 transition-all"
           >
             {loading ? "Signing in…" : "Sign in"}
           </button>

@@ -27,7 +27,7 @@ const CARD_STYLES: Record<string, string> = {
 
 const ACTION_BOX_STYLES: Record<string, string> = {
   neutral:
-    "bg-[color-mix(in_srgb,var(--cyan)_8%,transparent)] border-[var(--cyan)] text-[var(--cyan)]",
+    "bg-[color-mix(in_srgb,var(--brand-primary)_8%,transparent)] border-[var(--brand-primary)] text-[var(--brand-primary)]",
   approve:
     "bg-[color-mix(in_srgb,var(--emerald)_10%,transparent)] border-[var(--emerald)] text-[var(--emerald)]",
   reject:

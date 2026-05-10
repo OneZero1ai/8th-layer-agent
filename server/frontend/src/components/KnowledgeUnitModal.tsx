@@ -136,8 +136,10 @@ export function KnowledgeUnitModal({ unitId, onClose }: Props) {
               {item.knowledge_unit.insight.detail}
             </p>
 
-            <div className="border-l-2 rounded-r-lg px-4 py-3 bg-[color-mix(in_srgb,var(--cyan)_8%,transparent)] border-[var(--cyan)]">
-              <span className="eyebrow text-[var(--cyan)]">Action</span>
+            <div className="border-l-2 rounded-r-lg px-4 py-3 bg-[color-mix(in_srgb,var(--brand-primary)_8%,transparent)] border-[var(--brand-primary)]">
+              <span className="eyebrow text-[var(--brand-primary)]">
+                Action
+              </span>
               <p className="text-[var(--ink)] text-sm mt-1.5 leading-relaxed">
                 {item.knowledge_unit.insight.action}
               </p>

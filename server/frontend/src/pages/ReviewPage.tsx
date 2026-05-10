@@ -152,7 +152,7 @@ export function ReviewPage() {
   if (loading) {
     return (
       <div className="flex justify-center mt-16">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--cyan)] border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--brand-primary)] border-t-transparent" />
       </div>
     )
   }
@@ -162,7 +162,7 @@ export function ReviewPage() {
     const hasSkipped = skippedIds.current.size > 0
     return (
       <div className="max-w-xl mx-auto brand-surface-raised p-10 text-center mt-8 backdrop-blur-sm">
-        <div className="text-5xl mb-3 text-[var(--cyan)] font-display font-light">
+        <div className="text-5xl mb-3 text-[var(--brand-primary)] font-display font-light">
           {hasSkipped ? "\u21b7" : "\u2713"}
         </div>
         <p className="eyebrow mb-2">Review queue</p>
@@ -198,14 +198,14 @@ export function ReviewPage() {
               skippedIds.current.clear()
               fetchNext()
             }}
-            className="inline-block mt-5 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--cyan)] hover:text-[var(--ink)] transition-colors"
+            className="inline-block mt-5 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--brand-primary)] hover:text-[var(--ink)] transition-colors"
           >
             Review skipped items
           </button>
         )}
         <Link
           to="/dashboard"
-          className="inline-block mt-5 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--cyan)] hover:text-[var(--ink)] ml-4 transition-colors"
+          className="inline-block mt-5 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--brand-primary)] hover:text-[var(--ink)] ml-4 transition-colors"
         >
           View dashboard \u2192
         </Link>

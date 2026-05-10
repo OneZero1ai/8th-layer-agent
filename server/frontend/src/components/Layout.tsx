@@ -43,7 +43,7 @@ export function Layout() {
           </span>
         )}
         {active && (
-          <span className="absolute -bottom-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-[var(--cyan)] to-transparent" />
+          <span className="absolute -bottom-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-[var(--brand-primary)] to-transparent" />
         )}
       </Link>
     )
