@@ -192,10 +192,12 @@ export function ApiKeysPage() {
     setCopied(true)
   }
 
-  // Brand button styles. A primary cyan-tinted CTA, a destructive rose CTA,
-  // and a subtle ghost button that maps to the dark surface tokens.
+  // Brand button styles. A primary brand-tinted CTA, a destructive rose CTA,
+  // and a subtle ghost button that maps to the dark surface tokens. The
+  // primary CTA references --brand-primary so per-Enterprise theme
+  // overrides re-tint without code changes (Decision 30).
   const primaryBtn =
-    "rounded-md bg-[color-mix(in_srgb,var(--cyan)_18%,transparent)] border border-[color-mix(in_srgb,var(--cyan)_45%,transparent)] px-4 py-2 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--cyan)] hover:bg-[color-mix(in_srgb,var(--cyan)_28%,transparent)] disabled:opacity-50 transition-all"
+    "rounded-md bg-[color-mix(in_srgb,var(--brand-primary)_18%,transparent)] border border-[color-mix(in_srgb,var(--brand-primary)_45%,transparent)] px-4 py-2 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--brand-primary)] hover:bg-[color-mix(in_srgb,var(--brand-primary)_28%,transparent)] disabled:opacity-50 transition-all"
   const destructiveBtn =
     "rounded-md bg-[color-mix(in_srgb,var(--rose)_18%,transparent)] border border-[color-mix(in_srgb,var(--rose)_45%,transparent)] px-4 py-2 font-mono-brand text-[11px] uppercase tracking-[0.2em] text-[var(--rose)] hover:bg-[color-mix(in_srgb,var(--rose)_28%,transparent)] disabled:opacity-50 transition-all"
   const ghostBtn =
@@ -319,7 +321,7 @@ export function ApiKeysPage() {
                 aria-pressed={filter === value}
                 className={`px-3 py-1.5 font-mono-brand text-[11px] uppercase tracking-[0.16em] transition-colors ${
                   filter === value
-                    ? "bg-[color-mix(in_srgb,var(--cyan)_22%,transparent)] text-[var(--cyan)]"
+                    ? "bg-[color-mix(in_srgb,var(--brand-primary)_22%,transparent)] text-[var(--brand-primary)]"
                     : "text-[var(--ink-dim)] hover:bg-[var(--surface-hover)]"
                 }`}
               >
@@ -346,7 +348,9 @@ export function ApiKeysPage() {
             >
               ∅
             </span>
-            <span className="eyebrow text-[var(--cyan)]">No API keys yet</span>
+            <span className="eyebrow text-[var(--brand-primary)]">
+              No API keys yet
+            </span>
             <span className="text-sm text-[var(--ink-mute)]">
               Mint one above to give an agent access.
             </span>
@@ -516,7 +520,7 @@ export function ApiKeysPage() {
               Copy this token now. It will not be shown again.
             </p>
             <div className="mt-4 flex items-center gap-2 rounded-lg bg-[var(--bg-via)] border border-[var(--rule-strong)] p-3">
-              <code className="flex-1 break-all font-mono-brand text-sm text-[var(--cyan)]">
+              <code className="flex-1 break-all font-mono-brand text-sm text-[var(--brand-primary)]">
                 {createdKey.token}
               </code>
               <button type="button" onClick={copyToken} className={primaryBtn}>
@@ -528,7 +532,7 @@ export function ApiKeysPage() {
                 type="checkbox"
                 checked={acknowledged}
                 onChange={(e) => setAcknowledged(e.target.checked)}
-                className="accent-[var(--cyan)]"
+                className="accent-[var(--brand-primary)]"
               />
               I have copied this token and saved it securely.
             </label>

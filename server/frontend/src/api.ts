@@ -9,24 +9,17 @@ import type {
 } from "./types"
 
 const API_BASE = "/api/v1"
-const TOKEN_KEY = "cq_auth_token"
+const LEGACY_TOKEN_KEY = "cq_auth_token"
 
-let token: string | null = null
-
-export function setToken(t: string | null) {
-  token = t
-  if (t) {
-    localStorage.setItem(TOKEN_KEY, t)
-  } else {
-    localStorage.removeItem(TOKEN_KEY)
-  }
-}
-
-export function getToken(): string | null {
-  if (!token) {
-    token = localStorage.getItem(TOKEN_KEY)
-  }
-  return token
+/**
+ * One-shot cleanup of pre-FO-1d localStorage bearer (#199, 8l-reviewer HIGH).
+ * Run once at module load so any stale token left by an older session is
+ * cleared. From FO-1d forward the `cq_session` HttpOnly cookie is the only
+ * auth substrate for human users; agent api-keys (`cqa.v1.*`) are sent via
+ * the dedicated CLI and never touch the browser.
+ */
+if (typeof localStorage !== "undefined") {
+  localStorage.removeItem(LEGACY_TOKEN_KEY)
 }
 
 class ApiError extends Error {
@@ -50,11 +43,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   }
-  const currentToken = getToken()
-  if (currentToken) {
-    headers.Authorization = `Bearer ${currentToken}`
-  }
-  const resp = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  // FO-1d (#199): cookie-only auth. The `cq_session` HttpOnly cookie set by
+  // FO-1c travels automatically via `credentials: "include"`. Bearer tokens
+  // in localStorage were the XSS-leak vector FO-1c was meant to close, so
+  // we no longer attach an Authorization header from JS-reachable storage.
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  })
   if (!resp.ok) {
     if (resp.status === 401 && onUnauthorized) {
       onUnauthorized()

@@ -44,7 +44,7 @@ function EmptyGlyph({ label }: { label: string }) {
       >
         ∅
       </span>
-      <span className="eyebrow text-[var(--cyan)]">{label}</span>
+      <span className="eyebrow text-[var(--brand-primary)]">{label}</span>
     </div>
   )
 }
@@ -173,7 +173,7 @@ export function DashboardPage() {
                           </span>
                           <div className="flex-1 h-1 bg-[var(--rule)] rounded-full overflow-hidden">
                             <div
-                              className="h-full bg-gradient-to-r from-[var(--violet)] to-[var(--cyan)] rounded-full"
+                              className="h-full bg-gradient-to-r from-[var(--brand-secondary)] to-[var(--brand-primary)] rounded-full"
                               style={{ width: `${(count / maxCount) * 100}%` }}
                             />
                           </div>

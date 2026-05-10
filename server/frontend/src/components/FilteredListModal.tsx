@@ -134,7 +134,7 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
               >
                 ∅
               </span>
-              <span className="eyebrow text-[var(--cyan)]">
+              <span className="eyebrow text-[var(--brand-primary)]">
                 No knowledge units found
               </span>
             </div>
@@ -146,7 +146,7 @@ export function FilteredListModal({ filter, onClose, onSelectUnit }: Props) {
                 <button
                   type="button"
                   key={item.knowledge_unit.id}
-                  className="w-full text-left p-3 rounded-lg border border-[var(--rule)] bg-[var(--surface)] hover:border-[var(--cyan)] hover:bg-[var(--surface-hover)] transition-colors"
+                  className="w-full text-left p-3 rounded-lg border border-[var(--rule)] bg-[var(--surface)] hover:border-[var(--brand-primary)] hover:bg-[var(--surface-hover)] transition-colors"
                   onClick={() => onSelectUnit(item.knowledge_unit.id)}
                 >
                   <div className="flex items-center gap-2 mb-1">

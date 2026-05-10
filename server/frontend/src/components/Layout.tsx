@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router"
 import { api } from "../api"
 import { useAuth } from "../auth"
+import { PoweredBy8thLayer } from "./PoweredBy8thLayer"
 import { Wordmark } from "./Wordmark"
 
 export function Layout() {
@@ -43,7 +44,7 @@ export function Layout() {
           </span>
         )}
         {active && (
-          <span className="absolute -bottom-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-[var(--cyan)] to-transparent" />
+          <span className="absolute -bottom-px left-0 right-0 h-px bg-gradient-to-r from-transparent via-[var(--brand-primary)] to-transparent" />
         )}
       </Link>
     )
@@ -83,6 +84,7 @@ export function Layout() {
       >
         <Outlet context={{ setPendingCount }} />
       </main>
+      <PoweredBy8thLayer />
     </div>
   )
 }
