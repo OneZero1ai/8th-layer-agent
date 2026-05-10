@@ -443,6 +443,9 @@ class TestPublicClaimHTTP:
         claim_body = claim_resp.json()
         assert claim_body["username"] == "newcomer"
         assert claim_body["token"]
+        # FO-1c: claim response sets cq_session cookie.
+        assert "cq_session" in claim_resp.cookies
+        assert claim_resp.cookies["cq_session"] == claim_body["token"]
 
     def test_double_claim_returns_409(
         self,

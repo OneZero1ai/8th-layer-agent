@@ -28,6 +28,7 @@ from .activity_routes import router as activity_router
 from .admin_routes import router as admin_xgroup_consent_router
 from .auth import get_current_user, require_admin
 from .auth import router as auth_router
+from .claim_page import router as claim_page_router
 from .consults import router as consults_router
 from .crosstalk_routes import router as crosstalk_router
 from .db_url import resolve_sqlite_db_path
@@ -1730,6 +1731,12 @@ app = FastAPI(title="cq Server", version="0.1.0", lifespan=lifespan)
 # Mount API routes at root (SDK compatibility) and at /api (frontend).
 app.include_router(api_router)
 app.include_router(api_router, prefix="/api/v1")
+
+# FO-1c HTML claim page at /invite/{token}. Registered on the app
+# directly (not api_router) so it lives outside the API prefix, and
+# registered BEFORE the SPA fallback below so the static-fallback
+# catch-all doesn't shadow it in combined-image deployments.
+app.include_router(claim_page_router)
 
 # Serve the frontend static build when present (combined Docker image).
 if _STATIC_DIR.is_dir():
