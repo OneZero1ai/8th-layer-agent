@@ -407,6 +407,7 @@ class TestIdempotencyAndChain:
         ``run_migrations`` silently misses the new revision on stamped
         DBs. Pin the constant so the chain head is the source of truth.
         """
-        # Bumped to 0016_xgroup_consent (Phase 1.0b — Decision 28).
-        # Chains after 0015_phase_1_0c_aigrp_peers_pair_secret_ref.
-        assert HEAD_REVISION == "0016_xgroup_consent"
+        # Bumped to 0018_webauthn_credentials (FO-1a — passkey enrollment
+        # substrate, #191). Chains after 0017_add_user_email (additive
+        # ``email`` column on ``users``).
+        assert HEAD_REVISION == "0018_webauthn_credentials"
