@@ -50,11 +50,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   }
+  // FO-1d (#199): when a bearer token is set (e.g. legacy API-key path)
+  // we still attach Authorization. New cookie-bound sessions (FO-1c)
+  // ride on `credentials: "include"` instead — the cq_session cookie
+  // travels with the fetch automatically.
   const currentToken = getToken()
   if (currentToken) {
     headers.Authorization = `Bearer ${currentToken}`
   }
-  const resp = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  const resp = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  })
   if (!resp.ok) {
     if (resp.status === 401 && onUnauthorized) {
       onUnauthorized()
