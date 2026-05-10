@@ -120,8 +120,7 @@ class Invite:
 
 
 _SELECT_COLUMNS = (
-    "id, jti, email, role, target_l2_id, issued_by, issued_at, "
-    "expires_at, claimed_at, claimed_by, revoked_at"
+    "id, jti, email, role, target_l2_id, issued_by, issued_at, expires_at, claimed_at, claimed_by, revoked_at"
 )
 
 
@@ -363,11 +362,7 @@ def list_invites(
 ) -> list[Invite]:
     """Return invites filtered by lifecycle status (None → all)."""
     with store._engine.connect() as conn:  # noqa: SLF001
-        rows = conn.execute(
-            text(
-                f"SELECT {_SELECT_COLUMNS} FROM invites ORDER BY issued_at DESC"
-            )
-        ).fetchall()
+        rows = conn.execute(text(f"SELECT {_SELECT_COLUMNS} FROM invites ORDER BY issued_at DESC")).fetchall()
     invites = [Invite.from_row(r) for r in rows]
     if status is None:
         return invites
@@ -401,9 +396,7 @@ def revoke_invite(
     now_iso = datetime.now(UTC).isoformat()
     with store._engine.begin() as conn:  # noqa: SLF001
         conn.execute(
-            text(
-                "UPDATE invites SET revoked_at = :now WHERE id = :id AND revoked_at IS NULL"
-            ),
+            text("UPDATE invites SET revoked_at = :now WHERE id = :id AND revoked_at IS NULL"),
             {"now": now_iso, "id": invite_id},
         )
     return _get_by_id(store, invite_id)
