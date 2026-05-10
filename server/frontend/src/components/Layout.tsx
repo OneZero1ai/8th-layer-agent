@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router"
 import { api } from "../api"
 import { useAuth } from "../auth"
+import { PoweredBy8thLayer } from "./PoweredBy8thLayer"
 import { Wordmark } from "./Wordmark"
 
 export function Layout() {
@@ -83,6 +84,7 @@ export function Layout() {
       >
         <Outlet context={{ setPendingCount }} />
       </main>
+      <PoweredBy8thLayer />
     </div>
   )
 }
