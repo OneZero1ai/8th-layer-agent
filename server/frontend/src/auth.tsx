@@ -26,7 +26,7 @@ import {
   useEffect,
   useState,
 } from "react"
-import { api, setToken } from "./api"
+import { api } from "./api"
 import { passkeyLogin } from "./webauthn"
 
 interface MeResponse {
@@ -110,8 +110,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     setUsername(null)
     setRole(null)
-    // Clear any stray bearer state from the legacy localStorage path.
-    setToken(null)
     void callLogout()
   }, [])
 

@@ -35,6 +35,16 @@ interface ThemeState {
 
 const ThemeContext = createContext<ThemeState | null>(null)
 
+// Strict 6-digit hex shape — defense in depth. The backend resolver +
+// migration 0020 CHECK constraint also validate (8l-reviewer MEDIUM 1
+// on PR #219). Anything that fails this check stays at the CSS default.
+const HEX_RE = /^#[0-9a-fA-F]{6}$/
+
+function safeHex(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  return HEX_RE.test(value) ? value : null
+}
+
 /**
  * Apply the resolved theme's brand overrides as CSS custom properties on
  * `document.documentElement`. Only run under `data-theme="8th-layer"` per
@@ -48,15 +58,17 @@ function applyBrandOverrides(theme: ResolvedTheme): void {
   // customer-specific brand overrides.
   if (root.getAttribute("data-theme") !== "8th-layer") return
 
-  if (theme.enterprise.accent_hex) {
-    root.style.setProperty("--brand-primary", theme.enterprise.accent_hex)
+  const enterpriseAccent = safeHex(theme.enterprise.accent_hex)
+  const l2Subaccent = safeHex(theme.l2.subaccent_hex)
+
+  if (enterpriseAccent) {
+    root.style.setProperty("--brand-primary", enterpriseAccent)
   }
   // Sub-accent precedence: explicit L2 sub-accent wins; otherwise the
   // Enterprise accent gets used as the secondary too (matches Decision
   // 30's CSS example: `--brand-secondary: var(--l2-subaccent,
   // --enterprise-accent)`).
-  const secondary =
-    theme.l2.subaccent_hex || theme.enterprise.accent_hex || null
+  const secondary = l2Subaccent || enterpriseAccent
   if (secondary) {
     root.style.setProperty("--brand-secondary", secondary)
   }

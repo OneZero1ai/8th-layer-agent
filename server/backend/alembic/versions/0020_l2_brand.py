@@ -90,6 +90,16 @@ def upgrade() -> None:
         # the resolver's ``WHERE id = 1`` read, this collapses the table
         # to "exists or doesn't" without a separate flag.
         sa.CheckConstraint("id = 1", name="ck_l2_brand_single_row"),
+        # Hex-shape constraint at the storage layer (defense in depth;
+        # 8l-reviewer MEDIUM 1 on PR #219). The AS-5 admin write path
+        # will also validate, but a typo'd direct UPDATE or a future
+        # schema bug shouldn't be able to push a malformed value
+        # through to the React `setProperty` call.
+        sa.CheckConstraint(
+            "subaccent_hex IS NULL OR "
+            "subaccent_hex GLOB '#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]'",
+            name="ck_l2_brand_subaccent_hex_shape",
+        ),
     )
 
 

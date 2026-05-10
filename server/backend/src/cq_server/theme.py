@@ -27,10 +27,37 @@ the resolver does at most one SQLite read per call which is cheap.
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from . import aigrp
 from .store._sqlite import SqliteStore
+
+logger = logging.getLogger(__name__)
+
+# Strict 6-digit hex shape — the only thing we accept on the read path,
+# defense-in-depth even though the AS-5 write path will validate too
+# (8l-reviewer MEDIUM 1 on PR #219).
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _safe_hex(value: Any) -> str | None:
+    """Return ``value`` if it's a well-formed 6-digit hex, else ``None``.
+
+    Defense in depth: the AS-5 admin write path validates on insert and
+    migration 0020 carries a CHECK constraint. This function ensures a
+    malformed value (e.g. injected via direct DB access or a future
+    schema bug) cannot reach the React ``setProperty`` call where it
+    might land in unexpected CSS contexts.
+    """
+    if not isinstance(value, str):
+        return None
+    if not _HEX_RE.match(value):
+        logger.warning("rejected malformed hex from theme storage: %r", value)
+        return None
+    return value
+
 
 # --- Platform constants ---------------------------------------------------
 #
@@ -103,7 +130,7 @@ async def _resolve_l2(store: SqliteStore) -> dict[str, Any]:
     return {
         "id": f"{enterprise_id}/{group_id}",
         "label": row["l2_label"] or group_id,
-        "subaccent_hex": row["subaccent_hex"],
+        "subaccent_hex": _safe_hex(row["subaccent_hex"]),
         "hero_motif": row["hero_motif"],
     }
 

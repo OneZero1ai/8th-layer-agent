@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import { getToken } from "../api"
 import { topologyFixture } from "./fixtures/topology.fixture"
 import type { TopologyResponse } from "./types"
 
@@ -21,14 +20,12 @@ export interface UseTopologyPollOptions {
 const DEFAULT_INTERVAL_MS = 5000
 
 async function defaultFetcher(): Promise<TopologyResponse> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  }
-  const token = getToken()
-  if (token) {
-    headers.Authorization = `Bearer ${token}`
-  }
-  const resp = await fetch("/api/v1/network/topology", { headers })
+  // FO-1d (#199, 8l-reviewer HIGH): cookie-only auth. The cq_session cookie
+  // travels via `credentials: "include"` — no Authorization header from JS.
+  const resp = await fetch("/api/v1/network/topology", {
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  })
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}`)
   }

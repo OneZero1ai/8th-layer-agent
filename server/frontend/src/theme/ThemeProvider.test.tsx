@@ -94,6 +94,38 @@ describe("ThemeProvider", () => {
     ).toBe("#0088ff")
   })
 
+  it("rejects malformed hex values (FO-1d 8l-reviewer MEDIUM 1)", async () => {
+    document.documentElement.setAttribute("data-theme", "8th-layer")
+    const malformed = {
+      ...OVERRIDE_FIXTURE,
+      enterprise: {
+        ...OVERRIDE_FIXTURE.enterprise,
+        accent_hex: "red; background: url(http://attacker)",
+      },
+      l2: {
+        ...OVERRIDE_FIXTURE.l2,
+        subaccent_hex: "not-a-hex",
+      },
+    }
+    const fetcher = vi.fn().mockResolvedValue(malformed)
+    render(
+      <ThemeProvider fetcher={fetcher}>
+        <ThemeReadout />
+      </ThemeProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("false")
+    })
+    // Both --brand-primary and --brand-secondary should remain unset
+    // (CSS file defaults) because the values failed the hex regex.
+    expect(
+      document.documentElement.style.getPropertyValue("--brand-primary"),
+    ).toBe("")
+    expect(
+      document.documentElement.style.getPropertyValue("--brand-secondary"),
+    ).toBe("")
+  })
+
   it("does NOT touch CSS overrides under data-theme=mainline-cq", async () => {
     document.documentElement.setAttribute("data-theme", "mainline-cq")
     const fetcher = vi.fn().mockResolvedValue(OVERRIDE_FIXTURE)
