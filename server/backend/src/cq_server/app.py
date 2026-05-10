@@ -36,6 +36,7 @@ from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
 from .migrations import run_migrations
 from .network import router as network_router
+from .passkey_routes import router as passkey_router
 from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
@@ -398,6 +399,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
+# FO-1a (#191) — passkey enrollment + login. Mounted alongside the
+# password-based auth router; both live under /auth on the same prefix.
+api_router.include_router(passkey_router)
 api_router.include_router(review_router)
 api_router.include_router(network_router)
 api_router.include_router(consults_router)
