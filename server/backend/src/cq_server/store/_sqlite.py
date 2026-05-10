@@ -235,6 +235,26 @@ class SqliteStore:
     async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
         return await self._run_sync(self._get_user_by_email_sync, email)
 
+    async def get_l2_brand(self) -> dict[str, Any] | None:
+        """Return the single-row L2 brand override row, or ``None``.
+
+        FO-1d (#199) — the ``l2_brand`` table has a CHECK (id = 1)
+        constraint so at most one row exists. Reader uses ``WHERE id = 1``
+        to make the "row absent" case explicit and the "row present"
+        case a primary-key lookup. Returns ``None`` when the table is
+        empty (admin hasn't customised the L2 brand yet); the resolver
+        in ``cq_server.theme`` falls back to env-pinned defaults.
+        """
+        return await self._run_sync(self._get_l2_brand_sync)
+
+    def _get_l2_brand_sync(self) -> dict[str, Any] | None:
+        stmt = text("SELECT id, l2_label, subaccent_hex, hero_motif, updated_at, updated_by FROM l2_brand WHERE id = 1")
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
+        if row is None:
+            return None
+        return dict(row)
+
     async def daily_counts(
         self,
         *,

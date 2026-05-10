@@ -46,6 +46,7 @@ from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
+from .theme_routes import router as theme_router
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -413,6 +414,10 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
+# FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
+# Mounted on api_router so it lives under both / and /api/v1, same as
+# every other API route. Decision 30 sets the spec.
+api_router.include_router(theme_router)
 
 
 @api_router.get("/health")
