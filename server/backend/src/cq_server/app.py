@@ -34,6 +34,7 @@ from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
+from .invite_routes import router as invite_router
 from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
@@ -410,6 +411,7 @@ api_router.include_router(reflect_router, prefix="/reflect", tags=["reflect"])
 api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
+api_router.include_router(invite_router)
 
 
 @api_router.get("/health")
