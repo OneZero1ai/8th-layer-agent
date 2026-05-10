@@ -22,6 +22,7 @@ func newMCPTestClient(t *testing.T, srv *mcpserver.Server) *client.Client {
 	tools := []server.ServerTool{
 		{Tool: mcpserver.QueryTool(), Handler: srv.HandleQuery},
 		{Tool: mcpserver.ProposeTool(), Handler: srv.HandlePropose},
+		{Tool: mcpserver.ProposeBatchTool(), Handler: srv.HandleProposeBatch},
 		{Tool: mcpserver.ConfirmTool(), Handler: srv.HandleConfirm},
 		{Tool: mcpserver.FlagTool(), Handler: srv.HandleFlag},
 		{Tool: mcpserver.StatusTool(), Handler: srv.HandleStatus},
@@ -105,6 +106,75 @@ func TestE2EProposeQueryConfirmFlagStatus(t *testing.T) {
 	statusText := statusResult.Content[0].(mcp.TextContent).Text
 	require.NoError(t, json.Unmarshal([]byte(statusText), &stats))
 	require.Equal(t, 1, stats.TotalCount)
+}
+
+// TestE2EProposeBatch exercises the propose_batch tool end-to-end: a single MCP call stores
+// multiple units in the real SDK store, returns one combined response, and the resulting units
+// are subsequently queryable. This is the load-bearing assertion for the /cq:reflect silent-mode
+// fix — one tool-call display + one JSON response, regardless of candidate count.
+func TestE2EProposeBatch(t *testing.T) {
+	realClient := newSDKClient(t)
+	srv := mcpserver.New(realClient, "test")
+	c := newMCPTestClient(t, srv)
+	ctx := context.Background()
+
+	batchResp, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "propose_batch",
+			Arguments: map[string]any{
+				"candidates": []any{
+					map[string]any{
+						"summary": "batch unit one",
+						"detail":  "first via batch",
+						"action":  "noop",
+						"domains": []any{"batch"},
+					},
+					map[string]any{
+						"summary":   "batch unit two",
+						"detail":    "second via batch",
+						"action":    "noop",
+						"domains":   []any{"batch"},
+						"languages": []any{"go"},
+					},
+					map[string]any{
+						"summary": "batch unit three",
+						"detail":  "third via batch",
+						"action":  "noop",
+						"domains": []any{"batch"},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, batchResp.IsError)
+
+	var resp struct {
+		Stored []struct {
+			Index   int    `json:"index"`
+			ID      string `json:"id"`
+			Summary string `json:"summary"`
+			Tier    string `json:"tier"`
+		} `json:"stored"`
+		Errors []any `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(batchResp.Content[0].(mcp.TextContent).Text), &resp))
+	require.Len(t, resp.Stored, 3)
+	require.Empty(t, resp.Errors)
+	for _, s := range resp.Stored {
+		require.NotEmpty(t, s.ID)
+	}
+
+	// Confirm the batch-stored units are visible to subsequent queries.
+	queryResp, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "query", Arguments: map[string]any{"domains": []any{"batch"}, "limit": 10}},
+	})
+	require.NoError(t, err)
+	require.False(t, queryResp.IsError)
+
+	var units []cq.KnowledgeUnit
+	require.NoError(t, json.Unmarshal([]byte(queryResp.Content[0].(mcp.TextContent).Text), &units))
+	require.Len(t, units, 3)
 }
 
 // TestE2EPatternBoost verifies that the MCP query tool threads the pattern filter through to
