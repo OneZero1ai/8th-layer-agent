@@ -299,9 +299,19 @@ class TestLoginFinish:
         body = resp.json()
         assert body["username"] == "alice"
         assert body["sign_count"] == 1
-        # The JWT verifies under the same secret the server uses.
-        payload = verify_token(body["token"], secret="test-secret-thirty-two-chars-min!")
+        # FO-1c: the JWT now carries aud="session" — verify with the
+        # discriminant so the verifier accepts the new shape.
+        payload = verify_token(
+            body["token"],
+            secret="test-secret-thirty-two-chars-min!",
+            expected_aud="session",
+        )
         assert payload["sub"] == "alice"
+        assert payload["aud"] == "session"
+        # FO-1c: the response also sets the cq_session cookie. Verify
+        # the cookie is present and contains the same bearer.
+        assert "cq_session" in resp.cookies
+        assert resp.cookies["cq_session"] == body["token"]
 
         # The DB row's sign_count advanced too.
         from cq_server.app import _get_store
