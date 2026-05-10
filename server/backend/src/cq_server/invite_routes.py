@@ -311,8 +311,7 @@ async def get_invite_metadata_route(
             raise HTTPException(status_code=410, detail="invite already claimed")
         raise HTTPException(status_code=410, detail="invite expired")
 
-    issuer = await store.get_user_by_id(invite.issued_by) if hasattr(store, "get_user_by_id") else None
-    inviter_username = issuer["username"] if issuer else _lookup_username(store, invite.issued_by)
+    inviter_username = _lookup_username(store, invite.issued_by)
     return ClaimMetadata(
         email=invite.email,
         role=invite.role,
