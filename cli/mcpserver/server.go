@@ -39,6 +39,7 @@ func New(client Client, ver string) *Server {
 
 	srv.mcpSrv.AddTool(QueryTool(), srv.HandleQuery)
 	srv.mcpSrv.AddTool(ProposeTool(), srv.HandlePropose)
+	srv.mcpSrv.AddTool(ProposeBatchTool(), srv.HandleProposeBatch)
 	srv.mcpSrv.AddTool(ConfirmTool(), srv.HandleConfirm)
 	srv.mcpSrv.AddTool(FlagTool(), srv.HandleFlag)
 	srv.mcpSrv.AddTool(StatusTool(), srv.HandleStatus)
