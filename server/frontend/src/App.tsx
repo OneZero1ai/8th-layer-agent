@@ -7,6 +7,7 @@ import { DashboardPage } from "./pages/DashboardPage"
 import { LoginPage } from "./pages/LoginPage"
 import { NetworkPage } from "./pages/NetworkPage"
 import { ReviewPage } from "./pages/ReviewPage"
+import { ThemeProvider } from "./theme"
 
 function AppRoutes() {
   const { isAuthenticated } = useAuth()
@@ -38,9 +39,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   )
 }
