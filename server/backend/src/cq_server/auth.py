@@ -53,43 +53,132 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def create_token(username: str, *, secret: str, ttl_hours: int = 24) -> str:
-    """Create a JWT token bound to this L2's identity.
+SESSION_AUDIENCE = "session"
+SESSION_ISSUER = "8th-layer.ai"
 
-    iss/aud both set to ``aigrp.self_l2_id()`` so a token minted on L2
-    A is rejected by L2 B's ``verify_token`` even if the two share a
-    secret. Combined with per-L2 secrets (H-6), this closes the
-    cross-L2-impersonation surface the audit flagged.
+
+def _deprecated_audless_tokens_enabled() -> bool:
+    """Return whether the audless-token grace period is in effect.
+
+    FO-1c grace gate. While ON (default), ``verify_token`` accepts
+    tokens that were minted before the ``aud="session"`` discriminant
+    landed — both no-aud tokens and the old M-4 ``aud=self_l2_id()``
+    shape. Operators flip ``CQ_DEPRECATED_AUDLESS_TOKENS=false`` after
+    a release cycle to enforce strict-mode (only ``aud="session"``).
+
+    Recognised falsy values: ``0``, ``false``, ``no`` (case-insensitive).
+    Anything else (including unset) → True (grace is on).
+    """
+    raw = os.environ.get("CQ_DEPRECATED_AUDLESS_TOKENS")
+    if raw is None:
+        return True
+    return raw.lower() not in ("0", "false", "no")
+
+
+def create_token(
+    username: str,
+    *,
+    secret: str,
+    ttl_hours: int = 24,
+    aud: str | None = None,
+) -> str:
+    """Create a JWT token.
+
+    FO-1c — when ``aud`` is provided (typically ``"session"``), the
+    token uses the new discriminant shape: ``iss="8th-layer.ai"`` and
+    the supplied audience. Callers minting browser-session bearers
+    (login, passkey-login-finish, invite-claim) pass ``aud="session"``.
+
+    When ``aud`` is omitted, the legacy M-4/H-6 shape is preserved —
+    ``iss=aud=aigrp.self_l2_id()`` — for any internal caller that hasn't
+    migrated. The grace flag (``CQ_DEPRECATED_AUDLESS_TOKENS``) governs
+    whether ``verify_token`` will still accept those tokens at the
+    session-aud surface.
     """
     now = datetime.now(UTC)
-    self_l2 = aigrp.self_l2_id()
-    payload = {
+    payload: dict[str, Any] = {
         "sub": username,
         "iat": now,
         "exp": now + timedelta(hours=ttl_hours),
-        "iss": self_l2,
-        "aud": self_l2,
     }
+    if aud is None:
+        self_l2 = aigrp.self_l2_id()
+        payload["iss"] = self_l2
+        payload["aud"] = self_l2
+    else:
+        payload["iss"] = SESSION_ISSUER
+        payload["aud"] = aud
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def verify_token(token: str, *, secret: str) -> dict[str, Any]:
+def verify_token(
+    token: str,
+    *,
+    secret: str,
+    expected_aud: str | None = None,
+) -> dict[str, Any]:
     """Verify a JWT token and return its claims.
 
-    Requires ``iss`` and ``aud`` to both match this L2's identity. A
-    legacy token (no iss/aud) is rejected — the breaking change is
-    deliberate (closes M-4 / H-6); existing users re-login within
-    the 24h TTL anyway.
+    Two verification paths, gated by ``expected_aud``:
+
+    * ``expected_aud=None`` — legacy M-4/H-6 path. Requires
+      ``iss=aud=aigrp.self_l2_id()`` so a token minted on L2 A is
+      rejected by L2 B even if the two share a secret.
+
+    * ``expected_aud="session"`` (the FO-1c discriminant) — accepts a
+      session-aud JWT (``iss="8th-layer.ai"``, ``aud="session"``).
+      During the grace period (``CQ_DEPRECATED_AUDLESS_TOKENS=true``,
+      default), also accepts legacy tokens that match the M-4 shape OR
+      have no ``aud`` claim at all. After the flip, only
+      ``aud="session"`` validates. Crucially rejects ``aud="invite"``
+      so an invite-bearer can never authenticate at a session surface.
     """
-    self_l2 = aigrp.self_l2_id()
-    return jwt.decode(
+    if expected_aud is None:
+        # Legacy path — preserved for callers still using the M-4 shape.
+        self_l2 = aigrp.self_l2_id()
+        return jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            audience=self_l2,
+            issuer=self_l2,
+            options={"require": ["iss", "aud", "sub", "exp"]},
+        )
+
+    # New aud-discriminant path. Decode without audience/issuer pinning
+    # first so we can apply the grace logic uniformly.
+    payload = jwt.decode(
         token,
         secret,
         algorithms=["HS256"],
-        audience=self_l2,
-        issuer=self_l2,
-        options={"require": ["iss", "aud", "sub", "exp"]},
+        options={
+            "require": ["sub", "exp"],
+            "verify_aud": False,
+            "verify_iss": False,
+        },
     )
+    token_aud = payload.get("aud")
+    if token_aud == expected_aud:
+        return payload
+    # Hard reject: any non-empty aud that doesn't match (e.g. "invite").
+    # An invite token must NEVER authenticate at the session surface —
+    # that's the entire point of the discriminant.
+    if token_aud is not None and token_aud != expected_aud:
+        # Special grace: a legacy M-4 token's aud is the L2 id, which
+        # is structurally distinct from any of our purpose-strings
+        # ("session", "invite", etc.). Recognise it only during grace.
+        if (
+            expected_aud == SESSION_AUDIENCE
+            and _deprecated_audless_tokens_enabled()
+            and token_aud == aigrp.self_l2_id()
+            and payload.get("iss") == aigrp.self_l2_id()
+        ):
+            return payload
+        raise jwt.InvalidAudienceError(f"token aud={token_aud!r} does not match expected {expected_aud!r}")
+    # token_aud is None — audless legacy token.
+    if expected_aud == SESSION_AUDIENCE and _deprecated_audless_tokens_enabled():
+        return payload
+    raise jwt.MissingRequiredClaimError("aud")
 
 
 class LoginRequest(BaseModel):
@@ -332,7 +421,11 @@ async def login(request: LoginRequest, store: SqliteStore = Depends(get_store)) 
     user = await store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    token = create_token(request.username, secret=_get_jwt_secret())
+    token = create_token(
+        request.username,
+        secret=_get_jwt_secret(),
+        aud=SESSION_AUDIENCE,
+    )
     return LoginResponse(token=token, username=request.username)
 
 
@@ -377,7 +470,7 @@ async def _resolve_caller(request: Request, store: SqliteStore) -> _CallerIdenti
         )
     secret = _get_jwt_secret()
     try:
-        payload = verify_token(token, secret=secret)
+        payload = verify_token(token, secret=secret, expected_aud=SESSION_AUDIENCE)
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
     return _CallerIdentity(username=payload["sub"], auth_kind="jwt")
