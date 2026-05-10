@@ -28,7 +28,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from webauthn.helpers.exceptions import (
     InvalidAuthenticationResponse,
@@ -37,9 +37,10 @@ from webauthn.helpers.exceptions import (
 )
 
 from . import passkey
-from .auth import _get_jwt_secret, create_token, get_current_user
+from .auth import get_current_user
 from .deps import get_store
 from .store._sqlite import SqliteStore
+from .web_session import mint_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ async def login_begin(
 @router.post("/login/finish")
 async def login_finish(
     request: LoginFinishRequest,
+    response: Response,
     store: SqliteStore = Depends(get_store),
 ) -> LoginFinishResponse:
     """Verify the assertion, advance ``sign_count``, mint a JWT.
@@ -261,7 +263,12 @@ async def login_finish(
         new_sign_count=verified.new_sign_count,
         last_used_at=datetime.now(UTC).isoformat(),
     )
-    token = create_token(request.username, secret=_get_jwt_secret())
+    # FO-1c: mint a session JWT (aud="session") and set it as the
+    # cq_session cookie so the browser can navigate to authenticated
+    # pages without JS passing the bearer. Token is also returned in
+    # the body for backward compat with API clients reading
+    # ``response.json()["token"]``.
+    token = mint_session_cookie(response, username=request.username)
     return LoginFinishResponse(
         token=token,
         username=request.username,
