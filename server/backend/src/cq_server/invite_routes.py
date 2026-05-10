@@ -32,10 +32,10 @@ import logging
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
-from .auth import _get_jwt_secret, create_token, require_admin
+from .auth import _get_jwt_secret, require_admin
 from .deps import get_store
 from .email_sender import EmailSender, MockEmailSender
 from .invites import (
@@ -49,6 +49,7 @@ from .invites import (
     validate_invite_jwt,
 )
 from .store._sqlite import SqliteStore
+from .web_session import mint_session_cookie
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +338,7 @@ def _lookup_username(store: SqliteStore, user_id: int) -> str | None:
 async def claim_invite_route(
     token: str,
     request: ClaimRequest,
+    response: Response,
     store: SqliteStore = Depends(get_store),
 ) -> ClaimResponse:
     """Public — accept the invite, provision the user, return a session bearer.
@@ -384,7 +386,10 @@ async def claim_invite_route(
 
     outcome = claim_invite(store, token=token, claiming_user_id=user_id)
     if outcome.kind == "ok":
-        session = create_token(request.username, secret=_get_jwt_secret())
+        # FO-1c: set the session cookie + return the bearer in the body.
+        # The HTML claim page navigates to "/" after this; the browser
+        # sends the cookie along, so the user lands authenticated.
+        session = mint_session_cookie(response, username=request.username)
         return ClaimResponse(token=session, username=request.username)
     if outcome.kind == "already_claimed":
         raise HTTPException(status_code=409, detail="invite already claimed")
