@@ -271,11 +271,7 @@ class TestHeadRevisionAndHistory:
     def test_head_revision_constant_was_bumped(self) -> None:
         from cq_server.migrations import HEAD_REVISION
 
-        # NOTE: this pin originally asserted 0015 (the rev introduced by
-        # this test file), then jumped past 0016 unupdated. FO-1a (#191)
-        # bumps to 0018_webauthn_credentials; the lineage 0015 → 0016
-        # → 0017 → 0018 is exercised by ``test_migrations`` regardless.
-        assert HEAD_REVISION == "0018_webauthn_credentials"
+        assert HEAD_REVISION == "0019_invites"
 
     def test_alembic_history_includes_0015(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
