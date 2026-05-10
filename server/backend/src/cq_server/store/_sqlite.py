@@ -224,9 +224,7 @@ class SqliteStore:
     async def get_webauthn_credential_by_id(self, credential_id: bytes) -> dict[str, Any] | None:
         return await self._run_sync(self._get_webauthn_credential_by_id_sync, credential_id)
 
-    async def update_webauthn_sign_count(
-        self, *, credential_id: bytes, new_sign_count: int, last_used_at: str
-    ) -> None:
+    async def update_webauthn_sign_count(self, *, credential_id: bytes, new_sign_count: int, last_used_at: str) -> None:
         await self._run_sync(
             self._update_webauthn_sign_count_sync,
             credential_id=credential_id,
@@ -4236,15 +4234,10 @@ class SqliteStore:
             "last_used_at": row[9],
         }
 
-    def _update_webauthn_sign_count_sync(
-        self, *, credential_id: bytes, new_sign_count: int, last_used_at: str
-    ) -> None:
+    def _update_webauthn_sign_count_sync(self, *, credential_id: bytes, new_sign_count: int, last_used_at: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                text(
-                    "UPDATE webauthn_credentials SET sign_count = :sc, last_used_at = :lu "
-                    "WHERE credential_id = :cid"
-                ),
+                text("UPDATE webauthn_credentials SET sign_count = :sc, last_used_at = :lu WHERE credential_id = :cid"),
                 {"sc": new_sign_count, "lu": last_used_at, "cid": credential_id},
             )
 
