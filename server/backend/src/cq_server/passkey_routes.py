@@ -24,27 +24,29 @@ Out of scope here (deferred to FO-1b/c):
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from webauthn.helpers.exceptions import (
+    InvalidAuthenticationResponse,
+    InvalidJSONStructure,
+    InvalidRegistrationResponse,
+)
 
 from . import passkey
 from .auth import _get_jwt_secret, create_token, get_current_user
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth/passkey", tags=["auth", "passkey"])
 
 
 # --- Request / response shapes -------------------------------------------
-
-
-class EnrollBeginRequest(BaseModel):
-    """Optional human-readable label for the new credential."""
-
-    name: str | None = Field(default=None, max_length=64)
 
 
 class EnrollFinishRequest(BaseModel):
@@ -102,7 +104,6 @@ def _user_id_bytes(user_id: int) -> bytes:
 
 @router.post("/enroll/begin")
 async def enroll_begin(
-    request: EnrollBeginRequest,  # noqa: ARG001 — name is opaque at begin
     username: str = Depends(get_current_user),
     store: SqliteStore = Depends(get_store),
 ) -> dict[str, Any]:
@@ -111,6 +112,8 @@ async def enroll_begin(
     The caller is identified by the existing JWT/API-key auth; we look
     up the user row, build options including any already-enrolled
     credential ids in ``excludeCredentials``, and cache the challenge.
+    The credential ``name`` is supplied at finish time (in
+    ``EnrollFinishRequest``), not begin — begin takes no body.
     """
     user = await store.get_user(username)
     if user is None:
@@ -142,9 +145,20 @@ async def enroll_finish(
             transports=request.transports,
         )
     except ValueError as exc:
+        # ValueError comes from our own `passkey.finish_registration` for
+        # cache-miss / TTL conditions — message is operator-controlled,
+        # safe to surface.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — py_webauthn raises subclasses of Exception
-        raise HTTPException(status_code=400, detail=f"registration verification failed: {exc}") from exc
+    except (
+        InvalidRegistrationResponse,
+        InvalidAuthenticationResponse,
+        InvalidJSONStructure,
+    ) as exc:
+        # py_webauthn-internal failure messages can leak parsed-CBOR
+        # fragments and authenticator-data fields; log server-side, return
+        # a generic 400 to the client.
+        logger.info("passkey enrollment verification failed for %s: %s", username, exc)
+        raise HTTPException(status_code=400, detail="passkey verification failed") from None
 
     transports_csv = ",".join(verified.transports) if verified.transports else None
     row = await store.insert_webauthn_credential(
@@ -232,8 +246,15 @@ async def login_finish(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 — py_webauthn replay raises InvalidAuthenticationResponse
-        raise HTTPException(status_code=400, detail=f"authentication failed: {exc}") from exc
+    except (
+        InvalidRegistrationResponse,
+        InvalidAuthenticationResponse,
+        InvalidJSONStructure,
+    ) as exc:
+        # py_webauthn raises InvalidAuthenticationResponse for the
+        # replay-attack / clone-detection path. Don't leak its message.
+        logger.info("passkey login verification failed for %s: %s", request.username, exc)
+        raise HTTPException(status_code=400, detail="passkey verification failed") from None
 
     await store.update_webauthn_sign_count(
         credential_id=verified.credential_id,
