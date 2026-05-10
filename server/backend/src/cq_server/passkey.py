@@ -58,14 +58,40 @@ DEFAULT_RP_NAME = "8th-Layer.ai (dev)"
 CHALLENGE_TTL_SECONDS = 60
 
 
+def _is_dev_env() -> bool:
+    return os.environ.get("CQ_ENV", "dev").lower() == "dev"
+
+
 def rp_id() -> str:
-    """Return the RP ID used in registration / authentication options."""
-    return os.environ.get("CQ_WEBAUTHN_RP_ID", DEFAULT_RP_ID)
+    """Return the RP ID used in registration / authentication options.
+
+    Refuses to silently default in non-dev: a misconfigured production
+    deploy that ships without ``CQ_WEBAUTHN_RP_ID`` would silently bind
+    every credential to ``localhost``, which is a config-failure-mode
+    we'd rather catch loud at startup than silently break in prod.
+    """
+    val = os.environ.get("CQ_WEBAUTHN_RP_ID", "").strip()
+    if not val:
+        if not _is_dev_env():
+            raise RuntimeError("CQ_WEBAUTHN_RP_ID is required in non-dev environments")
+        return DEFAULT_RP_ID
+    return val
 
 
 def rp_origin() -> str:
-    """Return the RP origin (URL) used to verify clientDataJSON."""
-    return os.environ.get("CQ_WEBAUTHN_RP_ORIGIN", DEFAULT_RP_ORIGIN)
+    """Return the RP origin (URL) used to verify clientDataJSON.
+
+    Same fail-loud semantics as ``rp_id()`` plus an https-only check
+    in non-dev so a typo'd ``http://`` URL doesn't sneak through.
+    """
+    val = os.environ.get("CQ_WEBAUTHN_RP_ORIGIN", "").strip()
+    if not val:
+        if not _is_dev_env():
+            raise RuntimeError("CQ_WEBAUTHN_RP_ORIGIN is required in non-dev environments")
+        return DEFAULT_RP_ORIGIN
+    if not _is_dev_env() and not val.startswith("https://"):
+        raise RuntimeError("CQ_WEBAUTHN_RP_ORIGIN must use https:// in non-dev environments")
+    return val
 
 
 def rp_name() -> str:
@@ -88,14 +114,28 @@ class _ChallengeEntry:
 _challenge_cache: dict[str, _ChallengeEntry] = {}
 
 
-def set_challenge_cache_override(cache: dict[str, _ChallengeEntry] | None) -> None:
+def _set_challenge_cache_override_for_tests(cache: dict[str, _ChallengeEntry] | None) -> None:
     """Inject a challenge cache dict for tests; pass ``None`` to reset.
 
     Tests use this to assert on cache state and to ensure isolation
-    between cases. Production code never calls this.
+    between cases. Production code never calls this — the underscore
+    prefix is the lint-catchable signal. The function is also gated
+    on ``CQ_TESTING=1`` so an accidental import path can't trip it.
     """
+    if os.environ.get("CQ_TESTING") != "1":
+        raise RuntimeError(
+            "_set_challenge_cache_override_for_tests is test-only; "
+            "set CQ_TESTING=1 in test environment"
+        )
     global _challenge_cache  # noqa: PLW0603
     _challenge_cache = {} if cache is None else cache
+
+
+# NOTE on horizontal scaling (FO-1c follow-up): this dict is per-process.
+# /enroll/begin landing on replica A and /enroll/finish on replica B
+# will fail with "challenge missing or expired". Acceptable for FO-1a's
+# single-task ECS deployment. Must move to Redis or DynamoDB-with-TTL
+# before any load-balanced multi-replica deployment.
 
 
 def _store_challenge(username: str, challenge: bytes, *, user_id_bytes: bytes | None = None) -> None:

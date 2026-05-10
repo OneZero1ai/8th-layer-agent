@@ -59,19 +59,20 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
     monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
+    monkeypatch.setenv("CQ_TESTING", "1")
     monkeypatch.setenv("CQ_WEBAUTHN_RP_ID", RP_ID)
     monkeypatch.setenv("CQ_WEBAUTHN_RP_ORIGIN", RP_ORIGIN)
     monkeypatch.setenv("CQ_WEBAUTHN_RP_NAME", RP_NAME)
     # Reset the in-process challenge cache between tests so per-test
     # state never leaks across cases.
-    passkey.set_challenge_cache_override(None)
+    passkey._set_challenge_cache_override_for_tests(None)
     app.dependency_overrides[require_api_key] = lambda: "alice"
     app.dependency_overrides[get_current_user] = lambda: "alice"
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.pop(require_api_key, None)
     app.dependency_overrides.pop(get_current_user, None)
-    passkey.set_challenge_cache_override(None)
+    passkey._set_challenge_cache_override_for_tests(None)
 
 
 def _seed_user(username: str = "alice", password: str = "secret123") -> None:
@@ -376,3 +377,45 @@ class TestLoginFinish:
             json={"username": "alice", "credential": replay},
         )
         assert bad.status_code == 400
+        # Generic detail — py_webauthn's internal exception message is
+        # logged server-side, not surfaced to the client (review fix #2).
+        assert bad.json()["detail"] == "passkey verification failed"
+
+
+class TestRpConfigHardening:
+    """Verify the env-gated dev-default pattern (review fix #1)."""
+
+    def test_rp_id_raises_in_non_dev_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CQ_ENV", "production")
+        monkeypatch.delenv("CQ_WEBAUTHN_RP_ID", raising=False)
+        with pytest.raises(RuntimeError, match="CQ_WEBAUTHN_RP_ID is required"):
+            passkey.rp_id()
+
+    def test_rp_origin_rejects_http_in_non_dev(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CQ_ENV", "production")
+        monkeypatch.setenv("CQ_WEBAUTHN_RP_ORIGIN", "http://insecure.example.com")
+        with pytest.raises(RuntimeError, match="must use https://"):
+            passkey.rp_origin()
+
+    def test_rp_id_returns_default_in_dev(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CQ_ENV", "dev")
+        monkeypatch.delenv("CQ_WEBAUTHN_RP_ID", raising=False)
+        assert passkey.rp_id() == passkey.DEFAULT_RP_ID
+
+
+class TestChallengeCacheGate:
+    """Verify the test-only injection point refuses to fire in production
+    (review fix #3)."""
+
+    def test_override_refuses_without_cq_testing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CQ_TESTING", raising=False)
+        with pytest.raises(RuntimeError, match="test-only"):
+            passkey._set_challenge_cache_override_for_tests({})
