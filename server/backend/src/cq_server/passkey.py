@@ -123,10 +123,7 @@ def _set_challenge_cache_override_for_tests(cache: dict[str, _ChallengeEntry] | 
     on ``CQ_TESTING=1`` so an accidental import path can't trip it.
     """
     if os.environ.get("CQ_TESTING") != "1":
-        raise RuntimeError(
-            "_set_challenge_cache_override_for_tests is test-only; "
-            "set CQ_TESTING=1 in test environment"
-        )
+        raise RuntimeError("_set_challenge_cache_override_for_tests is test-only; set CQ_TESTING=1 in test environment")
     global _challenge_cache  # noqa: PLW0603
     _challenge_cache = {} if cache is None else cache
 
@@ -181,9 +178,7 @@ def begin_registration(
     one already on file.
     """
     challenge = secrets.token_bytes(32)
-    exclude = [
-        PublicKeyCredentialDescriptor(id=cid) for cid in (existing_credential_ids or [])
-    ]
+    exclude = [PublicKeyCredentialDescriptor(id=cid) for cid in (existing_credential_ids or [])]
     options = generate_registration_options(
         rp_id=rp_id(),
         rp_name=rp_name(),
@@ -245,9 +240,7 @@ def finish_registration(
         # so don't fail verification on UP-only authenticators yet.
         require_user_verification=False,
     )
-    aaguid_bytes = (
-        bytes.fromhex(verified.aaguid.replace("-", "")) if verified.aaguid else None
-    )
+    aaguid_bytes = bytes.fromhex(verified.aaguid.replace("-", "")) if verified.aaguid else None
     return VerifiedRegistration(
         credential_id=verified.credential_id,
         public_key=verified.credential_public_key,
@@ -275,9 +268,7 @@ def begin_authentication(
     options = generate_authentication_options(
         rp_id=rp_id(),
         challenge=challenge,
-        allow_credentials=[
-            PublicKeyCredentialDescriptor(id=cid) for cid in allow_credential_ids
-        ],
+        allow_credentials=[PublicKeyCredentialDescriptor(id=cid) for cid in allow_credential_ids],
         user_verification=UserVerificationRequirement.PREFERRED,
     )
     _store_challenge(username, challenge)
