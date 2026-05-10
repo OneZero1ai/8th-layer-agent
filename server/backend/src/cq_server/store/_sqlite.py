@@ -194,6 +194,47 @@ class SqliteStore:
     async def create_user(self, username: str, password_hash: str) -> None:
         await self._run_sync(self._create_user_sync, username, password_hash)
 
+    # --- WebAuthn / passkey credentials (FO-1a, #191) ---------------------
+
+    async def insert_webauthn_credential(
+        self,
+        *,
+        user_id: int,
+        credential_id: bytes,
+        public_key: bytes,
+        sign_count: int,
+        transports: str | None = None,
+        aaguid: bytes | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._run_sync(
+            self._insert_webauthn_credential_sync,
+            user_id=user_id,
+            credential_id=credential_id,
+            public_key=public_key,
+            sign_count=sign_count,
+            transports=transports,
+            aaguid=aaguid,
+            name=name,
+        )
+
+    async def list_webauthn_credentials_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        return await self._run_sync(self._list_webauthn_credentials_for_user_sync, user_id)
+
+    async def get_webauthn_credential_by_id(self, credential_id: bytes) -> dict[str, Any] | None:
+        return await self._run_sync(self._get_webauthn_credential_by_id_sync, credential_id)
+
+    async def update_webauthn_sign_count(self, *, credential_id: bytes, new_sign_count: int, last_used_at: str) -> None:
+        await self._run_sync(
+            self._update_webauthn_sign_count_sync,
+            credential_id=credential_id,
+            new_sign_count=new_sign_count,
+            last_used_at=last_used_at,
+        )
+
+    async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        return await self._run_sync(self._get_user_by_email_sync, email)
+
     async def daily_counts(
         self,
         *,
@@ -4095,6 +4136,132 @@ class SqliteStore:
                 {"since": lookback_iso},
             ).fetchall()
         return [self._reflect_row_to_dict(r) for r in rows]
+
+    # --- WebAuthn / passkey sync impls (FO-1a, #191) ----------------------
+
+    def _insert_webauthn_credential_sync(
+        self,
+        *,
+        user_id: int,
+        credential_id: bytes,
+        public_key: bytes,
+        sign_count: int,
+        transports: str | None,
+        aaguid: bytes | None,
+        name: str | None,
+    ) -> dict[str, Any]:
+        created_at = datetime.now(UTC).isoformat()
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    "INSERT INTO webauthn_credentials "
+                    "(user_id, credential_id, public_key, sign_count, transports, aaguid, name, created_at) "
+                    "VALUES (:uid, :cid, :pk, :sc, :tr, :ag, :nm, :ca)"
+                ),
+                {
+                    "uid": user_id,
+                    "cid": credential_id,
+                    "pk": public_key,
+                    "sc": sign_count,
+                    "tr": transports,
+                    "ag": aaguid,
+                    "nm": name,
+                    "ca": created_at,
+                },
+            )
+            row_id = result.lastrowid
+        return {
+            "id": row_id,
+            "user_id": user_id,
+            "credential_id": credential_id,
+            "public_key": public_key,
+            "sign_count": sign_count,
+            "transports": transports,
+            "aaguid": aaguid,
+            "name": name,
+            "created_at": created_at,
+            "last_used_at": None,
+        }
+
+    def _list_webauthn_credentials_for_user_sync(self, user_id: int) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, user_id, credential_id, public_key, sign_count, transports, "
+                    "aaguid, name, created_at, last_used_at "
+                    "FROM webauthn_credentials WHERE user_id = :uid ORDER BY id ASC"
+                ),
+                {"uid": user_id},
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "credential_id": bytes(r[2]),
+                "public_key": bytes(r[3]),
+                "sign_count": r[4],
+                "transports": r[5],
+                "aaguid": bytes(r[6]) if r[6] is not None else None,
+                "name": r[7],
+                "created_at": r[8],
+                "last_used_at": r[9],
+            }
+            for r in rows
+        ]
+
+    def _get_webauthn_credential_by_id_sync(self, credential_id: bytes) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT id, user_id, credential_id, public_key, sign_count, transports, "
+                    "aaguid, name, created_at, last_used_at "
+                    "FROM webauthn_credentials WHERE credential_id = :cid"
+                ),
+                {"cid": credential_id},
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "credential_id": bytes(row[2]),
+            "public_key": bytes(row[3]),
+            "sign_count": row[4],
+            "transports": row[5],
+            "aaguid": bytes(row[6]) if row[6] is not None else None,
+            "name": row[7],
+            "created_at": row[8],
+            "last_used_at": row[9],
+        }
+
+    def _update_webauthn_sign_count_sync(self, *, credential_id: bytes, new_sign_count: int, last_used_at: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("UPDATE webauthn_credentials SET sign_count = :sc, last_used_at = :lu WHERE credential_id = :cid"),
+                {"sc": new_sign_count, "lu": last_used_at, "cid": credential_id},
+            )
+
+    def _get_user_by_email_sync(self, email: str) -> dict[str, Any] | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT id, username, password_hash, created_at, role, "
+                    "enterprise_id, group_id, email FROM users WHERE email = :e"
+                ),
+                {"e": email},
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "username": row[1],
+            "password_hash": row[2],
+            "created_at": row[3],
+            "role": row[4],
+            "enterprise_id": row[5],
+            "group_id": row[6],
+            "email": row[7],
+        }
 
 
 class _SyncStoreProxy:

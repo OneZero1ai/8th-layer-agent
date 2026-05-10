@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Teardown of 8th-Layer.ai test fixtures.
+"""Teardown of 8th-Layer.ai test fixtures.
 
 Default mode: --dry-run (read-only AWS calls, lists candidate resources).
 Use --execute to actually delete (in safe ordering).
@@ -27,13 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -97,10 +95,10 @@ class AuditLog:
     def __post_init__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.fh = open(self.path, "a", encoding="utf-8")
-        self.write(f"=== cleanup run started {datetime.now(timezone.utc).isoformat()} ===")
+        self.write(f"=== cleanup run started {datetime.now(UTC).isoformat()} ===")
 
     def write(self, line: str):
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         self.fh.write(f"{ts}\t{line}\n")
         self.fh.flush()
 
@@ -108,7 +106,7 @@ class AuditLog:
         self.write(f"{kind}\t{resource}\t{action}\t{result}")
 
     def close(self):
-        self.write(f"=== cleanup run finished {datetime.now(timezone.utc).isoformat()} ===")
+        self.write(f"=== cleanup run finished {datetime.now(UTC).isoformat()} ===")
         self.fh.close()
 
 
@@ -476,7 +474,7 @@ def main():
     if args.execute:
         args.dry_run = False
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = Path(args.log_dir) / f"cleanup-{ts}.log"
     audit = AuditLog(path=log_path)
     audit.write(f"mode={'execute' if args.execute else 'dry-run'} filter={args.filter}")
@@ -530,7 +528,7 @@ def main():
     active_count = sum(1 for inv in inventories if inv.services)
     print(f"# Estimated savings: ~${active_count * COST_PER_CLUSTER_MO_USD:.2f}/month "
           f"({active_count} clusters x ~${COST_PER_CLUSTER_MO_USD}/mo each).")
-    print(f"#   - Fargate task: ~$15/mo  ALB: ~$22/mo  ENI: ~$3/mo  Logs: ~$0.50/mo")
+    print("#   - Fargate task: ~$15/mo  ALB: ~$22/mo  ENI: ~$3/mo  Logs: ~$0.50/mo")
     print()
 
     # Directory probe
