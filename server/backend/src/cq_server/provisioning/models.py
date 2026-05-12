@@ -82,13 +82,19 @@ class CreateEnterpriseRequest(BaseModel):
     # HIGH #1: ExternalId prevents confused-deputy attacks. The customer
     # sets this value when creating the IAM role trust policy in their
     # account; we require and store it, then pass it through AssumeRole.
-    # Minimum 8 characters; opaque to us.
+    #
+    # Minimum 22 characters per 8l-reviewer re-review 2026-05-12: 8 chars
+    # is not enough entropy to defeat enumeration. 22+ characters allows
+    # base64-encoded 16-byte values, UUIDs, ULIDs, etc. AWS's own limit
+    # is 2..1224.
     assume_role_external_id: str = Field(
-        min_length=8,
+        min_length=22,
         max_length=1224,
         description=(
             "ExternalId you set in the trust policy of marketplace_deploy_role_arn. "
-            "Required to prevent confused-deputy attacks."
+            "Required to prevent confused-deputy attacks. Must be unguessable: "
+            "at least 22 characters of high-entropy content (UUID, ULID, base64-encoded "
+            "random bytes). Do NOT use a guessable string like your company name."
         ),
     )
 
