@@ -40,8 +40,6 @@ from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
 from .persona_routes import router as persona_router
-from .provisioning import recover_stuck_jobs
-from .provisioning import router as provisioning_router
 from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
@@ -341,16 +339,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
         _logging.getLogger("aigrp").exception("bootstrap_root_if_needed raised; continuing")
 
-    # HIGH #6 — provisioning crash recovery. Re-queue any jobs that were
-    # in-flight when the previous ECS task restarted. Must run before the
-    # first request is served; await here (not a task) so startup blocks
-    # until recovery is complete (fast — just DB reads + task creation).
-    try:
-        await recover_stuck_jobs(_store._engine)  # noqa: SLF001
-    except Exception:  # noqa: BLE001 — recovery must never prevent startup
-        import logging as _logging
-
-        _logging.getLogger("provisioning.recovery").exception("recover_stuck_jobs raised; continuing startup")
+    # Provisioning crash recovery moved to 8th-layer-directory per
+    # agent#239 — the Enterprise Provisioning Service is now hosted in
+    # the directory process. Running L2s retain the dormant
+    # provisioning_jobs table (no destructive DROP); FastAPI just no
+    # longer wires the recovery hook.
 
     aigrp_task = None
     if aigrp.aigrp_enabled():
@@ -428,8 +421,8 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
-# FO-2-backend (#228) — anonymous Enterprise provisioning endpoints.
-api_router.include_router(provisioning_router)
+# FO-2-backend (#228) endpoints relocated to 8th-layer-directory per
+# agent#239 — provision.8th-layer.ai now points at the directory's ALB.
 # AS-1 (#229) — admin Personas CRUD endpoints.
 api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
@@ -1751,22 +1744,22 @@ async def stats(
 
 app = FastAPI(title="cq Server", version="0.1.0", lifespan=lifespan)
 
-# CORS — FO-2-backend (Decision 31): allow the signup wizard origin on
-# the provisioning endpoints. Anonymous endpoints, no credentials.
-# Extra origins can be added at deploy time via CQ_CORS_EXTRA_ORIGINS (CSV).
+# CORS — provisioning-related CORS moved to 8th-layer-directory per
+# agent#239. Operator-defined extra origins are still honoured here for
+# any future ad-hoc cross-origin needs on this L2 image.
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 _CORS_ORIGINS: list[str] = [
-    "https://signup.8th-layer.ai",
-    *[o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()],
+    o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()
 ]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    allow_credentials=False,
-)
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        allow_credentials=False,
+    )
 
 # Mount API routes at root (SDK compatibility) and at /api (frontend).
 app.include_router(api_router)
