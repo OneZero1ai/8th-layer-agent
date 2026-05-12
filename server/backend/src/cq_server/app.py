@@ -40,13 +40,11 @@ from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
 from .provisioning import recover_stuck_jobs
-from .provisioning import router as provisioning_router
 from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
-from .persona_routes import router as persona_router
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
 from .theme_routes import router as theme_router

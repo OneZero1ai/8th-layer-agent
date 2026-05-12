@@ -4283,26 +4283,17 @@ class SqliteStore:
             "email": row[7],
         }
 
-
     # ------------------------------------------------------------------
     # AS-1 (#200) — persona_assignments CRUD
     # ------------------------------------------------------------------
 
-    async def list_persona_assignments(
-        self, limit: int = 50, offset: int = 0
-    ) -> tuple[list[dict], int]:
+    async def list_persona_assignments(self, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
         """Return paginated persona assignments joined with user email."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self._list_persona_assignments_sync, limit, offset
-        )
+        return await asyncio.get_event_loop().run_in_executor(None, self._list_persona_assignments_sync, limit, offset)
 
-    def _list_persona_assignments_sync(
-        self, limit: int = 50, offset: int = 0
-    ) -> tuple[list[dict], int]:
+    def _list_persona_assignments_sync(self, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
         with self._engine.connect() as conn:
-            total_row = conn.execute(
-                text("SELECT COUNT(*) FROM persona_assignments")
-            ).fetchone()
+            total_row = conn.execute(text("SELECT COUNT(*) FROM persona_assignments")).fetchone()
             total = total_row[0] if total_row else 0
             rows = conn.execute(
                 text(
@@ -4332,9 +4323,7 @@ class SqliteStore:
 
     async def get_persona_assignment(self, username: str) -> dict | None:
         """Return the persona assignment for a user, or None."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self._get_persona_assignment_sync, username
-        )
+        return await asyncio.get_event_loop().run_in_executor(None, self._get_persona_assignment_sync, username)
 
     def _get_persona_assignment_sync(self, username: str) -> dict | None:
         with self._engine.connect() as conn:
@@ -4506,11 +4495,12 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     async def count_active_admins(self) -> int:
-        """Return count of persona_assignments rows with persona='admin'
-        and disabled_at IS NULL. Used by the last-admin guard."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self._count_active_admins_sync
-        )
+        """Return count of active admin persona assignments.
+
+        Counts rows where persona='admin' and disabled_at IS NULL. Used
+        by the last-admin guard on the disable endpoint.
+        """
+        return await asyncio.get_event_loop().run_in_executor(None, self._count_active_admins_sync)
 
     def _count_active_admins_sync(self) -> int:
         with self._engine.connect() as conn:
@@ -4524,18 +4514,17 @@ class SqliteStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    async def count_invites_by_admin(
-        self, admin_username: str, since: str
-    ) -> int:
-        """Count persona_assignments rows assigned by this admin since
-        the given ISO-8601 timestamp. Used as a proxy for invite-rate."""
+    async def count_invites_by_admin(self, admin_username: str, since: str) -> int:
+        """Count persona assignments minted by this admin since a timestamp.
+
+        Used as a proxy for invite-rate-limit accounting on the persona
+        create endpoint (M-5).
+        """
         return await asyncio.get_event_loop().run_in_executor(
             None, self._count_invites_by_admin_sync, admin_username, since
         )
 
-    def _count_invites_by_admin_sync(
-        self, admin_username: str, since: str
-    ) -> int:
+    def _count_invites_by_admin_sync(self, admin_username: str, since: str) -> int:
         with self._engine.connect() as conn:
             row = conn.execute(
                 text(
@@ -4550,9 +4539,7 @@ class SqliteStore:
 
     async def list_persona_audit(self, username: str) -> list[dict]:
         """Return audit rows for a username, oldest-first (test helper)."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self._list_persona_audit_sync, username
-        )
+        return await asyncio.get_event_loop().run_in_executor(None, self._list_persona_audit_sync, username)
 
     def _list_persona_audit_sync(self, username: str) -> list[dict]:
         with self._engine.connect() as conn:
@@ -4582,9 +4569,7 @@ class SqliteStore:
 
     async def set_user_email(self, username: str, email: str) -> None:
         """Update the email on a users row (used when creating persona assignments)."""
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._set_user_email_sync, username, email
-        )
+        await asyncio.get_event_loop().run_in_executor(None, self._set_user_email_sync, username, email)
 
     def _set_user_email_sync(self, username: str, email: str) -> None:
         with self._engine.begin() as conn:

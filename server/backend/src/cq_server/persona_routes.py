@@ -55,6 +55,7 @@ class PersonaAssignment(BaseModel):
 
     @property
     def is_active(self) -> bool:
+        """True iff this persona assignment is not soft-disabled."""
         return self.disabled_at is None
 
 
@@ -169,9 +170,6 @@ async def create_persona(
     409 when a persona assignment already exists for this username.
     422 when the email is malformed.
     """
-    from .email_sender import EmailSender
-    from .invite_routes import get_email_sender
-
     # Check for an existing assignment.
     existing = await store.get_persona_assignment(req.username)
     if existing is not None:
@@ -183,9 +181,7 @@ async def create_persona(
     # M-5: per-admin invite rate-limit. Count persona assignments this
     # admin has issued in the trailing hour; cap at 20.
     since = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    recent_count = await store.count_invites_by_admin(
-        admin_username=admin, since=since
-    )
+    recent_count = await store.count_invites_by_admin(admin_username=admin, since=since)
     if recent_count >= 20:
         raise HTTPException(
             status_code=429,
@@ -279,10 +275,7 @@ async def patch_persona(
         raise HTTPException(
             status_code=409,
             detail={
-                "error": (
-                    "user is disabled — re-enable first via "
-                    "POST /admin/personas/{username}/enable"
-                ),
+                "error": ("user is disabled — re-enable first via POST /admin/personas/{username}/enable"),
                 "code": "USER_DISABLED",
             },
         )

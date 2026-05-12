@@ -150,9 +150,7 @@ def test_list_personas_populated(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_persona_happy_path(
-    client: TestClient, mock_sender: MockEmailSender
-) -> None:
+def test_create_persona_happy_path(client: TestClient, mock_sender: MockEmailSender) -> None:
     headers = _login(client, ADMIN)
     resp = client.post(
         "/api/v1/admin/personas",
@@ -300,9 +298,7 @@ def test_disabled_user_cannot_obtain_session_cookie(client: TestClient) -> None:
     # we use it, otherwise fall through; the disable check below is
     # the load-bearing assertion.
     # Disable the user.
-    disable_resp = client.post(
-        "/api/v1/admin/personas/fred/disable", headers=headers
-    )
+    disable_resp = client.post("/api/v1/admin/personas/fred/disable", headers=headers)
     assert disable_resp.status_code == 200, disable_resp.text
     # Login attempt with username + password — must be refused with 403.
     resp = client.post(
@@ -315,7 +311,7 @@ def test_disabled_user_cannot_obtain_session_cookie(client: TestClient) -> None:
     assert resp.status_code in (401, 403)
     assert resp.status_code != 200
     # And there must be no Set-Cookie header.
-    assert "set-cookie" not in {k.lower() for k in resp.headers.keys()}
+    assert "set-cookie" not in {k.lower() for k in resp.headers}
 
 
 def test_persona_changes_create_audit_rows(client: TestClient) -> None:
@@ -352,9 +348,7 @@ def test_persona_changes_create_audit_rows(client: TestClient) -> None:
     store = _get_store()
     import asyncio
 
-    rows = asyncio.new_event_loop().run_until_complete(
-        store.list_persona_audit("gina")
-    )
+    rows = asyncio.new_event_loop().run_until_complete(store.list_persona_audit("gina"))
     assert len(rows) == 4, rows
     assert rows[0]["action"] == "CREATED"
     assert rows[0]["old_persona"] is None
@@ -370,7 +364,7 @@ def test_persona_changes_create_audit_rows(client: TestClient) -> None:
     assert rows[3]["new_persona"] is None
 
 
-def test_disabling_last_admin_returns_409_LAST_ADMIN(client: TestClient) -> None:
+def test_disabling_last_admin_returns_409_last_admin(client: TestClient) -> None:
     """H-3: must refuse to disable the only remaining active admin."""
     headers = _login(client, ADMIN)
     # Promote the test admin's persona assignment to 'admin' explicitly.
@@ -384,9 +378,7 @@ def test_disabling_last_admin_returns_409_LAST_ADMIN(client: TestClient) -> None
         },
     )
     # Now try to disable the sole admin — must 409 with LAST_ADMIN code.
-    resp = client.post(
-        "/api/v1/admin/personas/sole_admin/disable", headers=headers
-    )
+    resp = client.post("/api/v1/admin/personas/sole_admin/disable", headers=headers)
     assert resp.status_code == 409, resp.text
     body = resp.json()
     # FastAPI wraps the dict under "detail".
@@ -394,7 +386,7 @@ def test_disabling_last_admin_returns_409_LAST_ADMIN(client: TestClient) -> None
     assert detail.get("code") == "LAST_ADMIN"
 
 
-def test_patch_disabled_user_returns_409_USER_DISABLED(client: TestClient) -> None:
+def test_patch_disabled_user_returns_409_user_disabled(client: TestClient) -> None:
     """M-2: PATCH must not silently re-enable a disabled assignment."""
     headers = _login(client, ADMIN)
     client.post(
