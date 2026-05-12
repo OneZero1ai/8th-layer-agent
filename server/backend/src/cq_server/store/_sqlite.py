@@ -4359,7 +4359,7 @@ class SqliteStore:
         *,
         audit_action: str | None = None,
         audit_old_persona: str | None = None,
-    ) -> dict:
+    ) -> dict | None:
         """Create or update a persona assignment (clears disabled_at).
 
         When ``audit_action`` is provided (CREATED/CHANGED/ENABLED) the
