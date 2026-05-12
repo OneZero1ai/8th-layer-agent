@@ -39,6 +39,8 @@ from .invite_routes import router as invite_router
 from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
+from .provisioning import recover_stuck_jobs
+from .provisioning import router as provisioning_router
 from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
@@ -338,6 +340,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
         _logging.getLogger("aigrp").exception("bootstrap_root_if_needed raised; continuing")
 
+    # HIGH #6 — provisioning crash recovery. Re-queue any jobs that were
+    # in-flight when the previous ECS task restarted. Must run before the
+    # first request is served; await here (not a task) so startup blocks
+    # until recovery is complete (fast — just DB reads + task creation).
+    try:
+        await recover_stuck_jobs(_store._engine)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 — recovery must never prevent startup
+        import logging as _logging
+
+        _logging.getLogger("provisioning.recovery").exception("recover_stuck_jobs raised; continuing startup")
+
     aigrp_task = None
     if aigrp.aigrp_enabled():
         aigrp_task = asyncio.create_task(_aigrp_bootstrap_and_poll(_store))
@@ -418,6 +431,10 @@ api_router.include_router(invite_router)
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
 api_router.include_router(theme_router)
+# FO-2-backend (#224) — Enterprise Provisioning Service. Anonymous endpoints;
+# Decision 31 sets the contract. CORS for signup.8th-layer.ai applied at
+# the app level (see CORSMiddleware below).
+api_router.include_router(provisioning_router)
 
 
 @api_router.get("/health")
@@ -1732,6 +1749,23 @@ async def stats(
 # --- Application assembly. ---
 
 app = FastAPI(title="cq Server", version="0.1.0", lifespan=lifespan)
+
+# CORS — FO-2-backend (Decision 31): allow the signup wizard origin on
+# the provisioning endpoints. Anonymous endpoints, no credentials.
+# Extra origins can be added at deploy time via CQ_CORS_EXTRA_ORIGINS (CSV).
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+_CORS_ORIGINS: list[str] = [
+    "https://signup.8th-layer.ai",
+    *[o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()],
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+)
 
 # Mount API routes at root (SDK compatibility) and at /api (frontend).
 app.include_router(api_router)
