@@ -50,7 +50,6 @@ from cq_server.provisioning.db import (
     get_job,
     insert_job,
     is_job_expired,
-    is_slug_taken,
     update_job_phase,
 )
 from cq_server.provisioning.ids import generate_job_id
@@ -274,21 +273,66 @@ class TestDbHelpers:
         assert row["status"] == "FAILED"
         assert row["error"] == "phase 2: timeout"
 
-    def test_is_slug_taken_false_for_new(self, db_engine) -> None:
-        with db_engine.connect() as conn:
-            assert is_slug_taken(conn, "newslug") is False
-
-    def test_is_slug_taken_true_after_insert(self, db_engine) -> None:
-        with db_engine.connect() as conn:
+    def test_failed_slug_can_be_retried_post_0021a(self, db_engine) -> None:
+        """HIGH #4 (8l-reviewer third pass): after migration 0021a replaced
+        the full UNIQUE on enterprise_id with a partial unique index, a
+        customer whose first job FAILED must be able to re-POST the same
+        slug. Empirical evidence — verified against actual sqlite DDL by
+        the 8l-reviewer — that the original batch-mode migration left the
+        UNIQUE constraint in place.
+        """
+        with db_engine.begin() as conn:
             insert_job(
                 conn,
-                job_id="prov_SLUG",
-                enterprise_id="takenslug",
+                job_id="prov_FAILED",
+                enterprise_id="acme",
                 status="PROVISIONING",
                 phase=0,
                 ip_hash="x",
             )
-            assert is_slug_taken(conn, "takenslug") is True
+            fail_job(conn, job_id="prov_FAILED", error="phase 2: timeout")
+
+        # Retry the SAME slug with a fresh active job — must succeed.
+        with db_engine.begin() as conn:
+            insert_job(
+                conn,
+                job_id="prov_RETRY",
+                enterprise_id="acme",
+                status="PROVISIONING",
+                phase=0,
+                ip_hash="y",
+            )
+            row = get_job(conn, "prov_RETRY")
+            assert row is not None
+            assert row["enterprise_id"] == "acme"
+            assert row["status"] == "PROVISIONING"
+
+    def test_duplicate_active_slug_still_blocked(self, db_engine) -> None:
+        """The partial unique index must still block two concurrent in-flight
+        jobs for the same slug — only FAILED/COMPLETED are exempt.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        with db_engine.begin() as conn:
+            insert_job(
+                conn,
+                job_id="prov_FIRST",
+                enterprise_id="beta",
+                status="KEY_MINT_IN_PROGRESS",
+                phase=1,
+                ip_hash="x",
+            )
+
+        with pytest.raises(IntegrityError):
+            with db_engine.begin() as conn:
+                insert_job(
+                    conn,
+                    job_id="prov_SECOND",
+                    enterprise_id="beta",
+                    status="PROVISIONING",
+                    phase=0,
+                    ip_hash="y",
+                )
 
     def test_rate_limit_counter_empty(self, db_engine) -> None:
         with db_engine.connect() as conn:

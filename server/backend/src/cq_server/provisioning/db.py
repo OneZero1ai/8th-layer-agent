@@ -153,15 +153,6 @@ def get_job(conn: Connection, job_id: str) -> dict[str, Any] | None:
     return dict(row._mapping)
 
 
-def is_slug_taken(conn: Connection, slug: str) -> bool:
-    """True if any job row already claims this enterprise_id/slug."""
-    row = conn.execute(
-        text("SELECT 1 FROM provisioning_jobs WHERE enterprise_id = :slug LIMIT 1"),
-        {"slug": slug},
-    ).fetchone()
-    return row is not None
-
-
 def get_active_job_for_slug(conn: Connection, slug: str) -> dict[str, Any] | None:
     """Return the most recent non-FAILED job for ``slug``, or None.
 

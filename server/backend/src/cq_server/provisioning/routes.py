@@ -27,7 +27,6 @@ from .db import (
     get_job,
     insert_job,
     is_job_expired,
-    is_slug_taken,
 )
 from .ids import generate_job_id
 from .models import (
