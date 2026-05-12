@@ -97,11 +97,11 @@ export function PersonasPage() {
     setCreating(true)
     setCreateError(null)
     try {
-      await api.createPersona(
-        createForm.email,
-        createForm.username,
-        createForm.persona,
-      )
+      await api.createPersona({
+        email: createForm.email,
+        username: createForm.username,
+        persona: createForm.persona,
+      })
       setShowCreate(false)
       setCreateForm({ email: "", username: "", persona: "viewer" })
       await refresh()
@@ -120,7 +120,7 @@ export function PersonasPage() {
     setPatching(true)
     setEditError(null)
     try {
-      await api.patchPersona(editState.username, editState.persona)
+      await api.patchPersona(editState.username, { persona: editState.persona })
       setEditState(null)
       await refresh()
     } catch (err) {
