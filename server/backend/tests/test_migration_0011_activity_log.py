@@ -479,7 +479,7 @@ class TestHeadRevisionAndHistory:
         # 0014 (#124 crosstalk tables), 0013 (#121 finding 3), 0012
         # (#103), 0011 (#108 Stage 1). Each new migration MUST move
         # this constant.
-        assert HEAD_REVISION == "0020_l2_brand"
+        assert HEAD_REVISION == "0021_provisioning_jobs"
 
     @pytest.mark.parametrize("invalid_dir", [None])
     def test_alembic_history_includes_0011(self, invalid_dir: object) -> None:

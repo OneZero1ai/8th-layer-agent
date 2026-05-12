@@ -409,4 +409,4 @@ class TestIdempotencyAndChain:
         """
         # Bumped to 0016_xgroup_consent (Phase 1.0b — Decision 28).
         # Chains after 0015_phase_1_0c_aigrp_peers_pair_secret_ref.
-        assert HEAD_REVISION == "0020_l2_brand"
+        assert HEAD_REVISION == "0021_provisioning_jobs"

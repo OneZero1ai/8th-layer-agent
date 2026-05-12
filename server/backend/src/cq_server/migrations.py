@@ -36,7 +36,7 @@ BASELINE_REVISION = "0001"
 # Phase 2 (task #100) — chain head after porting fork-delta tables to
 # Alembic. Update this string when adding a new migration so test
 # assertions and ops scripts stay in sync with the actual chain head.
-HEAD_REVISION = "0020_l2_brand"
+HEAD_REVISION = "0021_provisioning_jobs"
 
 
 def _find_alembic_ini() -> Path:

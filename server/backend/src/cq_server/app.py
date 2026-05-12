@@ -44,6 +44,8 @@ from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
+from .persona_routes import router as persona_router
+from .provisioning import router as provisioning_router
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
 from .theme_routes import router as theme_router
@@ -414,10 +416,16 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
+# AS-1 (#200) — Personas tab: admin CRUD for Human persona assignments.
+api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
 api_router.include_router(theme_router)
+# FO-2-backend (#224) — Enterprise Provisioning Service. Anonymous endpoints;
+# Decision 31 sets the contract. CORS for signup.8th-layer.ai applied at
+# the app level (see CORSMiddleware below).
+api_router.include_router(provisioning_router)
 
 
 @api_router.get("/health")
@@ -1732,6 +1740,23 @@ async def stats(
 # --- Application assembly. ---
 
 app = FastAPI(title="cq Server", version="0.1.0", lifespan=lifespan)
+
+# CORS — FO-2-backend (Decision 31): allow the signup wizard origin on
+# the provisioning endpoints. Anonymous endpoints, no credentials.
+# Extra origins can be added at deploy time via CQ_CORS_EXTRA_ORIGINS (CSV).
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+_CORS_ORIGINS: list[str] = [
+    "https://signup.8th-layer.ai",
+    *[o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()],
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=False,
+)
 
 # Mount API routes at root (SDK compatibility) and at /api (frontend).
 app.include_router(api_router)
