@@ -4284,6 +4284,168 @@ class SqliteStore:
         }
 
 
+    # ------------------------------------------------------------------
+    # AS-1 (#200) — persona_assignments CRUD
+    # ------------------------------------------------------------------
+
+    async def list_persona_assignments(
+        self, limit: int = 50, offset: int = 0
+    ) -> tuple[list[dict], int]:
+        """Return paginated persona assignments joined with user email."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._list_persona_assignments_sync, limit, offset
+        )
+
+    def _list_persona_assignments_sync(
+        self, limit: int = 50, offset: int = 0
+    ) -> tuple[list[dict], int]:
+        with self._engine.connect() as conn:
+            total_row = conn.execute(
+                text("SELECT COUNT(*) FROM persona_assignments")
+            ).fetchone()
+            total = total_row[0] if total_row else 0
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT pa.username, u.email, pa.persona,
+                           pa.assigned_at, pa.assigned_by, pa.disabled_at
+                    FROM persona_assignments pa
+                    LEFT JOIN users u ON pa.username = u.username
+                    ORDER BY pa.assigned_at DESC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                {"limit": limit, "offset": offset},
+            ).fetchall()
+        items = [
+            {
+                "username": r[0],
+                "email": r[1],
+                "persona": r[2],
+                "assigned_at": r[3],
+                "assigned_by": r[4],
+                "disabled_at": r[5],
+            }
+            for r in rows
+        ]
+        return items, total
+
+    async def get_persona_assignment(self, username: str) -> dict | None:
+        """Return the persona assignment for a user, or None."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._get_persona_assignment_sync, username
+        )
+
+    def _get_persona_assignment_sync(self, username: str) -> dict | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT pa.username, u.email, pa.persona,
+                           pa.assigned_at, pa.assigned_by, pa.disabled_at
+                    FROM persona_assignments pa
+                    LEFT JOIN users u ON pa.username = u.username
+                    WHERE pa.username = :username
+                    """
+                ),
+                {"username": username},
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "username": row[0],
+            "email": row[1],
+            "persona": row[2],
+            "assigned_at": row[3],
+            "assigned_by": row[4],
+            "disabled_at": row[5],
+        }
+
+    async def upsert_persona_assignment(
+        self,
+        username: str,
+        persona: str,
+        assigned_at: str,
+        assigned_by: str,
+    ) -> dict:
+        """Create or update a persona assignment (clears disabled_at)."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            self._upsert_persona_assignment_sync,
+            username,
+            persona,
+            assigned_at,
+            assigned_by,
+        )
+
+    def _upsert_persona_assignment_sync(
+        self,
+        username: str,
+        persona: str,
+        assigned_at: str,
+        assigned_by: str,
+    ) -> dict:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO persona_assignments
+                        (username, persona, assigned_at, assigned_by, disabled_at)
+                    VALUES (:u, :persona, :assigned_at, :assigned_by, NULL)
+                    ON CONFLICT(username) DO UPDATE SET
+                        persona = excluded.persona,
+                        assigned_at = excluded.assigned_at,
+                        assigned_by = excluded.assigned_by,
+                        disabled_at = NULL
+                    """
+                ),
+                {
+                    "u": username,
+                    "persona": persona,
+                    "assigned_at": assigned_at,
+                    "assigned_by": assigned_by,
+                },
+            )
+        return self._get_persona_assignment_sync(username)
+
+    async def disable_persona_assignment(
+        self, username: str, disabled_at: str
+    ) -> dict | None:
+        """Soft-disable a persona assignment (set disabled_at timestamp)."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._disable_persona_assignment_sync, username, disabled_at
+        )
+
+    def _disable_persona_assignment_sync(
+        self, username: str, disabled_at: str
+    ) -> dict | None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE persona_assignments
+                    SET disabled_at = :disabled_at
+                    WHERE username = :username
+                    """
+                ),
+                {"username": username, "disabled_at": disabled_at},
+            )
+        return self._get_persona_assignment_sync(username)
+
+    async def set_user_email(self, username: str, email: str) -> None:
+        """Update the email on a users row (used when creating persona assignments)."""
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._set_user_email_sync, username, email
+        )
+
+    def _set_user_email_sync(self, username: str, email: str) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                text("UPDATE users SET email = :email WHERE username = :username"),
+                {"username": username, "email": email},
+            )
+
+
 class _SyncStoreProxy:
     """Sync method proxy over SqliteStore.
 

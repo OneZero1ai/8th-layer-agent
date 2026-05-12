@@ -6,6 +6,7 @@ import { ApiKeysPage } from "./pages/ApiKeysPage"
 import { DashboardPage } from "./pages/DashboardPage"
 import { LoginPage } from "./pages/LoginPage"
 import { NetworkPage } from "./pages/NetworkPage"
+import { PersonasPage } from "./pages/PersonasPage"
 import { ReviewPage } from "./pages/ReviewPage"
 import { ThemeProvider } from "./theme"
 
@@ -30,6 +31,7 @@ function AppRoutes() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
+        <Route path="/admin/personas" element={<PersonasPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/review" replace />} />
     </Routes>

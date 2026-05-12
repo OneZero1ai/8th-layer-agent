@@ -64,6 +64,7 @@ export function Layout() {
             {navLink("/dashboard", "Dashboard")}
             {navLink("/network", "Network")}
             {navLink("/settings/api-keys", "API Keys")}
+            {navLink("/admin/personas", "Personas")}
           </div>
           <div className="flex items-center gap-4">
             <span className="hidden md:inline font-mono-brand text-[11px] uppercase tracking-[0.18em] text-[var(--ink-mute)]">

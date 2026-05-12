@@ -1,7 +1,12 @@
 import type {
   ApiKeysList,
+  CreatePersonaRequest,
+  CreatePersonaResponse,
   CreatedApiKey,
   MessageResponse,
+  PatchPersonaRequest,
+  PatchPersonaResponse,
+  PersonaListResponse,
   ReviewDecisionResponse,
   ReviewItem,
   ReviewQueueResponse,
@@ -120,6 +125,28 @@ export const api = {
 
   revokeApiKey: (id: string) =>
     request<MessageResponse>(`/auth/api-keys/${id}/revoke`, { method: "POST" }),
+
+  listPersonas: (limit = 50, offset = 0) =>
+    request<PersonaListResponse>(
+      `/admin/personas?limit=${limit}&offset=${offset}`,
+    ),
+
+  createPersona: (body: CreatePersonaRequest) =>
+    request<CreatePersonaResponse>("/admin/personas", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  patchPersona: (username: string, body: PatchPersonaRequest) =>
+    request<PatchPersonaResponse>(`/admin/personas/${username}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  disablePersona: (username: string) =>
+    request<MessageResponse>(`/admin/personas/${username}/disable`, {
+      method: "POST",
+    }),
 }
 
 export { ApiError }

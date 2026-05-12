@@ -46,6 +46,7 @@ from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
+from .persona_routes import router as persona_router
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
 from .theme_routes import router as theme_router
@@ -431,10 +432,6 @@ api_router.include_router(invite_router)
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
 api_router.include_router(theme_router)
-# FO-2-backend (#224) — Enterprise Provisioning Service. Anonymous endpoints;
-# Decision 31 sets the contract. CORS for signup.8th-layer.ai applied at
-# the app level (see CORSMiddleware below).
-api_router.include_router(provisioning_router)
 
 
 @api_router.get("/health")
