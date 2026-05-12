@@ -296,8 +296,12 @@ class TestDbHelpers:
         slug. Empirical evidence — verified against actual sqlite DDL by
         the 8l-reviewer — that the original batch-mode migration left the
         UNIQUE constraint in place.
+
+        Uses ``engine.connect()`` (not ``begin()``) because insert_job /
+        fail_job each call ``conn.commit()`` internally; nesting them in
+        a ``begin()`` block re-uses a closed transaction.
         """
-        with db_engine.begin() as conn:
+        with db_engine.connect() as conn:
             insert_job(
                 conn,
                 job_id="prov_FAILED",
@@ -309,7 +313,7 @@ class TestDbHelpers:
             fail_job(conn, job_id="prov_FAILED", error="phase 2: timeout")
 
         # Retry the SAME slug with a fresh active job — must succeed.
-        with db_engine.begin() as conn:
+        with db_engine.connect() as conn:
             insert_job(
                 conn,
                 job_id="prov_RETRY",
@@ -329,7 +333,7 @@ class TestDbHelpers:
         """
         from sqlalchemy.exc import IntegrityError
 
-        with db_engine.begin() as conn:
+        with db_engine.connect() as conn:
             insert_job(
                 conn,
                 job_id="prov_FIRST",
@@ -339,7 +343,7 @@ class TestDbHelpers:
                 ip_hash="x",
             )
 
-        with pytest.raises(IntegrityError), db_engine.begin() as conn:
+        with pytest.raises(IntegrityError), db_engine.connect() as conn:
             insert_job(
                 conn,
                 job_id="prov_SECOND",
