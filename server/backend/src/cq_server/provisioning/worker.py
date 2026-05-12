@@ -186,9 +186,7 @@ def _store_key_ssm_fallback(ssm_param_name: str, priv_b64: str) -> None:
 
 # URL of the 8th-Layer directory service. Defaults to the public production
 # endpoint. Override via CQ_DIRECTORY_URL for staging / local testing.
-_DIRECTORY_BASE_URL = os.environ.get(
-    "CQ_DIRECTORY_URL", "https://directory.8th-layer.ai"
-).rstrip("/")
+_DIRECTORY_BASE_URL = os.environ.get("CQ_DIRECTORY_URL", "https://directory.8th-layer.ai").rstrip("/")
 
 
 def _phase2_directory_register(
@@ -260,15 +258,12 @@ def _phase2_directory_register(
         status_code = exc.code
         body_bytes = exc.read()
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f"directory announce network error for {enterprise_slug}: {exc}"
-        ) from exc
+        raise RuntimeError(f"directory announce network error for {enterprise_slug}: {exc}") from exc
 
     if status_code not in (200, 201):
         body_preview = body_bytes[:200].decode(errors="replace")
         raise RuntimeError(
-            f"directory announce rejected for {enterprise_slug}: "
-            f"status={status_code} body={body_preview!r}"
+            f"directory announce rejected for {enterprise_slug}: status={status_code} body={body_preview!r}"
         )
 
     log.info(
@@ -347,10 +342,7 @@ def _cf_upsert_cname(
         - 0 results → POST a fresh record
     """
     # 1. List existing records of type CNAME with the target name.
-    list_url = (
-        f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records"
-        f"?type=CNAME&name={fqdn}"
-    )
+    list_url = f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records?type=CNAME&name={fqdn}"
     list_req = urllib.request.Request(
         list_url,
         method="GET",
@@ -360,14 +352,11 @@ def _cf_upsert_cname(
         with urllib.request.urlopen(list_req, timeout=15) as resp:
             list_body = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"Cloudflare CNAME list failed for {enterprise_slug}: HTTP {exc.code}"
-        ) from exc
+        raise RuntimeError(f"Cloudflare CNAME list failed for {enterprise_slug}: HTTP {exc.code}") from exc
 
     if not list_body.get("success"):
         raise RuntimeError(
-            f"Cloudflare CNAME list returned errors for {enterprise_slug}: "
-            f"{list_body.get('errors', [])}"
+            f"Cloudflare CNAME list returned errors for {enterprise_slug}: {list_body.get('errors', [])}"
         )
 
     existing = list_body.get("result", [])
@@ -378,9 +367,7 @@ def _cf_upsert_cname(
         # should never happen, but if it does we treat the first as canonical.
         record = existing[0]
         if record.get("content") == target:
-            log.info(
-                "Cloudflare CNAME already correct: %s -> %s (no-op)", fqdn, target
-            )
+            log.info("Cloudflare CNAME already correct: %s -> %s (no-op)", fqdn, target)
             return
 
         record_id = record["id"]
@@ -392,8 +379,7 @@ def _cf_upsert_cname(
         )
         patch_payload = json.dumps({"content": target, "proxied": True}).encode()
         patch_req = urllib.request.Request(
-            f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}"
-            f"/dns_records/{record_id}",
+            f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records/{record_id}",
             method="PATCH",
             data=patch_payload,
             headers={
@@ -405,13 +391,10 @@ def _cf_upsert_cname(
             with urllib.request.urlopen(patch_req, timeout=15) as resp:
                 patch_body = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(
-                f"Cloudflare CNAME patch failed for {enterprise_slug}: HTTP {exc.code}"
-            ) from exc
+            raise RuntimeError(f"Cloudflare CNAME patch failed for {enterprise_slug}: HTTP {exc.code}") from exc
         if not patch_body.get("success"):
             raise RuntimeError(
-                f"Cloudflare CNAME patch returned errors for {enterprise_slug}: "
-                f"{patch_body.get('errors', [])}"
+                f"Cloudflare CNAME patch returned errors for {enterprise_slug}: {patch_body.get('errors', [])}"
             )
         log.info("Cloudflare CNAME patched: %s -> %s", fqdn, target)
         return
@@ -439,13 +422,10 @@ def _cf_upsert_cname(
         with urllib.request.urlopen(create_req, timeout=15) as resp:
             create_body = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"Cloudflare CNAME create failed for {enterprise_slug}: HTTP {exc.code}"
-        ) from exc
+        raise RuntimeError(f"Cloudflare CNAME create failed for {enterprise_slug}: HTTP {exc.code}") from exc
     if not create_body.get("success"):
         raise RuntimeError(
-            f"Cloudflare CNAME create returned errors for {enterprise_slug}: "
-            f"{create_body.get('errors', [])}"
+            f"Cloudflare CNAME create returned errors for {enterprise_slug}: {create_body.get('errors', [])}"
         )
     log.info("Cloudflare CNAME created: %s -> %s", fqdn, target)
 
@@ -589,9 +569,7 @@ def _phase5_admin_invite_sent(
     # a placeholder JWT (the real invite token is minted via the invites
     # module on the directory L2). In production, FO-2 calls the
     # directory's POST /admin/invites to get a proper token.
-    placeholder_token = hashlib.sha256(
-        f"{enterprise_slug}:{admin_email}:{int(time.time())}".encode()
-    ).hexdigest()
+    placeholder_token = hashlib.sha256(f"{enterprise_slug}:{admin_email}:{int(time.time())}".encode()).hexdigest()
 
     sender = EmailSender()
     try:

@@ -102,9 +102,7 @@ class CreateEnterpriseRequest(BaseModel):
     @classmethod
     def _validate_slug(cls, value: str) -> str:
         if not _SLUG_RE.match(value):
-            raise ValueError(
-                "enterprise_slug must match ^[a-z][a-z0-9-]{2,30}$"
-            )
+            raise ValueError("enterprise_slug must match ^[a-z][a-z0-9-]{2,30}$")
         return value
 
     @field_validator("admin_email")

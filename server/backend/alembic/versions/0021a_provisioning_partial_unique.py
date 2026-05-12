@@ -78,9 +78,7 @@ def upgrade() -> None:
 
     # 1. Drop the explicit unique index that 0021 created. (Idempotent.)
     inspector = sa.inspect(bind)
-    existing_indexes = {
-        ix["name"] for ix in inspector.get_indexes("provisioning_jobs")
-    }
+    existing_indexes = {ix["name"] for ix in inspector.get_indexes("provisioning_jobs")}
     if "idx_provisioning_jobs_enterprise_id" in existing_indexes:
         op.drop_index(
             "idx_provisioning_jobs_enterprise_id",
@@ -124,13 +122,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Restore full UNIQUE on enterprise_id (0021 shape)."""
     op.execute("DROP INDEX IF EXISTS idx_provisioning_jobs_active_slug")
-    op.execute(
-        "DROP INDEX IF EXISTS idx_provisioning_jobs_ip_hash_started_at"
-    )
+    op.execute("DROP INDEX IF EXISTS idx_provisioning_jobs_ip_hash_started_at")
 
-    op.execute(
-        "ALTER TABLE provisioning_jobs RENAME TO _provisioning_jobs_pre_21a"
-    )
+    op.execute("ALTER TABLE provisioning_jobs RENAME TO _provisioning_jobs_pre_21a")
     op.execute(
         """
         CREATE TABLE provisioning_jobs (

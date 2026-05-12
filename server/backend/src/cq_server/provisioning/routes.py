@@ -51,9 +51,7 @@ _RATE_LIMIT_WINDOW_SEC = int(os.environ.get("PROVISIONING_RATE_LIMIT_WINDOW_SEC"
 # When empty, X-Forwarded-For is never trusted; request.client.host is used.
 # In production behind AWS ALB, add the ALB source IPs here.
 _TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
-    ip.strip()
-    for ip in os.environ.get("PROVISIONING_TRUSTED_PROXY_IPS", "").split(",")
-    if ip.strip()
+    ip.strip() for ip in os.environ.get("PROVISIONING_TRUSTED_PROXY_IPS", "").split(",") if ip.strip()
 )
 
 
@@ -163,15 +161,17 @@ async def create_enterprise(
     poll_url = f"/api/v1/enterprises/jobs/{job_id}"
 
     # Serialize all job parameters for crash recovery (HIGH #6).
-    job_params = json.dumps({
-        "enterprise_slug": body.enterprise_slug,
-        "enterprise_name": body.enterprise_name,
-        "admin_email": body.admin_email,
-        "aws_account_id": body.aws_account_id,
-        "aws_region": body.aws_region,
-        "marketplace_deploy_role_arn": body.marketplace_deploy_role_arn,
-        "assume_role_external_id": body.assume_role_external_id,
-    })
+    job_params = json.dumps(
+        {
+            "enterprise_slug": body.enterprise_slug,
+            "enterprise_name": body.enterprise_name,
+            "admin_email": body.admin_email,
+            "aws_account_id": body.aws_account_id,
+            "aws_region": body.aws_region,
+            "marketplace_deploy_role_arn": body.marketplace_deploy_role_arn,
+            "assume_role_external_id": body.assume_role_external_id,
+        }
+    )
 
     try:
         with engine.connect() as conn:
@@ -323,56 +323,51 @@ def _validate_assume_role(
         raise RuntimeError(str(exc)) from exc
 
 
-# Session policy template — applied to all `sts:AssumeRole` calls into the
-# customer's marketplace_deploy_role_arn (MEDIUM from 8l-reviewer first review).
-#
-# Even if the customer makes their role broader than strictly necessary, this
-# inline session policy intersects with the role's permissions so OUR session
-# can only touch the CloudFormation stack for THIS enterprise. CFN service-side
-# privileges (EC2/IAM/ECS resource creation) still run under the customer
-# role's broader permissions — we just don't exercise them directly.
-_SESSION_POLICY_TEMPLATE = {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "ScopedCfnStackOps",
-            "Effect": "Allow",
-            "Action": [
-                "cloudformation:CreateStack",
-                "cloudformation:DescribeStacks",
-                "cloudformation:DescribeStackEvents",
-                "cloudformation:DescribeStackResources",
-                "cloudformation:GetTemplate",
-                "cloudformation:DeleteStack",
-                "cloudformation:UpdateStack",
-            ],
-            # ``Resource`` is patched per-call to the specific stack ARN.
-        },
-        {
-            "Sid": "ListAllStacksForExistenceCheck",
-            "Effect": "Allow",
-            "Action": ["cloudformation:ListStacks"],
-            "Resource": "*",
-        },
-    ],
-}
-
-
 def _assume_role_session_policy(enterprise_slug: str) -> str:
     """Return a JSON-encoded inline session policy scoped to this slug's stack.
+
+    Applied to all ``sts:AssumeRole`` calls into the customer's
+    ``marketplace_deploy_role_arn`` (MEDIUM from 8l-reviewer). Even if the
+    customer makes their role broader than strictly necessary, this inline
+    session policy intersects with the role's permissions so OUR session
+    can only touch the CloudFormation stack for THIS enterprise.
+
+    CFN service-side privileges (EC2/IAM/ECS resource creation) still run
+    under the customer role's broader permissions when CFN itself acts on
+    the stack — we just don't exercise them directly through our session.
 
     The stack name pattern matches ``_phase4_l2_standup``:
     ``8th-layer-l2-<slug>``. The ARN includes a wildcard for the stack UUID
     that CFN appends.
     """
     import json
-    import copy
 
-    policy = copy.deepcopy(_SESSION_POLICY_TEMPLATE)
-    stack_arn = (
-        f"arn:aws:cloudformation:*:*:stack/8th-layer-l2-{enterprise_slug}/*"
-    )
-    policy["Statement"][0]["Resource"] = stack_arn  # type: ignore[index]
+    stack_arn = f"arn:aws:cloudformation:*:*:stack/8th-layer-l2-{enterprise_slug}/*"
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ScopedCfnStackOps",
+                "Effect": "Allow",
+                "Action": [
+                    "cloudformation:CreateStack",
+                    "cloudformation:DescribeStacks",
+                    "cloudformation:DescribeStackEvents",
+                    "cloudformation:DescribeStackResources",
+                    "cloudformation:GetTemplate",
+                    "cloudformation:DeleteStack",
+                    "cloudformation:UpdateStack",
+                ],
+                "Resource": stack_arn,
+            },
+            {
+                "Sid": "ListAllStacksForExistenceCheck",
+                "Effect": "Allow",
+                "Action": ["cloudformation:ListStacks"],
+                "Resource": "*",
+            },
+        ],
+    }
     return json.dumps(policy, separators=(",", ":"))
 
 

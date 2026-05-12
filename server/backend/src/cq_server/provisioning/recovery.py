@@ -37,9 +37,7 @@ from .db import fail_job, get_stuck_jobs
 log = logging.getLogger(__name__)
 
 # How old a non-terminal job must be (seconds) before it is considered orphaned.
-_RECOVERY_THRESHOLD_SEC = int(
-    os.environ.get("PROVISIONING_RECOVERY_THRESHOLD_SEC", "300")
-)
+_RECOVERY_THRESHOLD_SEC = int(os.environ.get("PROVISIONING_RECOVERY_THRESHOLD_SEC", "300"))
 
 
 async def recover_stuck_jobs(db_engine: Any) -> None:

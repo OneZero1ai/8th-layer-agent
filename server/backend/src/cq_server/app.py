@@ -348,9 +348,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 — recovery must never prevent startup
         import logging as _logging
 
-        _logging.getLogger("provisioning.recovery").exception(
-            "recover_stuck_jobs raised; continuing startup"
-        )
+        _logging.getLogger("provisioning.recovery").exception("recover_stuck_jobs raised; continuing startup")
 
     aigrp_task = None
     if aigrp.aigrp_enabled():

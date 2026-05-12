@@ -7,9 +7,9 @@ Unit tests:
   * ULID id generator properties (sortable, prefixed)
   * DB helpers: insert_job, update_job_phase, complete_job, fail_job, get_job
   * Rate limit counter (count_recent_requests)
-  * is_slug_taken
   * is_job_expired (COMPLETED + 24h window)
   * Pydantic model validation: slug regex, email, aws_account_id, region
+  * Partial-unique migration semantics: FAILED slug retryable, active duplicate blocked
 
 Route tests (mocked AWS + Cloudflare):
   * POST /api/v1/enterprises happy path → 200 + job row inserted
@@ -72,16 +72,24 @@ _VALID_BODY = {
 
 
 def _make_db_engine(tmp_path: Path):
-    """Create a SQLite DB with the provisioning_jobs table for unit tests."""
+    """Create a SQLite DB with the provisioning_jobs table for unit tests.
+
+    Schema mirrors the post-0021a migration shape: no inline UNIQUE on
+    enterprise_id, partial unique index on (enterprise_id) WHERE status
+    NOT IN ('FAILED', 'COMPLETED'). Tests covering retry-after-failure
+    depend on this schema, so it MUST track the real migration head.
+    """
     db_path = tmp_path / "prov_test.db"
-    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
     with engine.connect() as conn:
         conn.execute(
             text(
                 """
                 CREATE TABLE provisioning_jobs (
                     job_id TEXT PRIMARY KEY,
-                    enterprise_id TEXT NOT NULL UNIQUE,
+                    enterprise_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     phase INTEGER,
                     started_at TEXT NOT NULL,
@@ -93,6 +101,19 @@ def _make_db_engine(tmp_path: Path):
                     job_params_json TEXT
                 )
                 """
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX idx_provisioning_jobs_ip_hash_started_at "
+                "ON provisioning_jobs(ip_hash, started_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX idx_provisioning_jobs_active_slug "
+                "ON provisioning_jobs(enterprise_id) "
+                "WHERE status NOT IN ('FAILED', 'COMPLETED')"
             )
         )
         conn.commit()
@@ -410,12 +431,15 @@ def _mock_assume_role_fail(*args, **kwargs) -> None:
 
 class TestCreateEnterpriseRoute:
     def test_happy_path_returns_job_id(self, client: TestClient) -> None:
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         assert resp.status_code == 200, resp.text
@@ -426,12 +450,15 @@ class TestCreateEnterpriseRoute:
         assert "/api/v1/enterprises/jobs/" in body["poll_url"]
 
     def test_happy_path_job_row_in_db(self, client: TestClient) -> None:
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         job_id = resp.json()["job_id"]
@@ -446,12 +473,15 @@ class TestCreateEnterpriseRoute:
         """HIGH #7: duplicate POST with same slug returns existing job (200).
         Idempotency is the happy path; 409 only fires on a concurrent race.
         """
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp1 = client.post("/api/v1/enterprises", json=_VALID_BODY)
             resp2 = client.post("/api/v1/enterprises", json=_VALID_BODY)
@@ -465,18 +495,23 @@ class TestCreateEnterpriseRoute:
         """HIGH #4: UNIQUE constraint violation (concurrent race) returns 409 SLUG_TAKEN."""
         from sqlalchemy.exc import IntegrityError
 
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
-        ), patch(
-            "cq_server.provisioning.routes.get_active_job_for_slug",
-            return_value=None,  # simulate idempotency check missing (race window)
-        ), patch(
-            "cq_server.provisioning.routes.insert_job",
-            side_effect=IntegrityError("UNIQUE constraint failed", None, None),
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
+            patch(
+                "cq_server.provisioning.routes.get_active_job_for_slug",
+                return_value=None,  # simulate idempotency check missing (race window)
+            ),
+            patch(
+                "cq_server.provisioning.routes.insert_job",
+                side_effect=IntegrityError("UNIQUE constraint failed", None, None),
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         assert resp.status_code == 409, resp.text
@@ -506,12 +541,16 @@ class TestCreateEnterpriseRoute:
 
     def test_rate_limit_returns_429(self, client: TestClient) -> None:
         # Patch the module-level constant directly (env var is read at import time).
-        with patch("cq_server.provisioning.routes._RATE_LIMIT_MAX", 2), patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch("cq_server.provisioning.routes._RATE_LIMIT_MAX", 2),
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             for slug in ["acme1", "acme2", "acme3"]:
                 body = {**_VALID_BODY, "enterprise_slug": slug}
@@ -549,12 +588,15 @@ class TestCreateEnterpriseRoute:
 
 class TestGetProvisioningJobRoute:
     def _create_job(self, client: TestClient) -> str:
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         return resp.json()["job_id"]
@@ -708,12 +750,15 @@ class TestHigh1ExternalId:
         def _capture(role_arn: str, slug: str, external_id: str) -> None:
             captured["external_id"] = external_id
 
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_capture,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_capture,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
 
@@ -729,18 +774,23 @@ class TestHigh3SlugTakenResponse:
         from sqlalchemy.exc import IntegrityError
 
         # Simulate a concurrent-race 409 by bypassing idempotency check.
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
-        ), patch(
-            "cq_server.provisioning.routes.get_active_job_for_slug",
-            return_value=None,
-        ), patch(
-            "cq_server.provisioning.routes.insert_job",
-            side_effect=IntegrityError("UNIQUE constraint failed", None, None),
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
+            patch(
+                "cq_server.provisioning.routes.get_active_job_for_slug",
+                return_value=None,
+            ),
+            patch(
+                "cq_server.provisioning.routes.insert_job",
+                side_effect=IntegrityError("UNIQUE constraint failed", None, None),
+            ),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         assert resp.status_code == 409, resp.text
@@ -764,12 +814,16 @@ class TestHigh5RateLimitTrustedProxy:
         routes_mod._TRUSTED_PROXY_IPS = frozenset()
         try:
             # Spoof an XFF header as if from a trusted proxy.
-            with patch("cq_server.provisioning.routes._RATE_LIMIT_MAX", 1), patch(
-                "cq_server.provisioning.routes._validate_assume_role",
-                side_effect=_mock_assume_role_ok,
-            ), patch(
-                "cq_server.provisioning.routes._run_job_background",
-                return_value=None,
+            with (
+                patch("cq_server.provisioning.routes._RATE_LIMIT_MAX", 1),
+                patch(
+                    "cq_server.provisioning.routes._validate_assume_role",
+                    side_effect=_mock_assume_role_ok,
+                ),
+                patch(
+                    "cq_server.provisioning.routes._run_job_background",
+                    return_value=None,
+                ),
             ):
                 resp1 = client.post(
                     "/api/v1/enterprises",
@@ -791,12 +845,15 @@ class TestHigh7Idempotency:
     """HIGH #7 — duplicate POST returns existing job, not a new one."""
 
     def test_duplicate_post_returns_existing_job_id(self, client: TestClient) -> None:
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_mock_assume_role_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             resp1 = client.post("/api/v1/enterprises", json=_VALID_BODY)
             resp2 = client.post("/api/v1/enterprises", json=_VALID_BODY)
@@ -814,12 +871,15 @@ class TestHigh7Idempotency:
         def _counting_ok(*args, **kwargs) -> None:
             call_count["n"] += 1
 
-        with patch(
-            "cq_server.provisioning.routes._validate_assume_role",
-            side_effect=_counting_ok,
-        ), patch(
-            "cq_server.provisioning.routes._run_job_background",
-            return_value=None,
+        with (
+            patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_counting_ok,
+            ),
+            patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ),
         ):
             client.post("/api/v1/enterprises", json=_VALID_BODY)
             client.post("/api/v1/enterprises", json=_VALID_BODY)
