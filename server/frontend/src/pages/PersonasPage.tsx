@@ -155,9 +155,9 @@ export function PersonasPage() {
             Personas
           </h1>
           <p className="mt-3 text-sm text-[var(--ink-dim)] leading-relaxed max-w-prose">
-            Manage Human personas on this L2. Personas gate access level:
-            admin, viewer, agent, or external-collaborator. Assigning a persona
-            sends a magic-link invite.
+            Manage Human personas on this L2. Personas gate access level: admin,
+            viewer, agent, or external-collaborator. Assigning a persona sends a
+            magic-link invite.
           </p>
         </div>
         <button
@@ -215,16 +215,20 @@ export function PersonasPage() {
           <div className="overflow-hidden rounded-xl border border-[var(--rule)] bg-[var(--surface-raised)]">
             {/* Table header */}
             <div className="grid grid-cols-[1fr_10rem_8rem_8rem_6rem] gap-4 border-b border-[var(--rule)] px-5 py-3">
-              {["Username / Email", "Persona", "Status", "Assigned by", "Actions"].map(
-                (h) => (
-                  <span
-                    key={h}
-                    className="eyebrow text-[var(--ink-mute)] text-left"
-                  >
-                    {h}
-                  </span>
-                ),
-              )}
+              {[
+                "Username / Email",
+                "Persona",
+                "Status",
+                "Assigned by",
+                "Actions",
+              ].map((h) => (
+                <span
+                  key={h}
+                  className="eyebrow text-[var(--ink-mute)] text-left"
+                >
+                  {h}
+                </span>
+              ))}
             </div>
             {/* Rows */}
             {items.map((item) => {
@@ -391,9 +395,7 @@ export function PersonasPage() {
                 <button
                   type="submit"
                   disabled={
-                    creating ||
-                    !createForm.email ||
-                    !createForm.username
+                    creating || !createForm.email || !createForm.username
                   }
                   className={primaryBtn}
                 >
@@ -455,7 +457,11 @@ export function PersonasPage() {
                 >
                   Cancel
                 </button>
-                <button type="submit" disabled={patching} className={primaryBtn}>
+                <button
+                  type="submit"
+                  disabled={patching}
+                  className={primaryBtn}
+                >
                   {patching ? "Saving…" : "Save"}
                 </button>
               </div>

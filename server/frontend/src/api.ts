@@ -1,8 +1,8 @@
 import type {
   ApiKeysList,
+  CreatedApiKey,
   CreatePersonaRequest,
   CreatePersonaResponse,
-  CreatedApiKey,
   MessageResponse,
   PatchPersonaRequest,
   PatchPersonaResponse,

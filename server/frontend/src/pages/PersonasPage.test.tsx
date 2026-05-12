@@ -153,9 +153,7 @@ describe("PersonasPage", () => {
     // Change persona and save.
     const select = screen.getByRole("combobox")
     fireEvent.change(select, { target: { value: "admin" } })
-    const form = screen
-      .getByRole("button", { name: /^save$/i })
-      .closest("form")
+    const form = screen.getByRole("button", { name: /^save$/i }).closest("form")
     if (!form) throw new Error("save form not found")
     fireEvent.submit(form)
 
@@ -177,9 +175,7 @@ describe("PersonasPage", () => {
       disabled_at: "2026-05-12T13:00:00+00:00",
     }
     const listAfterDisable = {
-      items: [
-        { ...aliceAssignment, disabled_at: "2026-05-12T13:00:00+00:00" },
-      ],
+      items: [{ ...aliceAssignment, disabled_at: "2026-05-12T13:00:00+00:00" }],
       total: 1,
       limit: 50,
       offset: 0,
