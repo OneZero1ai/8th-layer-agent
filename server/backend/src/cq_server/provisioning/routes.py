@@ -12,13 +12,14 @@ Error envelopes follow Decision 31 §Error envelopes:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
 from .db import (
@@ -152,7 +153,10 @@ async def create_enterprise(
     except Exception as exc:  # noqa: BLE001
         return _error(
             "ROLE_NOT_ASSUMABLE",
-            "The marketplace_deploy_role_arn could not be assumed. Ensure the role exists and has the correct trust policy.",
+            (
+                "The marketplace_deploy_role_arn could not be assumed. "
+                "Ensure the role exists and has the correct trust policy."
+            ),
             str(exc),
             status=403,
         )
@@ -262,10 +266,8 @@ async def get_provisioning_job(
 
     result = None
     if row.get("result_json"):
-        try:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             result = json.loads(row["result_json"])
-        except (json.JSONDecodeError, TypeError):
-            pass
 
     return JobStatusResponse(
         job_id=row["job_id"],

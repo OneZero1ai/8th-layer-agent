@@ -27,8 +27,6 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy.engine import Connection
-
 from .db import (
     complete_job,
     fail_job,
@@ -86,8 +84,8 @@ def _phase1_key_mint(enterprise_slug: str) -> dict[str, Any]:
     from cryptography.hazmat.primitives.serialization import (
         Encoding,
         NoEncryption,
-        PublicFormat,
         PrivateFormat,
+        PublicFormat,
     )
 
     private_key = Ed25519PrivateKey.generate()
@@ -131,8 +129,9 @@ def _store_key_kms(
     ssm_param_name: str,
 ) -> None:
     """Wrap private key with KMS data key; store ciphertext in SSM."""
-    import boto3
     import base64
+
+    import boto3
 
     kms = boto3.client("kms", region_name=_aws_region())
     # Generate a 256-bit AES data key; plaintext used once then discarded.
@@ -141,8 +140,9 @@ def _store_key_kms(
     encrypted_dk = dk_resp["CiphertextBlob"]
 
     # AES-GCM encrypt the private key bytes with the plaintext data key.
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     import secrets
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     nonce = secrets.token_bytes(12)
     aesgcm = AESGCM(plaintext_key)
@@ -556,7 +556,7 @@ def _phase5_admin_invite_sent(
     Reuses cq_server.email_sender.EmailSender (FO-1b). Returns invite
     metadata for inclusion in the result payload.
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from ..email_sender import EmailSender
     from ..invites import DEFAULT_TTL_HOURS

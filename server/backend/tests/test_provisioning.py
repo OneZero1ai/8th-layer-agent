@@ -30,7 +30,6 @@ Integration smoke tests:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from collections.abc import Iterator
@@ -40,6 +39,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 
 from cq_server.app import app
@@ -80,9 +80,7 @@ def _make_db_engine(tmp_path: Path):
     depend on this schema, so it MUST track the real migration head.
     """
     db_path = tmp_path / "prov_test.db"
-    engine = create_engine(
-        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-    )
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     with engine.connect() as conn:
         conn.execute(
             text(
@@ -104,10 +102,7 @@ def _make_db_engine(tmp_path: Path):
             )
         )
         conn.execute(
-            text(
-                "CREATE INDEX idx_provisioning_jobs_ip_hash_started_at "
-                "ON provisioning_jobs(ip_hash, started_at)"
-            )
+            text("CREATE INDEX idx_provisioning_jobs_ip_hash_started_at ON provisioning_jobs(ip_hash, started_at)")
         )
         conn.execute(
             text(
@@ -184,15 +179,15 @@ class TestCreateEnterpriseRequestValidation:
         assert req.enterprise_slug == "acme"
 
     def test_slug_too_short(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(enterprise_slug="ab"))
 
     def test_slug_starts_with_digit(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(enterprise_slug="1acme"))
 
     def test_slug_uppercase_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(enterprise_slug="Acme"))
 
     def test_slug_valid_with_hyphens(self) -> None:
@@ -200,23 +195,23 @@ class TestCreateEnterpriseRequestValidation:
         assert req.enterprise_slug == "acme-corp-ai"
 
     def test_bad_email_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(admin_email="notanemail"))
 
     def test_aws_account_id_11_digits_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(aws_account_id="12345678901"))
 
     def test_aws_account_id_13_digits_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(aws_account_id="1234567890123"))
 
     def test_unsupported_region_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(aws_region="eu-west-1"))
 
     def test_bad_role_arn_rejected(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             CreateEnterpriseRequest(**self._make(marketplace_deploy_role_arn="not-an-arn"))
 
 
@@ -344,16 +339,15 @@ class TestDbHelpers:
                 ip_hash="x",
             )
 
-        with pytest.raises(IntegrityError):
-            with db_engine.begin() as conn:
-                insert_job(
-                    conn,
-                    job_id="prov_SECOND",
-                    enterprise_id="beta",
-                    status="PROVISIONING",
-                    phase=0,
-                    ip_hash="y",
-                )
+        with pytest.raises(IntegrityError), db_engine.begin() as conn:
+            insert_job(
+                conn,
+                job_id="prov_SECOND",
+                enterprise_id="beta",
+                status="PROVISIONING",
+                phase=0,
+                ip_hash="y",
+            )
 
     def test_rate_limit_counter_empty(self, db_engine) -> None:
         with db_engine.connect() as conn:
@@ -825,7 +819,7 @@ class TestHigh5RateLimitTrustedProxy:
                     return_value=None,
                 ),
             ):
-                resp1 = client.post(
+                client.post(
                     "/api/v1/enterprises",
                     json={**_VALID_BODY, "enterprise_slug": "xff-test1"},
                     headers={"X-Forwarded-For": "1.2.3.4"},
@@ -906,16 +900,15 @@ class TestHigh4UniqueConstraint:
                 phase=0,
                 ip_hash="x",
             )
-        with pytest.raises(IntegrityError):
-            with db_engine.connect() as conn:
-                insert_job(
-                    conn,
-                    job_id=job_id_2,
-                    enterprise_id="dup-slug",
-                    status="PROVISIONING",
-                    phase=0,
-                    ip_hash="x",
-                )
+        with pytest.raises(IntegrityError), db_engine.connect() as conn:
+            insert_job(
+                conn,
+                job_id=job_id_2,
+                enterprise_id="dup-slug",
+                status="PROVISIONING",
+                phase=0,
+                ip_hash="x",
+            )
 
 
 class TestHigh8Phase3ErrorPropagation:
@@ -944,18 +937,20 @@ class TestHigh8Phase3ErrorPropagation:
 
         os.environ["CF_API_TOKEN"] = "fake-token"
         try:
-            with patch(
-                "urllib.request.urlopen",
-                side_effect=urllib.error.HTTPError(
-                    url="https://api.cloudflare.com/...",
-                    code=400,
-                    msg="Bad Request",
-                    hdrs=None,  # type: ignore[arg-type]
-                    fp=None,  # type: ignore[arg-type]
+            with (
+                patch(
+                    "urllib.request.urlopen",
+                    side_effect=urllib.error.HTTPError(
+                        url="https://api.cloudflare.com/...",
+                        code=400,
+                        msg="Bad Request",
+                        hdrs=None,  # type: ignore[arg-type]
+                        fp=None,  # type: ignore[arg-type]
+                    ),
                 ),
+                pytest.raises(RuntimeError, match="Cloudflare"),
             ):
-                with pytest.raises(RuntimeError, match="Cloudflare"):
-                    _phase3_dns_provision("test-slug")
+                _phase3_dns_provision("test-slug")
         finally:
             os.environ.pop("CF_API_TOKEN", None)
 
@@ -971,10 +966,8 @@ class TestCfUpsertCnameBranches:
         urlopen call. Each response item is either a dict (json body, status
         200) or an Exception to raise.
         """
-        from contextlib import contextmanager
-        from io import BytesIO
         import json
-        from unittest.mock import MagicMock
+        from contextlib import contextmanager
 
         responses_iter = iter(responses)
 
@@ -1079,12 +1072,14 @@ class TestCfUpsertCnameBranches:
                 {"success": False, "errors": [{"message": "auth failed"}]},
             ]
         )
-        with patch("urllib.request.urlopen", side_effect=fake):
-            with pytest.raises(RuntimeError, match="list returned errors"):
-                _cf_upsert_cname(
-                    cf_token="t",
-                    cf_zone_id="z",
-                    fqdn="acme.8th-layer.ai",
-                    target="provision.8th-layer.ai",
-                    enterprise_slug="acme",
-                )
+        with (
+            patch("urllib.request.urlopen", side_effect=fake),
+            pytest.raises(RuntimeError, match="list returned errors"),
+        ):
+            _cf_upsert_cname(
+                cf_token="t",
+                cf_zone_id="z",
+                fqdn="acme.8th-layer.ai",
+                target="provision.8th-layer.ai",
+                enterprise_slug="acme",
+            )
