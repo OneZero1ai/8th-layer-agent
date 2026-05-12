@@ -340,4 +340,3 @@ async def disable_persona(
         old_persona=existing.get("persona"),
     )
     return DisableResponse(username=username, disabled_at=now)
-

@@ -4391,7 +4391,7 @@ class SqliteStore:
         *,
         audit_action: str | None = None,
         audit_old_persona: str | None = None,
-    ) -> dict:
+    ) -> dict | None:
         with self._engine.begin() as conn:
             conn.execute(
                 text(
