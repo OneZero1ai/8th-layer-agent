@@ -386,6 +386,11 @@ async def claim_invite_route(
 
     outcome = claim_invite(store, token=token, claiming_user_id=user_id)
     if outcome.kind == "ok":
+        # H-1: refuse session minting when this user's persona is soft-disabled.
+        # An invite issued before disable shouldn't let the user back in.
+        assignment = await store.get_persona_assignment(request.username)
+        if assignment is not None and assignment.get("disabled_at") is not None:
+            raise HTTPException(status_code=403, detail="user is disabled")
         # FO-1c: set the session cookie + return the bearer in the body.
         # The HTML claim page navigates to "/" after this; the browser
         # sends the cookie along, so the user lands authenticated.

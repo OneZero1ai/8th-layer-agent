@@ -271,7 +271,7 @@ class TestHeadRevisionAndHistory:
     def test_head_revision_constant_was_bumped(self) -> None:
         from cq_server.migrations import HEAD_REVISION
 
-        assert HEAD_REVISION == "0021a_provisioning_partial_unique"
+        assert HEAD_REVISION == "0023_persona_assignment_audit"
 
     def test_alembic_history_includes_0015(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

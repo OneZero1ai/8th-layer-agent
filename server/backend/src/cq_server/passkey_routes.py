@@ -223,6 +223,10 @@ async def login_finish(
     user = await store.get_user(request.username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    # H-1: refuse session minting when the user's persona is soft-disabled.
+    assignment = await store.get_persona_assignment(request.username)
+    if assignment is not None and assignment.get("disabled_at") is not None:
+        raise HTTPException(status_code=403, detail="user is disabled")
     # Look up the credential the browser claims to have used. The
     # rawId in the credential dict is the same bytes we stored at
     # enroll time, so this is a single equality lookup.

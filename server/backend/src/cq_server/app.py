@@ -39,6 +39,7 @@ from .invite_routes import router as invite_router
 from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
+from .persona_routes import router as persona_router
 from .provisioning import recover_stuck_jobs
 from .provisioning import router as provisioning_router
 from .quality import check_propose_quality
@@ -427,14 +428,14 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
+# FO-2-backend (#228) — anonymous Enterprise provisioning endpoints.
+api_router.include_router(provisioning_router)
+# AS-1 (#229) — admin Personas CRUD endpoints.
+api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
 api_router.include_router(theme_router)
-# FO-2-backend (#224) — Enterprise Provisioning Service. Anonymous endpoints;
-# Decision 31 sets the contract. CORS for signup.8th-layer.ai applied at
-# the app level (see CORSMiddleware below).
-api_router.include_router(provisioning_router)
 
 
 @api_router.get("/health")
@@ -1762,7 +1763,7 @@ _CORS_ORIGINS: list[str] = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
     allow_credentials=False,
 )

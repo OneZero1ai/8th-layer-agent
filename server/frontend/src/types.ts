@@ -109,3 +109,40 @@ export interface ApiKeysList {
 export interface MessageResponse {
   message: string
 }
+
+export type PersonaName = "admin" | "viewer" | "agent" | "external-collaborator"
+
+export interface PersonaAssignment {
+  username: string
+  email: string | null
+  persona: PersonaName
+  assigned_at: string
+  assigned_by: string
+  disabled_at: string | null
+}
+
+export interface PersonaListResponse {
+  items: PersonaAssignment[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface CreatePersonaRequest {
+  username: string
+  email: string
+  persona: PersonaName
+}
+
+export interface CreatePersonaResponse {
+  assignment: PersonaAssignment
+  invite_sent: boolean
+}
+
+export interface PatchPersonaRequest {
+  persona: PersonaName
+}
+
+export interface PatchPersonaResponse {
+  assignment: PersonaAssignment
+}

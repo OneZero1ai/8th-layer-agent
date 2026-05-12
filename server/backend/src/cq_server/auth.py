@@ -421,6 +421,10 @@ async def login(request: LoginRequest, store: SqliteStore = Depends(get_store)) 
     user = await store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    # H-1: refuse session minting when the user's persona is soft-disabled.
+    assignment = await store.get_persona_assignment(request.username)
+    if assignment is not None and assignment.get("disabled_at") is not None:
+        raise HTTPException(status_code=403, detail="user is disabled")
     token = create_token(
         request.username,
         secret=_get_jwt_secret(),
