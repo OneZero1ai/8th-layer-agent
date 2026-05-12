@@ -15,9 +15,11 @@ only the persona assignment is disabled.
 
 # Chain note
 
-Chains from 0021_provisioning_jobs (FO-2-backend, closed #224).
-After this migration lands, HEAD_REVISION in migrations.py must be bumped to
-``0022_persona_assignments``.
+Chains from 0021a_provisioning_partial_unique (FO-2-backend's partial-unique
+fix migration, which itself chains from 0021_provisioning_jobs). #228 + #229
+landed in sequence; this migration sits on top of the post-228 chain head.
+After this migration lands, HEAD_REVISION in migrations.py is bumped to
+``0023_persona_assignment_audit`` (the next migration in this PR).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0022_persona_assignments"
-down_revision: str | Sequence[str] | None = "0021_provisioning_jobs"
+down_revision: str | Sequence[str] | None = "0021a_provisioning_partial_unique"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
