@@ -44,7 +44,6 @@ from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
-from .persona_routes import router as persona_router
 from .provisioning import recover_stuck_jobs, router as provisioning_router
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
@@ -429,8 +428,6 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
-# AS-1 (#200) — Personas tab: admin CRUD for Human persona assignments.
-api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
