@@ -300,6 +300,11 @@ def _validate_assume_role(
     deputy attacks. The customer must set the same ExternalId in their role's
     trust policy condition; without it AssumeRole will be denied.
 
+    MEDIUM (8l-reviewer): session policy ``_assume_role_session_policy(slug)``
+    is attached so the validation session can ONLY introspect CloudFormation
+    on this enterprise's stack — even if the customer's role grants admin.
+    The validate session does nothing else; tight scope is safe here.
+
     Raises RuntimeError on failure.
     """
     import boto3
@@ -312,9 +317,63 @@ def _validate_assume_role(
             RoleSessionName=f"8l-validate-{enterprise_slug}",
             DurationSeconds=900,
             ExternalId=external_id,
+            Policy=_assume_role_session_policy(enterprise_slug),
         )
     except botocore.exceptions.ClientError as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+# Session policy template — applied to all `sts:AssumeRole` calls into the
+# customer's marketplace_deploy_role_arn (MEDIUM from 8l-reviewer first review).
+#
+# Even if the customer makes their role broader than strictly necessary, this
+# inline session policy intersects with the role's permissions so OUR session
+# can only touch the CloudFormation stack for THIS enterprise. CFN service-side
+# privileges (EC2/IAM/ECS resource creation) still run under the customer
+# role's broader permissions — we just don't exercise them directly.
+_SESSION_POLICY_TEMPLATE = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ScopedCfnStackOps",
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:CreateStack",
+                "cloudformation:DescribeStacks",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:DescribeStackResources",
+                "cloudformation:GetTemplate",
+                "cloudformation:DeleteStack",
+                "cloudformation:UpdateStack",
+            ],
+            # ``Resource`` is patched per-call to the specific stack ARN.
+        },
+        {
+            "Sid": "ListAllStacksForExistenceCheck",
+            "Effect": "Allow",
+            "Action": ["cloudformation:ListStacks"],
+            "Resource": "*",
+        },
+    ],
+}
+
+
+def _assume_role_session_policy(enterprise_slug: str) -> str:
+    """Return a JSON-encoded inline session policy scoped to this slug's stack.
+
+    The stack name pattern matches ``_phase4_l2_standup``:
+    ``8th-layer-l2-<slug>``. The ARN includes a wildcard for the stack UUID
+    that CFN appends.
+    """
+    import json
+    import copy
+
+    policy = copy.deepcopy(_SESSION_POLICY_TEMPLATE)
+    stack_arn = (
+        f"arn:aws:cloudformation:*:*:stack/8th-layer-l2-{enterprise_slug}/*"
+    )
+    policy["Statement"][0]["Resource"] = stack_arn  # type: ignore[index]
+    return json.dumps(policy, separators=(",", ":"))
 
 
 async def _run_job_background(

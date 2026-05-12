@@ -898,3 +898,133 @@ class TestHigh8Phase3ErrorPropagation:
                     _phase3_dns_provision("test-slug")
         finally:
             os.environ.pop("CF_API_TOKEN", None)
+
+
+class TestCfUpsertCnameBranches:
+    """8l-reviewer 3rd-pass follow-up: direct branch coverage of
+    `_cf_upsert_cname`. The recovery path re-runs phase 1 from scratch so
+    each branch (no-op / PATCH / POST) MUST be exercised.
+    """
+
+    def _fake_urlopen_responses(self, responses: list):
+        """Return a context manager that returns successive responses on each
+        urlopen call. Each response item is either a dict (json body, status
+        200) or an Exception to raise.
+        """
+        from contextlib import contextmanager
+        from io import BytesIO
+        import json
+        from unittest.mock import MagicMock
+
+        responses_iter = iter(responses)
+
+        @contextmanager
+        def _open(req, timeout=None):
+            r = next(responses_iter)
+            if isinstance(r, BaseException):
+                raise r
+            mock = MagicMock()
+            mock.read.return_value = json.dumps(r).encode()
+            yield mock
+
+        return _open
+
+    def test_noop_when_existing_cname_matches(self) -> None:
+        """GET returns 1 record with matching content → no POST/PATCH."""
+        from unittest.mock import patch
+
+        from cq_server.provisioning.worker import _cf_upsert_cname
+
+        fake = self._fake_urlopen_responses(
+            [
+                {
+                    "success": True,
+                    "result": [
+                        {
+                            "id": "rec123",
+                            "content": "provision.8th-layer.ai",
+                        }
+                    ],
+                },
+            ]
+        )
+        with patch("urllib.request.urlopen", side_effect=fake):
+            _cf_upsert_cname(
+                cf_token="t",
+                cf_zone_id="z",
+                fqdn="acme.8th-layer.ai",
+                target="provision.8th-layer.ai",
+                enterprise_slug="acme",
+            )
+        # No exception, no second urlopen call — branch verified by call count.
+
+    def test_patch_when_existing_cname_drifts(self) -> None:
+        """GET returns 1 record with different content → PATCH the drift."""
+        from unittest.mock import patch
+
+        from cq_server.provisioning.worker import _cf_upsert_cname
+
+        fake = self._fake_urlopen_responses(
+            [
+                {
+                    "success": True,
+                    "result": [
+                        {
+                            "id": "rec123",
+                            "content": "old.target.example.com",
+                        }
+                    ],
+                },
+                {"success": True, "result": {"id": "rec123"}},  # PATCH ok
+            ]
+        )
+        with patch("urllib.request.urlopen", side_effect=fake):
+            _cf_upsert_cname(
+                cf_token="t",
+                cf_zone_id="z",
+                fqdn="acme.8th-layer.ai",
+                target="provision.8th-layer.ai",
+                enterprise_slug="acme",
+            )
+
+    def test_post_when_no_existing_cname(self) -> None:
+        """GET returns 0 records → POST a fresh CNAME."""
+        from unittest.mock import patch
+
+        from cq_server.provisioning.worker import _cf_upsert_cname
+
+        fake = self._fake_urlopen_responses(
+            [
+                {"success": True, "result": []},  # GET empty
+                {"success": True, "result": {"id": "rec123"}},  # POST ok
+            ]
+        )
+        with patch("urllib.request.urlopen", side_effect=fake):
+            _cf_upsert_cname(
+                cf_token="t",
+                cf_zone_id="z",
+                fqdn="acme.8th-layer.ai",
+                target="provision.8th-layer.ai",
+                enterprise_slug="acme",
+            )
+
+    def test_list_error_propagates(self) -> None:
+        """Non-success response on the GET → RuntimeError raised."""
+        from unittest.mock import patch
+
+        from cq_server.provisioning.worker import _cf_upsert_cname
+
+        fake = self._fake_urlopen_responses(
+            [
+                {"success": False, "errors": [{"message": "auth failed"}]},
+            ]
+        )
+        with patch("urllib.request.urlopen", side_effect=fake):
+            with pytest.raises(RuntimeError, match="list returned errors"):
+                _cf_upsert_cname(
+                    cf_token="t",
+                    cf_zone_id="z",
+                    fqdn="acme.8th-layer.ai",
+                    target="provision.8th-layer.ai",
+                    enterprise_slug="acme",
+                )

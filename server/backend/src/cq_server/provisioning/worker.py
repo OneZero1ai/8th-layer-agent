@@ -497,13 +497,18 @@ def _phase4_l2_standup(
     """
     import boto3
 
-    # AssumeRole into customer account.
+    # AssumeRole into customer account with a scoped session policy — even
+    # if the customer's role is broader than necessary, OUR session can
+    # only touch CFN on this enterprise's stack (8l-reviewer MEDIUM).
+    from .routes import _assume_role_session_policy
+
     sts = boto3.client("sts", region_name=_aws_region())
     assumed = sts.assume_role(
         RoleArn=marketplace_deploy_role_arn,
         RoleSessionName=f"8l-provision-{enterprise_slug}",
         DurationSeconds=3600,
         ExternalId=assume_role_external_id,
+        Policy=_assume_role_session_policy(enterprise_slug),
     )
     creds = assumed["Credentials"]
 
