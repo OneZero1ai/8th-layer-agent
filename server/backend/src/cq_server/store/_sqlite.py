@@ -4367,15 +4367,30 @@ class SqliteStore:
         persona: str,
         assigned_at: str,
         assigned_by: str,
+        *,
+        audit_action: str | None = None,
+        audit_old_persona: str | None = None,
     ) -> dict:
-        """Create or update a persona assignment (clears disabled_at)."""
+        """Create or update a persona assignment (clears disabled_at).
+
+        When ``audit_action`` is provided (CREATED/CHANGED/ENABLED) the
+        store writes a row into ``persona_assignment_audit`` in the same
+        transaction. Callers that don't pass it get the legacy behaviour
+        (no audit row) for backward compatibility with seed-style tests.
+        """
+        import functools
+
         return await asyncio.get_event_loop().run_in_executor(
             None,
-            self._upsert_persona_assignment_sync,
-            username,
-            persona,
-            assigned_at,
-            assigned_by,
+            functools.partial(
+                self._upsert_persona_assignment_sync,
+                username,
+                persona,
+                assigned_at,
+                assigned_by,
+                audit_action=audit_action,
+                audit_old_persona=audit_old_persona,
+            ),
         )
 
     def _upsert_persona_assignment_sync(
@@ -4384,6 +4399,9 @@ class SqliteStore:
         persona: str,
         assigned_at: str,
         assigned_by: str,
+        *,
+        audit_action: str | None = None,
+        audit_old_persona: str | None = None,
     ) -> dict:
         with self._engine.begin() as conn:
             conn.execute(
@@ -4406,18 +4424,58 @@ class SqliteStore:
                     "assigned_by": assigned_by,
                 },
             )
+            # AS-1 follow-up (H-2): atomic audit-row write.
+            if audit_action is not None:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO persona_assignment_audit
+                            (username, old_persona, new_persona, changed_by, action)
+                        VALUES (:u, :old, :new, :by, :action)
+                        """
+                    ),
+                    {
+                        "u": username,
+                        "old": audit_old_persona,
+                        "new": persona,
+                        "by": assigned_by,
+                        "action": audit_action,
+                    },
+                )
         return self._get_persona_assignment_sync(username)
 
     async def disable_persona_assignment(
-        self, username: str, disabled_at: str
+        self,
+        username: str,
+        disabled_at: str,
+        *,
+        changed_by: str | None = None,
+        old_persona: str | None = None,
     ) -> dict | None:
-        """Soft-disable a persona assignment (set disabled_at timestamp)."""
+        """Soft-disable a persona assignment (set disabled_at timestamp).
+
+        When ``changed_by`` is provided, also writes a DISABLED audit row.
+        """
+        import functools
+
         return await asyncio.get_event_loop().run_in_executor(
-            None, self._disable_persona_assignment_sync, username, disabled_at
+            None,
+            functools.partial(
+                self._disable_persona_assignment_sync,
+                username,
+                disabled_at,
+                changed_by=changed_by,
+                old_persona=old_persona,
+            ),
         )
 
     def _disable_persona_assignment_sync(
-        self, username: str, disabled_at: str
+        self,
+        username: str,
+        disabled_at: str,
+        *,
+        changed_by: str | None = None,
+        old_persona: str | None = None,
     ) -> dict | None:
         with self._engine.begin() as conn:
             conn.execute(
@@ -4430,7 +4488,97 @@ class SqliteStore:
                 ),
                 {"username": username, "disabled_at": disabled_at},
             )
+            if changed_by is not None:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO persona_assignment_audit
+                            (username, old_persona, new_persona, changed_by, action)
+                        VALUES (:u, :old, NULL, :by, 'DISABLED')
+                        """
+                    ),
+                    {"u": username, "old": old_persona, "by": changed_by},
+                )
         return self._get_persona_assignment_sync(username)
+
+    # ------------------------------------------------------------------
+    # AS-1 follow-up (H-3, M-5) — admin guards + invite rate-limit
+    # ------------------------------------------------------------------
+
+    async def count_active_admins(self) -> int:
+        """Return count of persona_assignments rows with persona='admin'
+        and disabled_at IS NULL. Used by the last-admin guard."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._count_active_admins_sync
+        )
+
+    def _count_active_admins_sync(self) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) FROM persona_assignments
+                    WHERE persona = 'admin' AND disabled_at IS NULL
+                    """
+                )
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def count_invites_by_admin(
+        self, admin_username: str, since: str
+    ) -> int:
+        """Count persona_assignments rows assigned by this admin since
+        the given ISO-8601 timestamp. Used as a proxy for invite-rate."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._count_invites_by_admin_sync, admin_username, since
+        )
+
+    def _count_invites_by_admin_sync(
+        self, admin_username: str, since: str
+    ) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*) FROM persona_assignments
+                    WHERE assigned_by = :admin AND assigned_at >= :since
+                    """
+                ),
+                {"admin": admin_username, "since": since},
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    async def list_persona_audit(self, username: str) -> list[dict]:
+        """Return audit rows for a username, oldest-first (test helper)."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._list_persona_audit_sync, username
+        )
+
+    def _list_persona_audit_sync(self, username: str) -> list[dict]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT username, old_persona, new_persona, changed_by,
+                           changed_at, action
+                    FROM persona_assignment_audit
+                    WHERE username = :u
+                    ORDER BY id ASC
+                    """
+                ),
+                {"u": username},
+            ).fetchall()
+        return [
+            {
+                "username": r[0],
+                "old_persona": r[1],
+                "new_persona": r[2],
+                "changed_by": r[3],
+                "changed_at": r[4],
+                "action": r[5],
+            }
+            for r in rows
+        ]
 
     async def set_user_email(self, username: str, email: str) -> None:
         """Update the email on a users row (used when creating persona assignments)."""

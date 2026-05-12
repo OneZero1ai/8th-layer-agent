@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -180,6 +180,21 @@ async def create_persona(
             detail=f"persona assignment already exists for username={req.username!r}",
         )
 
+    # M-5: per-admin invite rate-limit. Count persona assignments this
+    # admin has issued in the trailing hour; cap at 20.
+    since = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    recent_count = await store.count_invites_by_admin(
+        admin_username=admin, since=since
+    )
+    if recent_count >= 20:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "Invite rate limit exceeded (20/hour).",
+                "code": "RATE_LIMIT",
+            },
+        )
+
     # Ensure the user row exists (or create it).  We create a stub user
     # without a password hash — the invite claim flow will set the password.
     from .auth import hash_password
@@ -198,6 +213,8 @@ async def create_persona(
         persona=req.persona,
         assigned_at=now,
         assigned_by=admin,
+        audit_action="CREATED",
+        audit_old_persona=None,
     )
 
     # Fire invite email (best-effort — same pattern as invite_routes).
@@ -255,12 +272,29 @@ async def patch_persona(
     if existing is None:
         raise HTTPException(status_code=404, detail=f"no persona assignment for {username!r}")
 
+    # M-2: don't silently re-enable a disabled user. PATCH is not the
+    # enable path; admins should call POST /admin/personas/{username}/enable
+    # (follow-up issue) once that lands.
+    if existing.get("disabled_at") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": (
+                    "user is disabled — re-enable first via "
+                    "POST /admin/personas/{username}/enable"
+                ),
+                "code": "USER_DISABLED",
+            },
+        )
+
     now = datetime.now(UTC).isoformat()
     await store.upsert_persona_assignment(
         username=username,
         persona=req.persona,
         assigned_at=now,
         assigned_by=admin,
+        audit_action="CHANGED",
+        audit_old_persona=existing.get("persona"),
     )
     return PatchPersonaResponse(
         username=username,
@@ -273,16 +307,18 @@ async def patch_persona(
 @router.post("/{username}/disable", response_model=DisableResponse)
 async def disable_persona(
     username: str,
-    admin: str = Depends(require_admin),  # noqa: ARG001 — auth gate only
+    admin: str = Depends(require_admin),
     store: SqliteStore = Depends(get_store),
 ) -> DisableResponse:
     """Soft-disable a Human's persona assignment.
 
-    Sets ``disabled_at`` to now. The users row is NOT deleted — audit trail
-    is preserved. Re-enabling is done via PATCH (which clears disabled_at).
+    Sets ``disabled_at`` to now. The users row is NOT deleted — audit
+    trail is preserved. PATCH no longer silently re-enables (see M-2);
+    a future POST .../enable endpoint owns the re-enable path.
 
     404 when no assignment row exists.
     409 when the assignment is already disabled.
+    409 + code=LAST_ADMIN when disabling would leave zero active admins.
     """
     existing = await store.get_persona_assignment(username)
     if existing is None:
@@ -290,6 +326,24 @@ async def disable_persona(
     if existing.get("disabled_at") is not None:
         raise HTTPException(status_code=409, detail=f"{username!r} is already disabled")
 
+    # H-3: last-admin guard. Refuse to disable the only remaining admin
+    # so the L2 surface never loses its escape hatch.
+    if existing.get("persona") == "admin":
+        active_admins = await store.count_active_admins()
+        if active_admins <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Cannot disable the last admin.",
+                    "code": "LAST_ADMIN",
+                },
+            )
+
     now = datetime.now(UTC).isoformat()
-    await store.disable_persona_assignment(username=username, disabled_at=now)
+    await store.disable_persona_assignment(
+        username=username,
+        disabled_at=now,
+        changed_by=admin,
+        old_persona=existing.get("persona"),
+    )
     return DisableResponse(username=username, disabled_at=now)
