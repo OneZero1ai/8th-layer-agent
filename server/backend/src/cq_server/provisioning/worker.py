@@ -112,7 +112,16 @@ def _phase1_key_mint(enterprise_slug: str) -> dict[str, Any]:
         )
         _store_key_ssm_fallback(ssm_param_name, priv_b64)
 
-    return {"public_key_b64": pub_b64, "key_ssm_param": ssm_param_name}
+    # priv_b64 is included in the in-process meta dict so phase 2 can sign the
+    # /announce envelope without re-fetching from SSM. Lifetime is bounded:
+    # phase 2 runs immediately after phase 1 in the same worker task, and the
+    # dict is dropped after phase 2 returns. Re-loading via KMS asymmetric
+    # Sign API is a follow-up (see 8l-reviewer MEDIUM on KMS vs envelope).
+    return {
+        "public_key_b64": pub_b64,
+        "private_key_b64": priv_b64,
+        "key_ssm_param": ssm_param_name,
+    }
 
 
 def _store_key_kms(
@@ -186,49 +195,61 @@ def _phase2_directory_register(
     enterprise_slug: str,
     enterprise_name: str,
     public_key_b64: str,
+    private_key_b64: str,
 ) -> str:
     """Register the enterprise in the 8th-Layer directory.
 
     Decision 31 §Phase 2: POST to the directory's /api/v1/directory/announce
-    endpoint. This is the same endpoint used by the directory_client bootstrap
-    loop — here we call it synchronously (in a thread executor) for the
-    provisioned enterprise using the freshly-minted signing key.
+    endpoint with a **sign_envelope-wrapped** payload — the directory's
+    announce route validates the Ed25519 signature against the root_pubkey
+    declared inside before persisting (see directory_client._post_announce
+    for the canonical client; this function inlines the same pattern for
+    the provisioning fast-path).
 
-    HIGH #2: This was previously a no-op that fabricated a 404-ing URL. Now
-    it actually POSTs to the directory so the enterprise record exists before
-    phase 5 sends the admin invite. Raises RuntimeError on failure so the
-    state machine transitions to FAILED rather than advancing silently.
+    HIGH #2 (8l-reviewer 2026-05-12): the prior fix POSTed an unsigned
+    payload; the directory's signed-envelope validation rejects it. Now
+    constructs a real Ed25519PrivateKey from the freshly-minted material
+    and calls sign_envelope before POST.
+
+    Raises RuntimeError on failure so the state machine transitions to
+    FAILED rather than advancing silently.
 
     Returns the canonical directory record URL for inclusion in the result.
     """
     import base64
     import urllib.request
 
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from cq_server.crypto import sign_envelope
+
+    # Reconstruct the Ed25519PrivateKey from the freshly-minted bytes.
+    priv_bytes = base64.b64decode(private_key_b64)
+    privkey = Ed25519PrivateKey.from_private_bytes(priv_bytes)
+
     # Convert the raw-bytes base64 public key to base64url (no padding) as the
     # directory expects. The key was stored as standard b64; re-encode to b64url.
     pub_bytes = base64.b64decode(public_key_b64)
     pub_b64u = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode()
 
-    # Minimal announce payload — visibility public, no l2_endpoints yet
-    # (the L2 CloudFormation stack completes in phase 4 and can re-announce).
-    payload = json.dumps(
-        {
-            "enterprise_id": enterprise_slug,
-            "display_name": enterprise_name,
-            "visibility": "public",
-            "root_pubkey": pub_b64u,
-            "l2_endpoints": [],
-            "discoverable_topics": [],
-            "contact_email": "",
-            "announce_ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-    ).encode()
+    payload = {
+        "enterprise_id": enterprise_slug,
+        "display_name": enterprise_name,
+        "visibility": "public",
+        "root_pubkey": pub_b64u,
+        "l2_endpoints": [],
+        "discoverable_topics": [],
+        "contact_email": "",
+        "announce_ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    envelope = sign_envelope(privkey, payload)
+    envelope_bytes = json.dumps(envelope).encode()
 
     url = f"{_DIRECTORY_BASE_URL}/api/v1/directory/announce"
     req = urllib.request.Request(
         url,
         method="POST",
-        data=payload,
+        data=envelope_bytes,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -288,47 +309,145 @@ def _phase3_dns_provision(enterprise_slug: str) -> None:
     fqdn = f"{enterprise_slug}.8th-layer.ai"
     target = "provision.8th-layer.ai"
 
-    payload = json.dumps(
+    # 8l-reviewer NEW HIGH (2026-05-12): Cloudflare returns 400 on duplicate
+    # CNAME, so the recovery path (which restarts from phase 1) would fail
+    # on retry. Make this idempotent: list first, then POST or PATCH.
+    _cf_upsert_cname(
+        cf_token=cf_token,
+        cf_zone_id=cf_zone_id,
+        fqdn=fqdn,
+        target=target,
+        enterprise_slug=enterprise_slug,
+    )
+
+    # ACM cert: fire-and-continue — issuance is async; failure logged but not fatal.
+    _request_acm_cert_log_on_failure(fqdn)
+
+
+def _cf_upsert_cname(
+    *,
+    cf_token: str,
+    cf_zone_id: str,
+    fqdn: str,
+    target: str,
+    enterprise_slug: str,
+) -> None:
+    """Idempotent CNAME upsert against Cloudflare.
+
+    Why this exists (8l-reviewer NEW HIGH 2026-05-12): the recovery path
+    (provisioning/recovery.py) re-runs the full job from phase 1 on
+    operator-side ECS restart. A bare POST to /dns_records returns 400 on
+    duplicate, so the second run leaves a customer-side CFN stack stranded
+    with no Cloudflare reconciliation.
+
+    Strategy:
+      GET /dns_records?name=fqdn&type=CNAME
+        - 1 result + matching content → no-op (return)
+        - 1 result + different content → PATCH that record
+        - 0 results → POST a fresh record
+    """
+    # 1. List existing records of type CNAME with the target name.
+    list_url = (
+        f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records"
+        f"?type=CNAME&name={fqdn}"
+    )
+    list_req = urllib.request.Request(
+        list_url,
+        method="GET",
+        headers={"Authorization": f"Bearer {cf_token}"},
+    )
+    try:
+        with urllib.request.urlopen(list_req, timeout=15) as resp:
+            list_body = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Cloudflare CNAME list failed for {enterprise_slug}: HTTP {exc.code}"
+        ) from exc
+
+    if not list_body.get("success"):
+        raise RuntimeError(
+            f"Cloudflare CNAME list returned errors for {enterprise_slug}: "
+            f"{list_body.get('errors', [])}"
+        )
+
+    existing = list_body.get("result", [])
+
+    if existing:
+        # Update or no-op the first match. Multiple CNAMEs for the same name
+        # is invalid per RFC 1034 — Cloudflare API enforces this, so >1 row
+        # should never happen, but if it does we treat the first as canonical.
+        record = existing[0]
+        if record.get("content") == target:
+            log.info(
+                "Cloudflare CNAME already correct: %s -> %s (no-op)", fqdn, target
+            )
+            return
+
+        record_id = record["id"]
+        log.info(
+            "Cloudflare CNAME drift detected: %s -> %s (was %s); patching",
+            fqdn,
+            target,
+            record.get("content"),
+        )
+        patch_payload = json.dumps({"content": target, "proxied": True}).encode()
+        patch_req = urllib.request.Request(
+            f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}"
+            f"/dns_records/{record_id}",
+            method="PATCH",
+            data=patch_payload,
+            headers={
+                "Authorization": f"Bearer {cf_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(patch_req, timeout=15) as resp:
+                patch_body = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"Cloudflare CNAME patch failed for {enterprise_slug}: HTTP {exc.code}"
+            ) from exc
+        if not patch_body.get("success"):
+            raise RuntimeError(
+                f"Cloudflare CNAME patch returned errors for {enterprise_slug}: "
+                f"{patch_body.get('errors', [])}"
+            )
+        log.info("Cloudflare CNAME patched: %s -> %s", fqdn, target)
+        return
+
+    # 2. No existing record — POST a fresh one.
+    create_payload = json.dumps(
         {
             "type": "CNAME",
             "name": fqdn,
             "content": target,
             "proxied": True,
-            "ttl": 1,  # auto
+            "ttl": 1,
         }
     ).encode()
-
-    req = urllib.request.Request(
+    create_req = urllib.request.Request(
         f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records",
         method="POST",
-        data=payload,
+        data=create_payload,
         headers={
             "Authorization": f"Bearer {cf_token}",
             "Content-Type": "application/json",
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read())
+        with urllib.request.urlopen(create_req, timeout=15) as resp:
+            create_body = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise RuntimeError(
             f"Cloudflare CNAME create failed for {enterprise_slug}: HTTP {exc.code}"
         ) from exc
-    except Exception as exc:  # noqa: BLE001
+    if not create_body.get("success"):
         raise RuntimeError(
-            f"Cloudflare CNAME create failed for {enterprise_slug}: {exc}"
-        ) from exc
-
-    if not body.get("success"):
-        errors = body.get("errors", [])
-        raise RuntimeError(
-            f"Cloudflare CNAME create returned errors for {enterprise_slug}: {errors}"
+            f"Cloudflare CNAME create returned errors for {enterprise_slug}: "
+            f"{create_body.get('errors', [])}"
         )
-
     log.info("Cloudflare CNAME created: %s -> %s", fqdn, target)
-
-    # ACM cert: fire-and-continue — issuance is async; failure logged but not fatal.
-    _request_acm_cert_log_on_failure(fqdn)
 
 
 def _request_acm_cert_log_on_failure(domain: str) -> None:
@@ -544,16 +663,20 @@ async def run_provisioning_job(
             enterprise_slug,
         )
         public_key_b64 = key_meta.get("public_key_b64", "")
+        private_key_b64 = key_meta.get("private_key_b64", "")
 
         # Phase 2 — DIRECTORY_REGISTER
         # HIGH #2: actually registers the enterprise in the directory and
         # returns the canonical record URL used in the completion payload.
+        # The private key is passed in-process so phase 2 can sign_envelope
+        # the /announce payload (8l-reviewer 2026-05-12 follow-up).
         directory_record_url = await _phase(
             2,
             _phase2_directory_register,
             enterprise_slug,
             enterprise_name,
             public_key_b64,
+            private_key_b64,
         )
 
         # Phase 3 — DNS_PROVISION
