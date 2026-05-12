@@ -17,9 +17,14 @@ job IDs. No integer autoincrement because job IDs are generated in the
 application layer.
 
 ``enterprise_id`` is the enterprise slug string supplied by the caller.
-Checked for uniqueness by the application before inserting (no DB
-UNIQUE here because we want the application to return SLUG_TAKEN 409
-rather than a constraint error — cleaner UI message).
+A UNIQUE constraint enforces at-most-one non-FAILED job per slug at the
+DB level, closing the TOCTOU race between the application-level check
+and insert. IntegrityError is translated to SLUG_TAKEN 409 in the route
+handler (HIGH #4).
+
+``assume_role_external_id`` stores the ExternalId the customer set when
+creating the trust policy for ``marketplace_deploy_role_arn``. It is
+passed verbatim to STS AssumeRole (HIGH #1). Required; no default.
 
 ``status`` mirrors the Decision 31 state machine strings:
   PROVISIONING → KEY_MINT_IN_PROGRESS → DIRECTORY_REGISTER_IN_PROGRESS
@@ -80,8 +85,9 @@ def upgrade() -> None:
         # ``prov_<26-char-ULID>`` — application-generated, unguessable.
         sa.Column("job_id", sa.Text(), primary_key=True),
         # Enterprise slug — set at job creation; the slug the caller
-        # requested. Application checks uniqueness before insert.
-        sa.Column("enterprise_id", sa.Text(), nullable=False),
+        # requested. UNIQUE constraint enforces at-most-one non-FAILED
+        # job per slug at the DB level (HIGH #4 — closes TOCTOU race).
+        sa.Column("enterprise_id", sa.Text(), nullable=False, unique=True),
         # State-machine status string (Decision 31 §Phases).
         sa.Column("status", sa.Text(), nullable=False, default="PROVISIONING"),
         # Phase number (1–6); NULL until background task first advances.
@@ -95,6 +101,13 @@ def upgrade() -> None:
         sa.Column("result_json", sa.Text(), nullable=True),
         # sha256(client_ip) — rate-limit key only; never raw IP.
         sa.Column("ip_hash", sa.Text(), nullable=False, default=""),
+        # ExternalId for STS AssumeRole confused-deputy prevention (HIGH #1).
+        # Customer sets this in their role trust policy; we store + forward it.
+        sa.Column("assume_role_external_id", sa.Text(), nullable=False, default=""),
+        # Full job parameters as JSON (HIGH #6 crash recovery). Stores all
+        # parameters passed to run_provisioning_job so the recovery path can
+        # re-queue the job without operator re-submission.
+        sa.Column("job_params_json", sa.Text(), nullable=True),
     )
 
     # Index for rate-limit lookups: WHERE ip_hash = ? AND started_at >= ?
@@ -105,10 +118,14 @@ def upgrade() -> None:
     )
 
     # Index for enterprise uniqueness checks: WHERE enterprise_id = ?
+    # The UNIQUE column constraint above already creates an implicit index;
+    # this explicit index is kept for legacy compatibility in case the DB
+    # was created before the UNIQUE constraint was added.
     op.create_index(
         "idx_provisioning_jobs_enterprise_id",
         "provisioning_jobs",
         ["enterprise_id"],
+        unique=True,
     )
 
 

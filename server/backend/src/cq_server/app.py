@@ -45,7 +45,7 @@ from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .persona_routes import router as persona_router
-from .provisioning import router as provisioning_router
+from .provisioning import recover_stuck_jobs, router as provisioning_router
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
 from .theme_routes import router as theme_router
@@ -339,6 +339,19 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         import logging as _logging
 
         _logging.getLogger("aigrp").exception("bootstrap_root_if_needed raised; continuing")
+
+    # HIGH #6 — provisioning crash recovery. Re-queue any jobs that were
+    # in-flight when the previous ECS task restarted. Must run before the
+    # first request is served; await here (not a task) so startup blocks
+    # until recovery is complete (fast — just DB reads + task creation).
+    try:
+        await recover_stuck_jobs(_store._engine)  # noqa: SLF001
+    except Exception:  # noqa: BLE001 — recovery must never prevent startup
+        import logging as _logging
+
+        _logging.getLogger("provisioning.recovery").exception(
+            "recover_stuck_jobs raised; continuing startup"
+        )
 
     aigrp_task = None
     if aigrp.aigrp_enabled():

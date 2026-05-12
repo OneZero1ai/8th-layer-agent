@@ -22,6 +22,8 @@ import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -173,34 +175,89 @@ def _store_key_ssm_fallback(ssm_param_name: str, priv_b64: str) -> None:
 # Phase 2 — DIRECTORY_REGISTER
 # ---------------------------------------------------------------------------
 
+# URL of the 8th-Layer directory service. Defaults to the public production
+# endpoint. Override via CQ_DIRECTORY_URL for staging / local testing.
+_DIRECTORY_BASE_URL = os.environ.get(
+    "CQ_DIRECTORY_URL", "https://directory.8th-layer.ai"
+).rstrip("/")
+
 
 def _phase2_directory_register(
     enterprise_slug: str,
     enterprise_name: str,
     public_key_b64: str,
-) -> None:
-    """Register the enterprise in the cq-directory.
+) -> str:
+    """Register the enterprise in the 8th-Layer directory.
 
-    Decision 31 §Phase 2: "POST to /api/v1/enterprises on the same
-    cq-server process (in-process HTTP call or direct function call)".
+    Decision 31 §Phase 2: POST to the directory's /api/v1/directory/announce
+    endpoint. This is the same endpoint used by the directory_client bootstrap
+    loop — here we call it synchronously (in a thread executor) for the
+    provisioned enterprise using the freshly-minted signing key.
 
-    V1 uses an in-process direct function call to avoid a circular HTTP
-    round-trip. The directory record is an enterprise row in the local
-    store. If the cq-directory is a separate service in future, swap
-    this for an httpx call to the directory's /api/v1/enterprises.
+    HIGH #2: This was previously a no-op that fabricated a 404-ing URL. Now
+    it actually POSTs to the directory so the enterprise record exists before
+    phase 5 sends the admin invite. Raises RuntimeError on failure so the
+    state machine transitions to FAILED rather than advancing silently.
+
+    Returns the canonical directory record URL for inclusion in the result.
     """
-    # For now we record the enterprise intent in a local SSM tag /
-    # structured log. The actual directory integration point (separate
-    # service or local store) is a deploy-time concern. We emit a
-    # structured log event that the directory operator can pick up.
-    log.info(
-        "directory_register: enterprise_slug=%s enterprise_name=%r public_key_b64=%.16s...",
-        enterprise_slug,
-        enterprise_name,
-        public_key_b64,
+    import base64
+    import urllib.request
+
+    # Convert the raw-bytes base64 public key to base64url (no padding) as the
+    # directory expects. The key was stored as standard b64; re-encode to b64url.
+    pub_bytes = base64.b64decode(public_key_b64)
+    pub_b64u = base64.urlsafe_b64encode(pub_bytes).rstrip(b"=").decode()
+
+    # Minimal announce payload — visibility public, no l2_endpoints yet
+    # (the L2 CloudFormation stack completes in phase 4 and can re-announce).
+    payload = json.dumps(
+        {
+            "enterprise_id": enterprise_slug,
+            "display_name": enterprise_name,
+            "visibility": "public",
+            "root_pubkey": pub_b64u,
+            "l2_endpoints": [],
+            "discoverable_topics": [],
+            "contact_email": "",
+            "announce_ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    ).encode()
+
+    url = f"{_DIRECTORY_BASE_URL}/api/v1/directory/announce"
+    req = urllib.request.Request(
+        url,
+        method="POST",
+        data=payload,
+        headers={"Content-Type": "application/json"},
     )
-    # TODO(FO-2): when cq-directory is a separate HTTP service, replace
-    # this with an authenticated httpx.post() call.
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            status_code = resp.status
+            body_bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        status_code = exc.code
+        body_bytes = exc.read()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"directory announce network error for {enterprise_slug}: {exc}"
+        ) from exc
+
+    if status_code not in (200, 201):
+        body_preview = body_bytes[:200].decode(errors="replace")
+        raise RuntimeError(
+            f"directory announce rejected for {enterprise_slug}: "
+            f"status={status_code} body={body_preview!r}"
+        )
+
+    log.info(
+        "directory_register: ok enterprise_slug=%s status=%d",
+        enterprise_slug,
+        status_code,
+    )
+
+    directory_record_url = f"{_DIRECTORY_BASE_URL}/api/v1/directory/enterprises/{enterprise_slug}"
+    return directory_record_url
 
 
 # ---------------------------------------------------------------------------
@@ -209,24 +266,27 @@ def _phase2_directory_register(
 
 
 def _phase3_dns_provision(enterprise_slug: str) -> None:
-    """Create Cloudflare CNAME + fire ACM cert request.
+    """Create Cloudflare CNAME + request ACM cert.
 
     CF zone ID from SSM; falls back to hardcoded value if SSM fails.
     ACM cert request is fire-and-continue (no wait for issuance).
+
+    HIGH #8: Errors are no longer swallowed. A missing CF_API_TOKEN or a
+    failed Cloudflare API call raises RuntimeError so the state machine
+    transitions to FAILED rather than advancing silently to phase 4.
+    ACM cert failure is still logged-and-continued because ACM issuance
+    is eventually-consistent and the cert ARN is not needed until phase 4.
     """
     cf_zone_id = _get_ssm_param(SSM_CF_ZONE_ID) or CF_ZONE_ID_FALLBACK
     cf_token = os.environ.get("CF_API_TOKEN", "")
     if not cf_token:
-        log.warning(
-            "CF_API_TOKEN not set — skipping Cloudflare CNAME creation for %s",
-            enterprise_slug,
+        raise RuntimeError(
+            f"CF_API_TOKEN not set — cannot create Cloudflare CNAME for {enterprise_slug}. "
+            "Set CF_API_TOKEN in the ECS task environment."
         )
-        return
 
     fqdn = f"{enterprise_slug}.8th-layer.ai"
     target = "provision.8th-layer.ai"
-
-    import urllib.request
 
     payload = json.dumps(
         {
@@ -250,17 +310,35 @@ def _phase3_dns_provision(enterprise_slug: str) -> None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read())
-        if not body.get("success"):
-            log.warning("Cloudflare CNAME create returned errors: %s", body.get("errors"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"Cloudflare CNAME create failed for {enterprise_slug}: HTTP {exc.code}"
+        ) from exc
     except Exception as exc:  # noqa: BLE001
-        log.warning("Cloudflare CNAME create failed for %s: %s", enterprise_slug, exc)
+        raise RuntimeError(
+            f"Cloudflare CNAME create failed for {enterprise_slug}: {exc}"
+        ) from exc
 
-    # Fire ACM cert request — no wait.
-    _request_acm_cert_fire_and_forget(fqdn)
+    if not body.get("success"):
+        errors = body.get("errors", [])
+        raise RuntimeError(
+            f"Cloudflare CNAME create returned errors for {enterprise_slug}: {errors}"
+        )
+
+    log.info("Cloudflare CNAME created: %s -> %s", fqdn, target)
+
+    # ACM cert: fire-and-continue — issuance is async; failure logged but not fatal.
+    _request_acm_cert_log_on_failure(fqdn)
 
 
-def _request_acm_cert_fire_and_forget(domain: str) -> None:
-    """Request an ACM certificate. Logs; does not raise."""
+def _request_acm_cert_log_on_failure(domain: str) -> None:
+    """Request an ACM certificate. Logs on failure; does not raise.
+
+    ACM cert issuance is eventually-consistent; DNS validation may take
+    minutes. We only need the cert ARN after phase 4 (CFN stack), and the
+    stack template can reference it by domain. A failure here is not fatal
+    to the provisioning flow but is logged at WARNING so ops can follow up.
+    """
     try:
         import boto3
 
@@ -272,7 +350,7 @@ def _request_acm_cert_fire_and_forget(domain: str) -> None:
         )
         log.info("ACM cert requested for %s: %s", domain, resp.get("CertificateArn"))
     except Exception as exc:  # noqa: BLE001
-        log.warning("ACM cert request failed for %s: %s", domain, exc)
+        log.warning("ACM cert request failed for %s: %s — continuing", domain, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -288,10 +366,15 @@ def _phase4_l2_standup(
     aws_account_id: str,
     aws_region: str,
     marketplace_deploy_role_arn: str,
+    assume_role_external_id: str,
 ) -> str:
     """AssumeRole → create CFN stack → poll until STACK_COMPLETE.
 
     Returns the stack's output URL (e.g. L2 admin endpoint).
+
+    HIGH #1: ExternalId is forwarded to STS AssumeRole to prevent confused-
+    deputy attacks. The value was validated by the POST handler's pre-flight
+    AssumeRole check and stored in provisioning_jobs.
     """
     import boto3
 
@@ -301,6 +384,7 @@ def _phase4_l2_standup(
         RoleArn=marketplace_deploy_role_arn,
         RoleSessionName=f"8l-provision-{enterprise_slug}",
         DurationSeconds=3600,
+        ExternalId=assume_role_external_id,
     )
     creds = assumed["Credentials"]
 
@@ -425,6 +509,7 @@ async def run_provisioning_job(
     aws_account_id: str,
     aws_region: str,
     marketplace_deploy_role_arn: str,
+    assume_role_external_id: str,
     db_engine: Any,
 ) -> None:
     """Execute the 6-phase provisioning state machine.
@@ -461,7 +546,9 @@ async def run_provisioning_job(
         public_key_b64 = key_meta.get("public_key_b64", "")
 
         # Phase 2 — DIRECTORY_REGISTER
-        await _phase(
+        # HIGH #2: actually registers the enterprise in the directory and
+        # returns the canonical record URL used in the completion payload.
+        directory_record_url = await _phase(
             2,
             _phase2_directory_register,
             enterprise_slug,
@@ -470,6 +557,7 @@ async def run_provisioning_job(
         )
 
         # Phase 3 — DNS_PROVISION
+        # HIGH #8: errors now propagate (no more try/except/pass).
         await _phase(
             3,
             _phase3_dns_provision,
@@ -477,6 +565,7 @@ async def run_provisioning_job(
         )
 
         # Phase 4 — L2_STANDUP
+        # HIGH #1: ExternalId forwarded to AssumeRole.
         l2_admin_url = await _phase(
             4,
             _phase4_l2_standup,
@@ -484,6 +573,7 @@ async def run_provisioning_job(
             aws_account_id,
             aws_region,
             marketplace_deploy_role_arn,
+            assume_role_external_id,
         )
 
         # Phase 5 — ADMIN_INVITE_SENT
@@ -498,7 +588,8 @@ async def run_provisioning_job(
         # Phase 6 — COMPLETED
         result = {
             "enterprise_id": enterprise_slug,
-            "directory_record_url": f"https://directory.8th-layer.ai/enterprises/{enterprise_slug}",
+            # HIGH #2: use the real URL returned by phase 2, not a fabricated one.
+            "directory_record_url": directory_record_url,
             "l2_admin_url": l2_admin_url,
             **invite_meta,
         }

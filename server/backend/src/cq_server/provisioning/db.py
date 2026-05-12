@@ -30,15 +30,25 @@ def insert_job(
     status: str,
     phase: int,
     ip_hash: str,
+    assume_role_external_id: str = "",
+    job_params_json: str | None = None,
 ) -> None:
-    """Insert a new provisioning_jobs row."""
+    """Insert a new provisioning_jobs row.
+
+    Raises ``sqlalchemy.exc.IntegrityError`` when ``enterprise_id`` already
+    exists (UNIQUE constraint, HIGH #4). Callers translate that to SLUG_TAKEN.
+
+    ``job_params_json`` stores all run parameters for crash recovery (HIGH #6).
+    """
     conn.execute(
         text(
             """
             INSERT INTO provisioning_jobs
-                (job_id, enterprise_id, status, phase, started_at, ip_hash)
+                (job_id, enterprise_id, status, phase, started_at, ip_hash,
+                 assume_role_external_id, job_params_json)
             VALUES
-                (:job_id, :enterprise_id, :status, :phase, :started_at, :ip_hash)
+                (:job_id, :enterprise_id, :status, :phase, :started_at, :ip_hash,
+                 :assume_role_external_id, :job_params_json)
             """
         ),
         {
@@ -48,6 +58,8 @@ def insert_job(
             "phase": phase,
             "started_at": _now_iso(),
             "ip_hash": ip_hash,
+            "assume_role_external_id": assume_role_external_id,
+            "job_params_json": job_params_json,
         },
     )
     conn.commit()
@@ -148,6 +160,54 @@ def is_slug_taken(conn: Connection, slug: str) -> bool:
         {"slug": slug},
     ).fetchone()
     return row is not None
+
+
+def get_active_job_for_slug(conn: Connection, slug: str) -> dict[str, Any] | None:
+    """Return the most recent non-FAILED job for ``slug``, or None.
+
+    Used for idempotency (HIGH #7): if a PROVISIONING or COMPLETED job
+    already exists for this slug, return it so the caller can re-use the
+    existing job_id rather than creating duplicate AWS resources.
+    """
+    row = conn.execute(
+        text(
+            """
+            SELECT job_id, enterprise_id, status
+              FROM provisioning_jobs
+             WHERE enterprise_id = :slug
+               AND status != 'FAILED'
+             ORDER BY started_at DESC
+             LIMIT 1
+            """
+        ),
+        {"slug": slug},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def get_stuck_jobs(conn: Connection, older_than_seconds: int = 300) -> list[dict[str, Any]]:
+    """Return non-terminal jobs older than ``older_than_seconds``.
+
+    Used at startup to detect jobs orphaned by a process crash (HIGH #6).
+    Returns rows with job_id, enterprise_id, status, phase, started_at,
+    assume_role_external_id, and job_params_json so the recovery path can
+    re-queue them with all original parameters.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT job_id, enterprise_id, status, phase, started_at,
+                   assume_role_external_id, job_params_json
+              FROM provisioning_jobs
+             WHERE status NOT IN ('COMPLETED', 'FAILED')
+               AND started_at <= datetime('now', :offset)
+            """
+        ),
+        {"offset": f"-{older_than_seconds} seconds"},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
 
 
 def count_recent_requests(conn: Connection, ip_hash: str, window_seconds: int = 3600) -> int:

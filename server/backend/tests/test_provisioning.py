@@ -67,6 +67,8 @@ _VALID_BODY = {
     "aws_account_id": "123456789012",
     "aws_region": "us-east-1",
     "marketplace_deploy_role_arn": "arn:aws:iam::123456789012:role/8thLayerL2Provisioner",
+    # HIGH #1: ExternalId is now required.
+    "assume_role_external_id": "acme-external-id-8chars-min",
 }
 
 
@@ -80,14 +82,16 @@ def _make_db_engine(tmp_path: Path):
                 """
                 CREATE TABLE provisioning_jobs (
                     job_id TEXT PRIMARY KEY,
-                    enterprise_id TEXT NOT NULL,
+                    enterprise_id TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
                     phase INTEGER,
                     started_at TEXT NOT NULL,
                     completed_at TEXT,
                     error TEXT,
                     result_json TEXT,
-                    ip_hash TEXT NOT NULL DEFAULT ''
+                    ip_hash TEXT NOT NULL DEFAULT '',
+                    assume_role_external_id TEXT NOT NULL DEFAULT '',
+                    job_params_json TEXT
                 )
                 """
             )
@@ -352,7 +356,7 @@ class TestIsJobExpired:
 
 
 def _mock_assume_role_ok(*args, **kwargs) -> None:
-    """Patch _validate_assume_role to succeed."""
+    """Patch _validate_assume_role to succeed (HIGH #1: now takes external_id)."""
     pass
 
 
@@ -394,8 +398,10 @@ class TestCreateEnterpriseRoute:
         assert poll_body["job_id"] == job_id
         assert poll_body["enterprise_id"] == "acme"
 
-    def test_slug_taken_returns_409(self, client: TestClient) -> None:
-        # Create first.
+    def test_slug_taken_idempotent_returns_200(self, client: TestClient) -> None:
+        """HIGH #7: duplicate POST with same slug returns existing job (200).
+        Idempotency is the happy path; 409 only fires on a concurrent race.
+        """
         with patch(
             "cq_server.provisioning.routes._validate_assume_role",
             side_effect=_mock_assume_role_ok,
@@ -403,18 +409,37 @@ class TestCreateEnterpriseRoute:
             "cq_server.provisioning.routes._run_job_background",
             return_value=None,
         ):
-            client.post("/api/v1/enterprises", json=_VALID_BODY)
-        # Duplicate slug.
+            resp1 = client.post("/api/v1/enterprises", json=_VALID_BODY)
+            resp2 = client.post("/api/v1/enterprises", json=_VALID_BODY)
+        assert resp1.status_code == 200, resp1.text
+        assert resp2.status_code == 200, resp2.text
+        assert resp1.json()["job_id"] == resp2.json()["job_id"], (
+            "Duplicate POST must return the same job_id (idempotency)"
+        )
+
+    def test_slug_taken_race_condition_returns_409(self, client: TestClient) -> None:
+        """HIGH #4: UNIQUE constraint violation (concurrent race) returns 409 SLUG_TAKEN."""
+        from sqlalchemy.exc import IntegrityError
+
         with patch(
             "cq_server.provisioning.routes._validate_assume_role",
             side_effect=_mock_assume_role_ok,
         ), patch(
             "cq_server.provisioning.routes._run_job_background",
             return_value=None,
+        ), patch(
+            "cq_server.provisioning.routes.get_active_job_for_slug",
+            return_value=None,  # simulate idempotency check missing (race window)
+        ), patch(
+            "cq_server.provisioning.routes.insert_job",
+            side_effect=IntegrityError("UNIQUE constraint failed", None, None),
         ):
             resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
         assert resp.status_code == 409, resp.text
-        assert resp.json()["code"] == "SLUG_TAKEN"
+        body = resp.json()
+        assert body["code"] == "SLUG_TAKEN"
+        # HIGH #3: slug must NOT appear in the response body.
+        assert _VALID_BODY["enterprise_slug"] not in json.dumps(body)
 
     def test_role_not_assumable_returns_403(self, client: TestClient) -> None:
         with patch(
@@ -612,3 +637,220 @@ class TestProvisioningJobLifecycleSmoke:
         assert row["status"] == "FAILED"
         assert "CFN" in row["error"]
         assert row["completed_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests for HIGH security findings
+# ---------------------------------------------------------------------------
+
+
+class TestHigh1ExternalId:
+    """HIGH #1 — AssumeRole must require assume_role_external_id."""
+
+    def test_missing_external_id_returns_422(self, client: TestClient) -> None:
+        body = {k: v for k, v in _VALID_BODY.items() if k != "assume_role_external_id"}
+        resp = client.post("/api/v1/enterprises", json=body)
+        assert resp.status_code == 422, resp.text
+
+    def test_short_external_id_returns_422(self, client: TestClient) -> None:
+        body = {**_VALID_BODY, "assume_role_external_id": "short"}
+        resp = client.post("/api/v1/enterprises", json=body)
+        assert resp.status_code == 422, resp.text
+
+    def test_external_id_forwarded_to_assume_role(self, client: TestClient) -> None:
+        """_validate_assume_role is called with the external_id value."""
+        captured: dict = {}
+
+        def _capture(role_arn: str, slug: str, external_id: str) -> None:
+            captured["external_id"] = external_id
+
+        with patch(
+            "cq_server.provisioning.routes._validate_assume_role",
+            side_effect=_capture,
+        ), patch(
+            "cq_server.provisioning.routes._run_job_background",
+            return_value=None,
+        ):
+            resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        assert captured.get("external_id") == _VALID_BODY["assume_role_external_id"]
+
+
+class TestHigh3SlugTakenResponse:
+    """HIGH #3 — SLUG_TAKEN must not echo the slug in the error body."""
+
+    def test_slug_taken_response_body_generic(self, client: TestClient) -> None:
+        """409 SLUG_TAKEN body must be generic — no slug echoed back."""
+        from sqlalchemy.exc import IntegrityError
+
+        # Simulate a concurrent-race 409 by bypassing idempotency check.
+        with patch(
+            "cq_server.provisioning.routes._validate_assume_role",
+            side_effect=_mock_assume_role_ok,
+        ), patch(
+            "cq_server.provisioning.routes._run_job_background",
+            return_value=None,
+        ), patch(
+            "cq_server.provisioning.routes.get_active_job_for_slug",
+            return_value=None,
+        ), patch(
+            "cq_server.provisioning.routes.insert_job",
+            side_effect=IntegrityError("UNIQUE constraint failed", None, None),
+        ):
+            resp = client.post("/api/v1/enterprises", json=_VALID_BODY)
+        assert resp.status_code == 409, resp.text
+        body = resp.json()
+        assert body["code"] == "SLUG_TAKEN"
+        # HIGH #3: slug must NOT appear in the response body.
+        assert _VALID_BODY["enterprise_slug"] not in json.dumps(body)
+        # Generic message only.
+        assert "not available" in body.get("error", "") or "not available" in body.get("message", "")
+
+
+class TestHigh5RateLimitTrustedProxy:
+    """HIGH #5 — X-Forwarded-For only trusted from known proxy IPs."""
+
+    def test_spoofed_xff_not_trusted_without_config(self, client: TestClient) -> None:
+        """Without PROVISIONING_TRUSTED_PROXY_IPS, XFF is ignored."""
+        import cq_server.provisioning.routes as routes_mod
+
+        # Temporarily clear trusted proxies.
+        original = routes_mod._TRUSTED_PROXY_IPS
+        routes_mod._TRUSTED_PROXY_IPS = frozenset()
+        try:
+            # Spoof an XFF header as if from a trusted proxy.
+            with patch("cq_server.provisioning.routes._RATE_LIMIT_MAX", 1), patch(
+                "cq_server.provisioning.routes._validate_assume_role",
+                side_effect=_mock_assume_role_ok,
+            ), patch(
+                "cq_server.provisioning.routes._run_job_background",
+                return_value=None,
+            ):
+                resp1 = client.post(
+                    "/api/v1/enterprises",
+                    json={**_VALID_BODY, "enterprise_slug": "xff-test1"},
+                    headers={"X-Forwarded-For": "1.2.3.4"},
+                )
+                resp2 = client.post(
+                    "/api/v1/enterprises",
+                    json={**_VALID_BODY, "enterprise_slug": "xff-test2"},
+                    headers={"X-Forwarded-For": "9.9.9.9"},  # different spoofed IP
+                )
+            # Both requests share the same real transport IP → rate limit fires on 2nd.
+            assert resp2.status_code == 429, resp2.text
+        finally:
+            routes_mod._TRUSTED_PROXY_IPS = original
+
+
+class TestHigh7Idempotency:
+    """HIGH #7 — duplicate POST returns existing job, not a new one."""
+
+    def test_duplicate_post_returns_existing_job_id(self, client: TestClient) -> None:
+        with patch(
+            "cq_server.provisioning.routes._validate_assume_role",
+            side_effect=_mock_assume_role_ok,
+        ), patch(
+            "cq_server.provisioning.routes._run_job_background",
+            return_value=None,
+        ):
+            resp1 = client.post("/api/v1/enterprises", json=_VALID_BODY)
+            resp2 = client.post("/api/v1/enterprises", json=_VALID_BODY)
+
+        assert resp1.status_code == 200, resp1.text
+        assert resp2.status_code == 200, resp2.text
+        assert resp1.json()["job_id"] == resp2.json()["job_id"], (
+            "Duplicate POST must return the same job_id, not a new one"
+        )
+
+    def test_duplicate_post_does_not_call_validate_twice(self, client: TestClient) -> None:
+        """Second POST returns the existing job without re-running AssumeRole validation."""
+        call_count = {"n": 0}
+
+        def _counting_ok(*args, **kwargs) -> None:
+            call_count["n"] += 1
+
+        with patch(
+            "cq_server.provisioning.routes._validate_assume_role",
+            side_effect=_counting_ok,
+        ), patch(
+            "cq_server.provisioning.routes._run_job_background",
+            return_value=None,
+        ):
+            client.post("/api/v1/enterprises", json=_VALID_BODY)
+            client.post("/api/v1/enterprises", json=_VALID_BODY)
+
+        # AssumeRole validation only fires once (on the first POST).
+        assert call_count["n"] == 1, "AssumeRole should only be called once for idempotent requests"
+
+
+class TestHigh4UniqueConstraint:
+    """HIGH #4 — UNIQUE constraint on enterprise_id in the DB layer."""
+
+    def test_integrity_error_on_duplicate_insert(self, db_engine) -> None:
+        """Direct insert of duplicate enterprise_id raises IntegrityError."""
+        from sqlalchemy.exc import IntegrityError
+
+        job_id_1 = generate_job_id()
+        job_id_2 = generate_job_id()
+        with db_engine.connect() as conn:
+            insert_job(
+                conn,
+                job_id=job_id_1,
+                enterprise_id="dup-slug",
+                status="PROVISIONING",
+                phase=0,
+                ip_hash="x",
+            )
+        with pytest.raises(IntegrityError):
+            with db_engine.connect() as conn:
+                insert_job(
+                    conn,
+                    job_id=job_id_2,
+                    enterprise_id="dup-slug",
+                    status="PROVISIONING",
+                    phase=0,
+                    ip_hash="x",
+                )
+
+
+class TestHigh8Phase3ErrorPropagation:
+    """HIGH #8 — phase 3 errors must propagate, not be swallowed."""
+
+    def test_missing_cf_token_raises(self) -> None:
+        """_phase3_dns_provision raises RuntimeError when CF_API_TOKEN is absent."""
+        import os
+
+        from cq_server.provisioning.worker import _phase3_dns_provision
+
+        env_backup = os.environ.pop("CF_API_TOKEN", None)
+        try:
+            with pytest.raises(RuntimeError, match="CF_API_TOKEN"):
+                _phase3_dns_provision("test-slug")
+        finally:
+            if env_backup is not None:
+                os.environ["CF_API_TOKEN"] = env_backup
+
+    def test_cloudflare_http_error_raises(self) -> None:
+        """_phase3_dns_provision raises RuntimeError on Cloudflare HTTP error."""
+        import os
+        import urllib.error
+
+        from cq_server.provisioning.worker import _phase3_dns_provision
+
+        os.environ["CF_API_TOKEN"] = "fake-token"
+        try:
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.HTTPError(
+                    url="https://api.cloudflare.com/...",
+                    code=400,
+                    msg="Bad Request",
+                    hdrs=None,  # type: ignore[arg-type]
+                    fp=None,  # type: ignore[arg-type]
+                ),
+            ):
+                with pytest.raises(RuntimeError, match="Cloudflare"):
+                    _phase3_dns_provision("test-slug")
+        finally:
+            os.environ.pop("CF_API_TOKEN", None)

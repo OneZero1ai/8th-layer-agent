@@ -13,6 +13,7 @@
 Endpoint contract: Decision 31 — FO-2 ↔ FO-2-backend handshake contract.
 """
 
+from .recovery import recover_stuck_jobs
 from .routes import router
 
-__all__ = ["router"]
+__all__ = ["recover_stuck_jobs", "router"]

@@ -79,6 +79,18 @@ class CreateEnterpriseRequest(BaseModel):
     aws_account_id: str
     aws_region: str
     marketplace_deploy_role_arn: str
+    # HIGH #1: ExternalId prevents confused-deputy attacks. The customer
+    # sets this value when creating the IAM role trust policy in their
+    # account; we require and store it, then pass it through AssumeRole.
+    # Minimum 8 characters; opaque to us.
+    assume_role_external_id: str = Field(
+        min_length=8,
+        max_length=1224,
+        description=(
+            "ExternalId you set in the trust policy of marketplace_deploy_role_arn. "
+            "Required to prevent confused-deputy attacks."
+        ),
+    )
 
     @field_validator("enterprise_slug")
     @classmethod

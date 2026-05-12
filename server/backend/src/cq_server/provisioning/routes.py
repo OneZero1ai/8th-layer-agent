@@ -12,7 +12,6 @@ Error envelopes follow Decision 31 §Error envelopes:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from .db import (
     count_recent_requests,
+    get_active_job_for_slug,
     get_job,
     insert_job,
     is_job_expired,
@@ -46,16 +46,37 @@ router = APIRouter(tags=["provisioning"])
 _RATE_LIMIT_MAX = int(os.environ.get("PROVISIONING_RATE_LIMIT_MAX", "10"))
 _RATE_LIMIT_WINDOW_SEC = int(os.environ.get("PROVISIONING_RATE_LIMIT_WINDOW_SEC", "3600"))
 
+# HIGH #5: Only trust X-Forwarded-For from known proxy/load-balancer CIDRs.
+# Set PROVISIONING_TRUSTED_PROXY_IPS as a comma-separated list of IPs (exact
+# match, not CIDR expansion) that are known to set X-Forwarded-For correctly.
+# When empty, X-Forwarded-For is never trusted; request.client.host is used.
+# In production behind AWS ALB, add the ALB source IPs here.
+_TRUSTED_PROXY_IPS: frozenset[str] = frozenset(
+    ip.strip()
+    for ip in os.environ.get("PROVISIONING_TRUSTED_PROXY_IPS", "").split(",")
+    if ip.strip()
+)
+
 
 def _ip_hash(request: Request) -> str:
-    """Return a sha256 hash of the client IP (Decision 31 §ip_hash).
+    """Return a sha256 hash of the real client IP (Decision 31 §ip_hash).
 
-    Uses X-Forwarded-For when present (ALB terminates TLS and sets this);
-    falls back to the raw client host.
+    HIGH #5: X-Forwarded-For is only trusted when the immediate caller
+    (request.client.host) is in the PROVISIONING_TRUSTED_PROXY_IPS allowlist.
+    If no trusted proxies are configured, or the caller is not a known proxy,
+    the raw transport IP is used directly — preventing spoofed-header bypass.
     """
-    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-    raw_ip = forwarded or (request.client.host if request.client else "unknown")
-    return hashlib.sha256(raw_ip.encode()).hexdigest()
+    raw_client_host = request.client.host if request.client else "unknown"
+    if raw_client_host in _TRUSTED_PROXY_IPS:
+        # The immediate caller is a trusted proxy; take the leftmost (client)
+        # IP from X-Forwarded-For. The rightmost entry would be the proxy
+        # itself; the leftmost is the original client.
+        forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        real_ip = forwarded if forwarded else raw_client_host
+    else:
+        # No trusted proxy or unknown caller — use transport IP directly.
+        real_ip = raw_client_host
+    return hashlib.sha256(real_ip.encode()).hexdigest()
 
 
 def _error(code: str, error: str, detail: str = "", status: int = 400) -> JSONResponse:
@@ -111,17 +132,26 @@ async def create_enterprise(
                 status=429,
             )
 
-        # Slug uniqueness.
-        if is_slug_taken(conn, body.enterprise_slug):
-            return _error(
-                "SLUG_TAKEN",
-                f"The enterprise slug '{body.enterprise_slug}' is already taken.",
-                status=409,
+        # HIGH #7: Idempotency — if a non-FAILED job already exists for this
+        # slug, return the existing job_id and poll_url without creating new
+        # AWS resources. This handles network retries and double-submits.
+        existing = get_active_job_for_slug(conn, body.enterprise_slug)
+        if existing is not None:
+            existing_job_id = existing["job_id"]
+            return CreateEnterpriseResponse(
+                job_id=existing_job_id,
+                enterprise_id=body.enterprise_slug,
+                status=existing["status"],
+                poll_url=f"/api/v1/enterprises/jobs/{existing_job_id}",
             )
 
     # AssumeRole validation — must succeed before we accept the request.
     try:
-        _validate_assume_role(body.marketplace_deploy_role_arn, body.enterprise_slug)
+        _validate_assume_role(
+            body.marketplace_deploy_role_arn,
+            body.enterprise_slug,
+            body.assume_role_external_id,
+        )
     except Exception as exc:  # noqa: BLE001
         return _error(
             "ROLE_NOT_ASSUMABLE",
@@ -133,15 +163,44 @@ async def create_enterprise(
     job_id = generate_job_id()
     poll_url = f"/api/v1/enterprises/jobs/{job_id}"
 
-    with engine.connect() as conn:
-        insert_job(
-            conn,
-            job_id=job_id,
-            enterprise_id=body.enterprise_slug,
-            status="PROVISIONING",
-            phase=0,
-            ip_hash=ip_hash,
-        )
+    # Serialize all job parameters for crash recovery (HIGH #6).
+    job_params = json.dumps({
+        "enterprise_slug": body.enterprise_slug,
+        "enterprise_name": body.enterprise_name,
+        "admin_email": body.admin_email,
+        "aws_account_id": body.aws_account_id,
+        "aws_region": body.aws_region,
+        "marketplace_deploy_role_arn": body.marketplace_deploy_role_arn,
+        "assume_role_external_id": body.assume_role_external_id,
+    })
+
+    try:
+        with engine.connect() as conn:
+            insert_job(
+                conn,
+                job_id=job_id,
+                enterprise_id=body.enterprise_slug,
+                status="PROVISIONING",
+                phase=0,
+                ip_hash=ip_hash,
+                assume_role_external_id=body.assume_role_external_id,
+                job_params_json=job_params,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # HIGH #4: UNIQUE constraint on enterprise_id fires when a concurrent
+        # request raced past the idempotency check above. Translate to SLUG_TAKEN.
+        # Also catches genuine duplicate-slug inserts (TOCTOU window closed).
+        from sqlalchemy.exc import IntegrityError
+
+        if isinstance(exc, IntegrityError):
+            # HIGH #3: Do not echo the slug in the error body — avoids
+            # enumerating the customer roster via error messages.
+            return _error(
+                "SLUG_TAKEN",
+                "This slug is not available.",
+                status=409,
+            )
+        raise
 
     # Kick off the background provisioning job.
     background_tasks.add_task(
@@ -153,6 +212,7 @@ async def create_enterprise(
         aws_account_id=body.aws_account_id,
         aws_region=body.aws_region,
         marketplace_deploy_role_arn=body.marketplace_deploy_role_arn,
+        assume_role_external_id=body.assume_role_external_id,
         engine=engine,
     )
 
@@ -227,11 +287,19 @@ async def get_provisioning_job(
 # ---------------------------------------------------------------------------
 
 
-def _validate_assume_role(role_arn: str, enterprise_slug: str) -> None:
+def _validate_assume_role(
+    role_arn: str,
+    enterprise_slug: str,
+    external_id: str,
+) -> None:
     """Attempt sts:AssumeRole to validate the ARN before accepting the request.
 
     Decision 31: backend MUST sts:AssumeRole against marketplace_deploy_role_arn
     to validate before accepting.
+
+    HIGH #1: ExternalId is required and forwarded to STS to prevent confused-
+    deputy attacks. The customer must set the same ExternalId in their role's
+    trust policy condition; without it AssumeRole will be denied.
 
     Raises RuntimeError on failure.
     """
@@ -244,6 +312,7 @@ def _validate_assume_role(role_arn: str, enterprise_slug: str) -> None:
             RoleArn=role_arn,
             RoleSessionName=f"8l-validate-{enterprise_slug}",
             DurationSeconds=900,
+            ExternalId=external_id,
         )
     except botocore.exceptions.ClientError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -258,6 +327,7 @@ async def _run_job_background(
     aws_account_id: str,
     aws_region: str,
     marketplace_deploy_role_arn: str,
+    assume_role_external_id: str,
     engine: Any,
 ) -> None:
     """Thin async wrapper that calls the provisioning worker."""
@@ -272,6 +342,7 @@ async def _run_job_background(
             aws_account_id=aws_account_id,
             aws_region=aws_region,
             marketplace_deploy_role_arn=marketplace_deploy_role_arn,
+            assume_role_external_id=assume_role_external_id,
             db_engine=engine,
         )
     except Exception:  # noqa: BLE001
