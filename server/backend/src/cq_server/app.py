@@ -39,7 +39,9 @@ from .invite_routes import router as invite_router
 from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
+from .persona_routes import router as persona_router
 from .provisioning import recover_stuck_jobs
+from .provisioning import router as provisioning_router
 from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
@@ -426,6 +428,10 @@ api_router.include_router(activity_router)
 api_router.include_router(crosstalk_router)
 api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
+# FO-2-backend (#228) — anonymous Enterprise provisioning endpoints.
+api_router.include_router(provisioning_router)
+# AS-1 (#229) — admin Personas CRUD endpoints.
+api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
