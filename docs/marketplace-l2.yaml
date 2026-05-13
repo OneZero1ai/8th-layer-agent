@@ -76,6 +76,20 @@ Parameters:
       role. Carried in the stack for documentation/audit only — it is
       NOT used at runtime by any resource in this template.
 
+  AdminEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^@]+@[^@]+\\..+$"
+    Description: |
+      Email of the enterprise founder / first admin. On first boot the
+      cq-server task reads this via the CQ_INITIAL_ADMIN_EMAIL env and
+      mints a magic-link invite (role=enterprise_admin) so they can
+      claim → register a passkey → land in the admin UI. Optional:
+      empty disables the bootstrap hook (useful for headless test
+      deploys). Surfaced in CloudWatch logs with the literal
+      "[BOOTSTRAP_ADMIN]" sentinel — operators grep that to find the
+      magic link until SES from inside the customer account is wired.
+
 Resources:
   # =====================================================================
   # SECRETS — auto-generated, stored in Secrets Manager, mounted to the
@@ -403,6 +417,12 @@ Resources:
             - { Name: CQ_DIRECTORY_PULL_INTERVAL_SEC, Value: "60" }
             - { Name: CQ_AIGRP_IS_FIRST_DEPLOY, Value: "true" }
             - { Name: CQ_AIGRP_SEED_PEER_URL, Value: "" }
+            # P2.5 first-admin bootstrap: cq-server reads this on first
+            # boot and mints a magic-link invite for the address.
+            - { Name: CQ_INITIAL_ADMIN_EMAIL, Value: !Ref AdminEmail }
+            # Public base used to render the absolute magic-link URL in
+            # the CloudWatch log line. Slug → wizard contract.
+            - { Name: CQ_PUBLIC_BASE_URL, Value: !Sub "https://${EnterpriseSlug}.8th-layer.ai" }
           Secrets:
             - { Name: CQ_JWT_SECRET,      ValueFrom: !Ref JwtSecret }
             - { Name: CQ_API_KEY_PEPPER,  ValueFrom: !Ref ApiKeyPepper }
