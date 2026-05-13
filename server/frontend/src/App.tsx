@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
 import { ApiKeysPage } from "./pages/ApiKeysPage"
 import { DashboardPage } from "./pages/DashboardPage"
+import { InvitesPage } from "./pages/InvitesPage"
 import { LoginPage } from "./pages/LoginPage"
 import { NetworkPage } from "./pages/NetworkPage"
 import { PersonasPage } from "./pages/PersonasPage"
@@ -32,6 +33,7 @@ function AppRoutes() {
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
         <Route path="/admin/personas" element={<PersonasPage />} />
+        <Route path="/admin/invites" element={<InvitesPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/review" replace />} />
     </Routes>
