@@ -23,7 +23,7 @@ from typing import Any
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from . import aigrp
@@ -405,19 +405,32 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-async def login(request: LoginRequest, store: SqliteStore = Depends(get_store)) -> LoginResponse:
-    """Authenticate a user and return a JWT token.
+async def login(
+    request: LoginRequest,
+    response: Response,
+    store: SqliteStore = Depends(get_store),
+) -> LoginResponse:
+    """Authenticate a user, set the cq_session cookie, and return a JWT.
+
+    Post-FO-1d the React admin app reads its session from the
+    HttpOnly cookie rather than localStorage (#199). The JWT in the
+    response body is kept for non-browser callers (curl scripts, the
+    8l-cli) that send ``Authorization: Bearer`` instead.
 
     Args:
         request: Login credentials.
+        response: FastAPI response — used to set the session cookie.
         store: The store dependency.
 
     Returns:
-        A LoginResponse with a signed JWT and the username.
+        A LoginResponse with a signed JWT + username. Browsers don't
+        need to read the JWT; the cookie carries the session.
 
     Raises:
         HTTPException: With status 401 if credentials are invalid.
     """
+    from .web_session import mint_session_cookie
+
     user = await store.get_user(request.username)
     if user is None or not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
@@ -425,12 +438,11 @@ async def login(request: LoginRequest, store: SqliteStore = Depends(get_store)) 
     assignment = await store.get_persona_assignment(request.username)
     if assignment is not None and assignment.get("disabled_at") is not None:
         raise HTTPException(status_code=403, detail="user is disabled")
-    token = create_token(
-        request.username,
-        secret=_get_jwt_secret(),
-        aud=SESSION_AUDIENCE,
-    )
-    return LoginResponse(token=token, username=request.username)
+    # Set the HttpOnly + SameSite=Lax cq_session cookie. Without this
+    # the post-#199 React app has no way to authenticate subsequent
+    # requests — localStorage token storage was removed by FO-1d.
+    session_token = mint_session_cookie(response, username=request.username)
+    return LoginResponse(token=session_token, username=request.username)
 
 
 @dataclass
