@@ -242,7 +242,7 @@ async def claim_page(
   <div class="brand">8th-Layer.ai</div>
   <div class="card">
     <h1>Accept your invitation</h1>
-    <p class="lede">Choose a username and password to finish creating your account.</p>
+    <p class="lede">Set a password to finish creating your account. You&apos;ll sign in with your email.</p>
     <dl class="meta">
       <dt>Email</dt><dd>{safe_email}</dd>
       <dt>Role</dt><dd>{safe_role}</dd>
@@ -250,10 +250,11 @@ async def claim_page(
       <dt>Invited by</dt><dd>{safe_inviter}</dd>
     </dl>
     <form id="claim" method="post" action="/api/v1/invites/{safe_token}/claim" autocomplete="off">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" required minlength="1" maxlength="64" autofocus>
+      <!-- Hidden username for password-manager hints — agent#249. -->
+      <input type="email" name="email" value="{safe_email}" autocomplete="username" readonly hidden>
       <label for="password">Password</label>
-      <input id="password" name="password" type="password" required minlength="8" maxlength="128">
+      <input id="password" name="password" type="password" required minlength="8" maxlength="128"
+             autocomplete="new-password" autofocus>
       <button type="submit">Create account</button>
       <div class="error" id="err"></div>
     </form>
@@ -275,7 +276,6 @@ async def claim_page(
         credentials: 'same-origin',
         headers: {{ 'Content-Type': 'application/json', 'Accept': 'application/json' }},
         body: JSON.stringify({{
-          username: form.username.value,
           password: form.password.value
         }})
       }});

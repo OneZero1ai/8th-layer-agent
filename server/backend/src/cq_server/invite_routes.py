@@ -140,12 +140,17 @@ class ClaimMetadata(BaseModel):
 class ClaimRequest(BaseModel):
     """Body for ``POST /invites/{jwt}/claim``.
 
-    V1 only: username + password. Passkey enrollment is a follow-up
-    step in FO-1d (the WebAuthn ``register`` flow). The session bearer
+    V1 only: password. Username is server-determined from the invite's
+    email so password managers can't silently override it (agent#249).
+    Passkey enrollment is a follow-up step in FO-1d. The session bearer
     returned here lets the user reach FO-1d's enrollment endpoint.
+
+    ``username`` is accepted but IGNORED — kept for backward compat
+    with any caller that still sends it; the server always sets
+    ``username = invite.email``.
     """
 
-    username: str = Field(min_length=1, max_length=64)
+    username: str | None = Field(default=None, min_length=1, max_length=64)
     password: str = Field(min_length=8, max_length=128)
 
 
@@ -377,9 +382,15 @@ async def claim_invite_route(
             raise HTTPException(status_code=409, detail="invite already claimed")
         raise HTTPException(status_code=410, detail="invite expired")
 
+    # agent#249: username is always the invite email — server-determined,
+    # not form-submitted. This kills the password-manager-overrides-username
+    # failure mode where claim succeeds but the user can't log in afterward
+    # because they don't know what got auto-filled.
+    canonical_username = metadata.email
+
     user_id = await ensure_user(
         store,
-        username=request.username,
+        username=canonical_username,
         password=request.password,
         email=metadata.email,
     )
@@ -388,14 +399,14 @@ async def claim_invite_route(
     if outcome.kind == "ok":
         # H-1: refuse session minting when this user's persona is soft-disabled.
         # An invite issued before disable shouldn't let the user back in.
-        assignment = await store.get_persona_assignment(request.username)
+        assignment = await store.get_persona_assignment(canonical_username)
         if assignment is not None and assignment.get("disabled_at") is not None:
             raise HTTPException(status_code=403, detail="user is disabled")
         # FO-1c: set the session cookie + return the bearer in the body.
         # The HTML claim page navigates to "/" after this; the browser
         # sends the cookie along, so the user lands authenticated.
-        session = mint_session_cookie(response, username=request.username)
-        return ClaimResponse(token=session, username=request.username)
+        session = mint_session_cookie(response, username=canonical_username)
+        return ClaimResponse(token=session, username=canonical_username)
     if outcome.kind == "already_claimed":
         raise HTTPException(status_code=409, detail="invite already claimed")
     if outcome.kind == "revoked":

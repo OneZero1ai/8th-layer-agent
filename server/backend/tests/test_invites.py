@@ -437,11 +437,13 @@ class TestPublicClaimHTTP:
 
         claim_resp = client.post(
             f"/api/v1/invites/{token}/claim",
-            json={"username": "newcomer", "password": "password123"},
+            json={"password": "password123"},
         )
         assert claim_resp.status_code == 200, claim_resp.text
         claim_body = claim_resp.json()
-        assert claim_body["username"] == "newcomer"
+        # agent#249: username is always the invite email, server-determined.
+        # A submitted `username` body field is ignored.
+        assert claim_body["username"] == INVITEE_EMAIL
         assert claim_body["token"]
         # FO-1c: claim response sets cq_session cookie.
         assert "cq_session" in claim_resp.cookies
