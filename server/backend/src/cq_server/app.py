@@ -339,6 +339,22 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
         _logging.getLogger("aigrp").exception("bootstrap_root_if_needed raised; continuing")
 
+    # P2.5 (task #218) — first-admin bootstrap. On a freshly-provisioned
+    # marketplace L2, users table is empty + CQ_INITIAL_ADMIN_EMAIL is
+    # passed via the CFN template. Mint a pending invite for that email
+    # so the founder can claim → register passkey → land in admin UI.
+    # Idempotent: skipped when any non-system user already exists.
+    from .bootstrap_admin import bootstrap_first_admin_if_needed
+
+    try:
+        await bootstrap_first_admin_if_needed(_store)
+    except Exception:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger("bootstrap_admin").exception(
+            "bootstrap_first_admin_if_needed raised; continuing without first-admin invite"
+        )
+
     # Provisioning crash recovery moved to 8th-layer-directory per
     # agent#239 — the Enterprise Provisioning Service is now hosted in
     # the directory process. Running L2s retain the dormant
