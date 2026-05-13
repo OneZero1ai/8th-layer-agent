@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  8th-Layer.ai customer-side deploy role. Run this in your AWS account
+  to create the IAM role you paste into the sign-up wizard as your
+  "Deploy role ARN". The wizard ExternalId field and the
+  ProvisionerExternalId parameter below MUST match.
+
+  The role grants the 8th-Layer.ai provisioning service (running as
+  arn:aws:iam::124074140789:role/cq-directory-TaskRole-bSrWDXFvmr1q)
+  permission to instantiate a single CloudFormation stack — the L2
+  marketplace template — in your account. AssumeRole is gated by the
+  ExternalId confused-deputy protection.
+
+  The trust policy is the security boundary. The permissions block is
+  scoped to exactly what the L2 marketplace template creates: VPC +
+  networking, ECS + Fargate, EFS, ALB, IAM (for the L2's task roles),
+  CloudWatch Logs, and Secrets Manager.
+
+Parameters:
+  ProvisionerExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 22
+    Description: >
+      Paste the same value you set as "ExternalId" in the sign-up
+      wizard. The wizard's Generate UUID button produces a value of
+      sufficient entropy. Anyone who knows both your role ARN AND
+      this ExternalId can trigger a provisioning run — keep it secret.
+
+Resources:
+  L2ProvisionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 8thLayerL2Provisioner
+      Description: |
+        8th-Layer.ai marketplace L2 deploy role. Assumed by the 8th-Layer
+        provisioning service (account 124074140789) to stand up your L2.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::124074140789:role/cq-directory-TaskRole-bSrWDXFvmr1q
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ProvisionerExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      Policies:
+        - PolicyName: L2StackResources
+          # ---------------------------------------------------------------
+          # Permission shape is service-level wildcards for the resources
+          # the marketplace template creates. We previously enumerated
+          # every action, but the enumeration is a maintenance trap —
+          # !GetAtt-style resolutions can call non-obvious describe APIs
+          # (e.g. EFS::FileSystem.Arn calls
+          # elasticfilesystem:DescribeFileSystemPolicy, not just
+          # DescribeFileSystems) and every miss is a rollback. The
+          # service prefixes here all correspond to resource types
+          # present in the marketplace template — nothing broader.
+          #
+          # IAM is the one exception: scoped to role/8th-layer-l2-* so
+          # the role can ONLY manage roles we explicitly name with this
+          # prefix in the marketplace template.
+          # ---------------------------------------------------------------
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - ecs:*
+                  - elasticloadbalancing:*
+                  - elasticfilesystem:*
+                  - logs:*
+                  - secretsmanager:*
+                Resource: "*"
+              # IAM scoped by name pattern. The marketplace template
+              # explicitly names task roles `8th-layer-l2-<slug>-task*`
+              # so this prefix is sufficient.
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/8th-layer-l2-*"
+
+Outputs:
+  RoleArn:
+    Description: |
+      Paste this ARN into the sign-up wizard's "Deploy role ARN" field.
+    Value: !GetAtt L2ProvisionerRole.Arn
