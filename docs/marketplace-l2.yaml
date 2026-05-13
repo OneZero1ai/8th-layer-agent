@@ -1,0 +1,529 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  8th-Layer.ai Marketplace L2 stack — stands up a complete, healthy cq-server
+  instance (the customer's Layer-2 semantic backbone) in the customer's AWS
+  account. Instantiated by the 8th-Layer.ai Enterprise Provisioning Service
+  during phase 4 of the 6-phase async provisioning state machine
+  (FO-2-backend; see docs/decisions/31-fo-2-provisioning-contract.md on
+  OneZero1ai/8th-layer-core).
+
+  Footprint:
+    - Dedicated VPC (10.0.0.0/16) + 2 public subnets across 2 AZs + IGW.
+    - ALB (HTTP/80, internet-facing) → ECS Fargate task (port 3000) → EFS
+      (SQLite at /data/cq.db).
+    - HTTPS termination is handled by Cloudflare in front of the ALB; the
+      stack does not request an ACM cert for the ALB itself.
+    - Auto-generated secrets (JWT, API key pepper, AIGRP peer key) via
+      Secrets Manager so the L2 boots fully self-contained.
+
+  Cost: ~$30-40/mo continuous (ALB ~$20, Fargate 0.5 vCPU/1 GB ~$15,
+  EFS minimal ~$1, traffic).
+
+Parameters:
+  EnterpriseSlug:
+    Type: String
+    Description: |
+      URL-safe enterprise slug — used as identifier + subdomain prefix
+      (e.g. "acme" → acme.8th-layer.ai). Must match the slug registered
+      with the 8th-Layer directory in phase 2.
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{2,62}$"
+    ConstraintDescription: 3-63 chars, lowercase alphanumeric + hyphen.
+
+  AwsRegion:
+    Type: String
+    Default: us-east-1
+    Description: |
+      Region the L2 lives in. Echoed for documentation; the stack itself
+      is region-pinned by the create-stack call. Kept as a parameter so
+      the provisioning service can pass the customer's chosen region
+      forward verbatim.
+
+  DirectoryUrl:
+    Type: String
+    Default: https://directory.8th-layer.ai
+    Description: |
+      8th-Layer.ai directory base URL. Becomes CQ_DIRECTORY_URL on the
+      cq-server task — the L2 pulls peerings from here to authorize
+      incoming cross-Enterprise consults.
+
+  RootPubkeyB64u:
+    Type: String
+    Description: |
+      Base64url-encoded Ed25519 public key minted by the provisioning
+      service (phase 1). Becomes CQ_ENTERPRISE_ROOT_PUBKEY on the
+      cq-server task so the L2 trusts directory updates signed by the
+      matching private key.
+    MinLength: 40
+    MaxLength: 64
+
+  CqServerImage:
+    Type: String
+    Default: public.ecr.aws/w2i0e4m6/cq-server:fo-2-as-1
+    Description: |
+      cq-server image tag the L2 will run. Default points at the public
+      ECR mirror of OneZero1ai/8th-layer-agent main, pinned to a known-
+      good linux/amd64 build. Bump the tag here when promoting a new
+      cq-server build for marketplace deploys. Note: ":latest" is not
+      maintained as a multi-arch alias in the public ECR mirror today;
+      use an explicit tag.
+
+  ProvisionerExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 22
+    Description: |
+      The same ExternalId the customer set on their marketplace deploy
+      role. Carried in the stack for documentation/audit only — it is
+      NOT used at runtime by any resource in this template.
+
+Resources:
+  # =====================================================================
+  # SECRETS — auto-generated, stored in Secrets Manager, mounted to the
+  # task as environment variables via ECS Secrets integration.
+  # =====================================================================
+  JwtSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/cq-jwt-secret"
+      Description: !Sub "JWT signing secret for ${EnterpriseSlug} L2"
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  ApiKeyPepper:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/cq-api-key-pepper"
+      Description: !Sub "HMAC pepper for API key hashing on ${EnterpriseSlug} L2"
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  AigrpPeerKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/cq-aigrp-peer-key"
+      Description: !Sub "AIGRP shared peer key for ${EnterpriseSlug}"
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  # =====================================================================
+  # NETWORK — dedicated VPC, public subnets, IGW (no NAT).
+  # =====================================================================
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-vpc" }
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-public-a" }
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-public-b" }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-igw" }
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # =====================================================================
+  # SECURITY GROUPS
+  # =====================================================================
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${EnterpriseSlug} L2 ALB ingress (80/443 from internet)"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: "HTTP (ACM HTTP-01 + Cloudflare-origin)" }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS (reserved for v2; not bound to a listener in v1)" }
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${EnterpriseSlug} L2 ECS task SG"
+      VpcId: !Ref Vpc
+
+  TaskIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3000
+      ToPort: 3000
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: "cq-server port 3000 from ALB only"
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${EnterpriseSlug} L2 EFS SG"
+      VpcId: !Ref Vpc
+
+  EfsIngressFromTask:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EfsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+      Description: "NFS from cq-server tasks"
+
+  # =====================================================================
+  # EFS — persistent SQLite at /data.
+  # =====================================================================
+  EfsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+      FileSystemTags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-efs" }
+
+  EfsMountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  EfsMountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !Ref PublicSubnetB
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  EfsAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      PosixUser: { Uid: "1000", Gid: "1000" }
+      RootDirectory:
+        Path: /cq-data
+        CreationInfo:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0750"
+
+  # =====================================================================
+  # CloudWatch logs
+  # =====================================================================
+  TaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${EnterpriseSlug}-l2-cq-server"
+      RetentionInDays: 30
+
+  # =====================================================================
+  # IAM — task execution role (pull image, write logs, fetch secrets)
+  #       + task role (mount EFS, send SES, get secrets at runtime)
+  # =====================================================================
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "8th-layer-l2-${EnterpriseSlug}-task-exec"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsReadAtTaskStart
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource:
+                  - !Ref JwtSecret
+                  - !Ref ApiKeyPepper
+                  - !Ref AigrpPeerKey
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "8th-layer-l2-${EnterpriseSlug}-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EfsClientAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:ClientRootAccess
+                Resource: !GetAtt EfsFileSystem.Arn
+        - PolicyName: SesSendInvites
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "ses:FromAddress":
+                      - !Sub "noreply@${EnterpriseSlug}.8th-layer.ai"
+        - PolicyName: SecretsReadRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource:
+                  - !Ref JwtSecret
+                  - !Ref ApiKeyPepper
+                  - !Ref AigrpPeerKey
+        - PolicyName: KmsDecryptForSecrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [kms:Decrypt]
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+
+  # =====================================================================
+  # ECS cluster + task + service
+  # =====================================================================
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${EnterpriseSlug}-l2-cluster"
+      CapacityProviders: [FARGATE]
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${EnterpriseSlug}-l2-cq-server"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      Cpu: "512"
+      Memory: "1024"
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: cq-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref EfsFileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref EfsAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: cq-server
+          Image: !Ref CqServerImage
+          Essential: true
+          PortMappings:
+            - { ContainerPort: 3000, Protocol: tcp }
+          MountPoints:
+            - { SourceVolume: cq-data, ContainerPath: /data }
+          Environment:
+            - { Name: CQ_PORT, Value: "3000" }
+            - { Name: CQ_DB_PATH, Value: /data/cq.db }
+            - { Name: CQ_ENTERPRISE, Value: !Ref EnterpriseSlug }
+            - { Name: CQ_GROUP, Value: default }
+            - { Name: CQ_DIRECTORY_URL, Value: !Ref DirectoryUrl }
+            - { Name: CQ_ENTERPRISE_ROOT_PUBKEY, Value: !Ref RootPubkeyB64u }
+            - { Name: CQ_DIRECTORY_ENABLED, Value: "true" }
+            - { Name: CQ_DIRECTORY_SKIP_ANNOUNCE, Value: "true" }
+            - { Name: CQ_DIRECTORY_PULL_INTERVAL_SEC, Value: "60" }
+            - { Name: CQ_AIGRP_IS_FIRST_DEPLOY, Value: "true" }
+            - { Name: CQ_AIGRP_SEED_PEER_URL, Value: "" }
+          Secrets:
+            - { Name: CQ_JWT_SECRET,      ValueFrom: !Ref JwtSecret }
+            - { Name: CQ_API_KEY_PEPPER,  ValueFrom: !Ref ApiKeyPepper }
+            - { Name: CQ_AIGRP_PEER_KEY,  ValueFrom: !Ref AigrpPeerKey }
+          # Container-level health check uses python (urllib) rather than
+          # curl because the cq-server image (Python slim base) doesn't
+          # ship curl/wget. The image already declares the same probe in
+          # its Dockerfile HEALTHCHECK — we restate it here so the spec
+          # is self-contained and visible at the task-definition level.
+          # The ALB TargetGroup also probes /health from outside the
+          # container; both must pass before the service stabilises.
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:3000/health',timeout=3).status==200 else 1)" || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 90
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref TaskLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: cq-server
+
+  # =====================================================================
+  # ALB + target group + HTTP listener
+  # =====================================================================
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnterpriseSlug}-l2-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnterpriseSlug}-l2-tg"
+      Port: 3000
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      VpcId: !Ref Vpc
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: "200" }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: [HttpListener, EfsMountTargetA, EfsMountTargetB]
+    Properties:
+      ServiceName: cq-server
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      EnableExecuteCommand: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: cq-server
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        # Spec: rolling update, max 200%, min 100%. Note: SQLite-on-EFS
+        # has a known co-access corruption window — production single-L2
+        # stacks should prefer the recreate strategy used by the existing
+        # customer-l2.yaml (min 0 / max 100). The marketplace template
+        # follows the FO-2-backend spec verbatim; rotate to recreate if
+        # WAL corruption is observed.
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+
+Outputs:
+  AlbDnsName:
+    Description: Public DNS name of the L2's ALB.
+    Value: !GetAtt Alb.DNSName
+
+  EnterpriseAdminUrl:
+    Description: |
+      Customer-facing URL. The provisioning service creates the Cloudflare
+      CNAME pointing here during phase 3 (DNS_PROVISION).
+    Value: !Sub "https://${EnterpriseSlug}.8th-layer.ai"
+
+  EnterpriseSlug:
+    Description: Echoed so the provisioning service can correlate output → slug.
+    Value: !Ref EnterpriseSlug
+
+  EcsClusterArn:
+    Description: ECS cluster ARN (ops debugging).
+    Value: !GetAtt EcsCluster.Arn
+
+  EcsServiceArn:
+    Description: ECS service ARN (ops debugging).
+    Value: !Ref EcsService
+
+  EfsId:
+    Description: EFS file system ID (ops debugging).
+    Value: !Ref EfsFileSystem
+
+  TaskDefinitionArn:
+    Description: Active task definition ARN (ops debugging).
+    Value: !Ref TaskDefinition

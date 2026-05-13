@@ -15,11 +15,14 @@ only the persona assignment is disabled.
 
 # Chain note
 
-Chains from 0021a_provisioning_partial_unique (FO-2-backend's partial-unique
-fix migration, which itself chains from 0021_provisioning_jobs). #228 + #229
-landed in sequence; this migration sits on top of the post-228 chain head.
-After this migration lands, HEAD_REVISION in migrations.py is bumped to
-``0023_persona_assignment_audit`` (the next migration in this PR).
+Chains directly from 0020_l2_brand. The post-228 provisioning migrations
+(0021_provisioning_jobs + 0021a_provisioning_partial_unique) were removed
+when the Enterprise Provisioning Service relocated to 8th-layer-directory
+per agent#239; this migration was re-pointed at 0020 to keep the chain
+contiguous. Running L2s retain their existing provisioning_jobs rows
+(the table is left dormant — no destructive DROP). After this migration
+lands, HEAD_REVISION in migrations.py stays at
+``0023_persona_assignment_audit`` (the next migration in this chain).
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0022_persona_assignments"
-down_revision: str | Sequence[str] | None = "0021a_provisioning_partial_unique"
+down_revision: str | Sequence[str] | None = "0020_l2_brand"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
