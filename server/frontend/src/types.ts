@@ -146,3 +146,37 @@ export interface PatchPersonaRequest {
 export interface PatchPersonaResponse {
   assignment: PersonaAssignment
 }
+
+// ---------------------------------------------------------------------------
+// Invites (FO-1b backend, P2 frontend)
+// ---------------------------------------------------------------------------
+
+export type InviteRole = "enterprise_admin" | "l2_admin" | "user"
+
+export type InviteStatus = "pending" | "claimed" | "expired" | "revoked"
+
+export interface InvitePublic {
+  id: number
+  email: string
+  role: InviteRole
+  target_l2_id: string | null
+  issued_by: number
+  issued_at: string
+  expires_at: string
+  claimed_at: string | null
+  claimed_by: number | null
+  revoked_at: string | null
+  status: InviteStatus
+}
+
+export interface InvitesPublic {
+  data: InvitePublic[]
+  count: number
+}
+
+export interface CreateInviteRequest {
+  email: string
+  role: InviteRole
+  target_l2_id?: string | null
+  enterprise_name?: string
+}

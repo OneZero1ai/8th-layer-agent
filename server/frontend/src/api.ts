@@ -1,8 +1,12 @@
 import type {
   ApiKeysList,
   CreatedApiKey,
+  CreateInviteRequest,
   CreatePersonaRequest,
   CreatePersonaResponse,
+  InvitePublic,
+  InviteStatus,
+  InvitesPublic,
   MessageResponse,
   PatchPersonaRequest,
   PatchPersonaResponse,
@@ -146,6 +150,22 @@ export const api = {
   disablePersona: (username: string) =>
     request<MessageResponse>(`/admin/personas/${username}/disable`, {
       method: "POST",
+    }),
+
+  listInvites: (status?: InviteStatus) => {
+    const query = status ? `?status=${encodeURIComponent(status)}` : ""
+    return request<InvitesPublic>(`/admin/invites${query}`)
+  },
+
+  createInvite: (body: CreateInviteRequest) =>
+    request<InvitePublic>("/admin/invites", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  revokeInvite: (id: number) =>
+    request<InvitePublic>(`/admin/invites/${id}`, {
+      method: "DELETE",
     }),
 }
 
