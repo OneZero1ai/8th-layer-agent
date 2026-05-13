@@ -1749,9 +1749,7 @@ app = FastAPI(title="cq Server", version="0.1.0", lifespan=lifespan)
 # any future ad-hoc cross-origin needs on this L2 image.
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-_CORS_ORIGINS: list[str] = [
-    o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()
-]
+_CORS_ORIGINS: list[str] = [o.strip() for o in os.environ.get("CQ_CORS_EXTRA_ORIGINS", "").split(",") if o.strip()]
 if _CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
