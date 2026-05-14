@@ -125,6 +125,21 @@ class TestAuthMe:
         resp = client.get("/auth/me", headers={"Authorization": "Bearer invalid"})
         assert resp.status_code == 401
 
+    def test_me_with_cookie_only(self, client: TestClient) -> None:
+        # FO-1d browsers strip the Authorization header — they send only the
+        # cq_session HttpOnly cookie. /auth/me must accept that path.
+        _seed_user(client)
+        login = client.post("/auth/login", json={"username": "peter", "password": self.test_password})
+        assert login.status_code == 200
+        assert "cq_session" in login.cookies
+        # TestClient persists cookies across requests by default — call /me
+        # with NO Authorization header to prove the cookie alone suffices.
+        resp = client.get("/auth/me")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["username"] == "peter"
+        assert body["auth_kind"] == "jwt"
+
     def test_me_with_api_key(self, api_key_client: TestClient) -> None:
         # Mint an API key via JWT, then call /me with the API key bearer.
         jwt_token = _login(api_key_client)

@@ -705,7 +705,10 @@ class TestApiKeyEnforcement:
         unit_id = propose_resp.json()["id"]
         _approve_unit(enforced_client, unit_id)
 
-        # Without key both are rejected.
+        # Without key both are rejected. Clear the cq_session cookie the
+        # seed login left on the TestClient — real API-key callers never
+        # carry a browser cookie, and the cookie alone would authenticate.
+        enforced_client.cookies.clear()
         assert enforced_client.post(f"/confirm/{unit_id}").status_code == 401
         assert enforced_client.post(f"/flag/{unit_id}", json={"reason": "stale"}).status_code == 401
 

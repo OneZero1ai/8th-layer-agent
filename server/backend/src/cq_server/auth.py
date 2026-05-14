@@ -457,13 +457,35 @@ class _CallerIdentity:
 
 
 async def _resolve_caller(request: Request, store: SqliteStore) -> _CallerIdentity:
-    """Authenticate the caller via either bearer-token shape and return identity.
+    """Authenticate the caller via cookie, bearer JWT, or API key.
 
-    Tokens prefixed with ``cqa.v1.`` are decoded as API keys; everything
-    else is verified as a JWT. 401 on either path's failure.
+    Resolution order:
+
+    1. ``Authorization: Bearer <token>`` header when present — covers
+       both the legacy JWT shape and ``cqa.v1.*`` API keys minted via
+       ``POST /auth/api-keys``. Explicit beats implicit: if a caller
+       sets the header, honor it.
+    2. ``cq_session`` cookie (FO-1d browsers; minted by ``/auth/login``
+       + ``/invites/{token}/claim``). This is the only credential the
+       React admin shell can carry — post-FO-1d it strips the
+       Authorization header. See ``web_session.read_session_from_cookie``.
+
+    Why the cookie fallback: pre-fix, ``/auth/me`` and every other
+    route fronted by ``get_current_user`` only checked the header.
+    The browser sets the HttpOnly cookie on login, then on every
+    subsequent request the cookie travels but the React fetch
+    wrapper does NOT add an Authorization header — so the server
+    saw no credential and 401'd, even with a perfectly valid session.
+    401 on every path's failure.
     """
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
+        # FO-1d: no Authorization header? Try the cq_session cookie before 401.
+        from .web_session import read_session_from_cookie
+
+        session = read_session_from_cookie(request)
+        if session is not None:
+            return _CallerIdentity(username=session.username, auth_kind="jwt")
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
     token = header.removeprefix("Bearer ")
     if token.startswith(f"{TOKEN_NAMESPACE}.{TOKEN_VERSION}."):
