@@ -10,6 +10,8 @@ import { NetworkPage } from "./pages/NetworkPage"
 import { PersonasPage } from "./pages/PersonasPage"
 import { ReviewPage } from "./pages/ReviewPage"
 import { ThemeProvider } from "./theme"
+import { TourOverlay } from "./tour/TourOverlay"
+import { TourProvider } from "./tour/TourProvider"
 
 function AppRoutes() {
   const { isAuthenticated } = useAuth()
@@ -45,7 +47,10 @@ export default function App() {
     <BrowserRouter>
       <ThemeProvider>
         <AuthProvider>
-          <AppRoutes />
+          <TourProvider>
+            <AppRoutes />
+            <TourOverlay />
+          </TourProvider>
         </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>

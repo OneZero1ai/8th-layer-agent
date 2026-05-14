@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Link, Outlet, useLocation } from "react-router"
 import { api } from "../api"
 import { useAuth } from "../auth"
+import { TourLauncher } from "../tour/TourLauncher"
 import { PoweredBy8thLayer } from "./PoweredBy8thLayer"
 import { Wordmark } from "./Wordmark"
 
@@ -26,11 +27,12 @@ export function Layout() {
     return () => clearInterval(interval)
   }, [onDashboard])
 
-  function navLink(path: string, label: string) {
+  function navLink(path: string, label: string, tourId?: string) {
     const active = location.pathname === path
     return (
       <Link
         to={path}
+        data-tour-target={tourId}
         className={`relative font-mono-brand text-[11px] uppercase tracking-[0.22em] py-1 whitespace-nowrap transition-colors ${
           active
             ? "text-[var(--ink)]"
@@ -57,22 +59,25 @@ export function Layout() {
           className={`${wide ? "w-full px-6" : "max-w-3xl mx-auto px-4"} py-3 flex items-center justify-between`}
         >
           <div className="flex items-center gap-3 md:gap-7">
-            <Link to="/dashboard" className="mr-2">
+            <Link to="/dashboard" className="mr-2" data-tour-target="welcome">
               <Wordmark size="md" />
             </Link>
-            {navLink("/review", "Review")}
-            {navLink("/dashboard", "Dashboard")}
-            {navLink("/network", "Network")}
-            {navLink("/settings/api-keys", "API Keys")}
-            {navLink("/admin/personas", "Personas")}
+            <span data-tour-target="group" className="contents" />
+            {navLink("/review", "Review", "review")}
+            {navLink("/dashboard", "Dashboard", "dashboard")}
+            {navLink("/network", "Network", "network")}
+            {navLink("/settings/api-keys", "API Keys", "api-keys")}
+            {navLink("/admin/personas", "Personas", "personas")}
           </div>
           <div className="flex items-center gap-4">
+            <TourLauncher />
             <span className="hidden md:inline font-mono-brand text-[11px] uppercase tracking-[0.18em] text-[var(--ink-mute)]">
               {username}
             </span>
             <button
               type="button"
               onClick={logout}
+              data-tour-target="done"
               className="font-mono-brand text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)] hover:text-[var(--rose)] transition-colors"
             >
               Logout

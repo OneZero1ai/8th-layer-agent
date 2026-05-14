@@ -44,6 +44,7 @@ from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
+from .tour_routes import router as tour_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
@@ -445,6 +446,9 @@ api_router.include_router(persona_router)
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
 api_router.include_router(theme_router)
+# Founder-tour persistence — GET/PUT /api/v1/users/me/tour-state for
+# the in-app onboarding walkthrough.
+api_router.include_router(tour_router)
 
 
 @api_router.get("/health")
