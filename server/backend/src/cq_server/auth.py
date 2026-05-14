@@ -381,6 +381,27 @@ async def get_current_user(
     return caller.username
 
 
+# Roles that grant admin-equivalent privilege.
+#   - ``admin``           — legacy global admin (pre-FO-1b)
+#   - ``enterprise_admin`` — Enterprise-scoped admin (FO-1b invite taxonomy)
+#   - ``l2_admin``        — single-L2-scoped admin (FO-1b invite taxonomy)
+# All three pass ``require_admin`` until per-Enterprise / per-L2 scoping
+# lands. Without this set the founder bootstrap path produces a
+# role=enterprise_admin user who then 403s on every admin route, since
+# require_admin only matched the legacy string ``admin``.
+_ADMIN_ROLES: frozenset[str] = frozenset({"admin", "enterprise_admin", "l2_admin"})
+
+
+def is_admin_role(role: str | None) -> bool:
+    """Return True when ``role`` grants admin-equivalent privilege.
+
+    Centralises the legacy/new role mapping so callers in
+    crosstalk_routes / activity_routes / etc. don't drift apart from
+    ``require_admin``.
+    """
+    return role in _ADMIN_ROLES if role is not None else False
+
+
 async def require_admin(
     request: Request,
     username: str = Depends(get_current_user),
@@ -391,12 +412,14 @@ async def require_admin(
     Returns the username on success; 401 on missing/invalid JWT (raised
     by the chained ``get_current_user`` dep), 403 when the caller is
     authenticated but not an admin. Admin-ness is global in v1 — there
-    is no per-Enterprise scoping yet (see plan doc, Lane D).
+    is no per-Enterprise scoping yet (see plan doc, Lane D). Accepts
+    the legacy ``admin`` role plus the FO-1b invite roles
+    ``enterprise_admin`` / ``l2_admin`` via ``_ADMIN_ROLES``.
     """
     user = await store.get_user(username)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    if user.get("role") != "admin":
+    if not is_admin_role(user.get("role")):
         raise HTTPException(status_code=403, detail="Admin role required")
     return username
 

@@ -449,6 +449,32 @@ class TestPublicClaimHTTP:
         assert "cq_session" in claim_resp.cookies
         assert claim_resp.cookies["cq_session"] == claim_body["token"]
 
+    def test_claim_persists_invite_role(
+        self,
+        client: TestClient,
+        mock_sender: MockEmailSender,
+    ) -> None:
+        # The invite role (enterprise_admin / l2_admin / user) must round-trip
+        # to users.role — otherwise the founder bootstrap path produces a
+        # role=user admin who 403s on every admin-gated route.
+        client.post(
+            "/api/v1/admin/invites",
+            json={"email": "founder@example.com", "role": "enterprise_admin"},
+            headers=_admin_headers(client),
+        )
+        token = mock_sender.sent[0].jwt
+
+        claim_resp = client.post(
+            f"/api/v1/invites/{token}/claim",
+            json={"password": "password123"},
+        )
+        assert claim_resp.status_code == 200, claim_resp.text
+
+        # /auth/me must reflect the enterprise_admin role.
+        me_resp = client.get("/api/v1/auth/me")
+        assert me_resp.status_code == 200, me_resp.text
+        assert me_resp.json()["role"] == "enterprise_admin"
+
     def test_double_claim_returns_409(
         self,
         client: TestClient,

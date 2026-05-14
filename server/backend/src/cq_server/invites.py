@@ -413,13 +413,19 @@ async def ensure_user(
     username: str,
     password: str,
     email: str,
+    role: str = "user",
 ) -> int:
     """Create-or-fetch the user record for an invite-claimer.
 
     If a user with this ``username`` already exists, the existing row's
-    id is returned (no password rotation, no email mutation — that's
-    out of scope for FO-1b). Otherwise we hash the password and insert,
-    then return the new user's id.
+    id is returned (no password rotation, no email mutation, no role
+    rotation — that's out of scope for FO-1b). Otherwise we hash the
+    password, insert with the supplied role, and return the new user's id.
+
+    The ``role`` argument comes from the invite (FO-1b's role taxonomy:
+    ``enterprise_admin`` / ``l2_admin`` / ``user``). Without this wiring
+    the founder bootstrap path produced a ``role='user'`` admin who then
+    got 403'd from every admin-gated endpoint.
 
     The ``email`` argument is currently unused by the create path
     (FO-1a's ``users.email`` column is additive but ``create_user``
@@ -431,7 +437,7 @@ async def ensure_user(
     existing = await store.get_user(username)
     if existing is not None:
         return int(existing["id"])
-    await store.create_user(username, hash_password(password))
+    await store.create_user(username, hash_password(password), role=role)
     fresh = await store.get_user(username)
     if fresh is None:  # pragma: no cover — race that breaks the world
         raise RuntimeError("user creation succeeded but lookup returned None")

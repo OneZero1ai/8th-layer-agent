@@ -225,11 +225,12 @@ def select_list_units(
 # --- users ------------------------------------------------------------------
 
 INSERT_USER: TextClause = text(
-    "INSERT INTO users (username, password_hash, created_at) VALUES (:username, :password_hash, :created_at)"
+    "INSERT INTO users (username, password_hash, role, created_at) "
+    "VALUES (:username, :password_hash, :role, :created_at)"
 )
 
 SELECT_USER_BY_USERNAME: TextClause = text(
-    "SELECT id, username, password_hash, created_at FROM users WHERE username = :username"
+    "SELECT id, username, password_hash, role, created_at FROM users WHERE username = :username"
 )
 
 # --- api_keys ---------------------------------------------------------------
