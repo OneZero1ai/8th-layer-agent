@@ -393,6 +393,7 @@ async def claim_invite_route(
         username=canonical_username,
         password=request.password,
         email=metadata.email,
+        role=metadata.role,
     )
 
     outcome = claim_invite(store, token=token, claiming_user_id=user_id)

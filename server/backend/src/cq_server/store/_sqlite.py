@@ -191,8 +191,8 @@ class SqliteStore:
             expires_at=expires_at,
         )
 
-    async def create_user(self, username: str, password_hash: str) -> None:
-        await self._run_sync(self._create_user_sync, username, password_hash)
+    async def create_user(self, username: str, password_hash: str, role: str = "user") -> None:
+        await self._run_sync(self._create_user_sync, username, password_hash, role)
 
     # --- WebAuthn / passkey credentials (FO-1a, #191) ---------------------
 
@@ -1580,7 +1580,7 @@ class SqliteStore:
             "revoked_at": None,
         }
 
-    def _create_user_sync(self, username: str, password_hash: str) -> None:
+    def _create_user_sync(self, username: str, password_hash: str, role: str = "user") -> None:
         from ._queries import INSERT_USER
 
         created_at = datetime.now(UTC).isoformat()
@@ -1588,7 +1588,12 @@ class SqliteStore:
             with self._engine.begin() as conn:
                 conn.execute(
                     INSERT_USER,
-                    {"username": username, "password_hash": password_hash, "created_at": created_at},
+                    {
+                        "username": username,
+                        "password_hash": password_hash,
+                        "role": role,
+                        "created_at": created_at,
+                    },
                 )
         except IntegrityError as e:
             if e.orig is not None:

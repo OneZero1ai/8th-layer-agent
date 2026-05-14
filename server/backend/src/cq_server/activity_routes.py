@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from .activity import EVENT_TYPES
-from .auth import get_current_user, scope_filter
+from .auth import get_current_user, is_admin_role, scope_filter
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
@@ -170,7 +170,7 @@ async def list_activity(
     #   - admin: pass through whatever they sent (including None for
     #     "all personas in this Enterprise")
     #   - non-admin: pin to their own username regardless of input
-    if role == "admin":
+    if is_admin_role(role):
         effective_persona = persona
     else:
         effective_persona = username

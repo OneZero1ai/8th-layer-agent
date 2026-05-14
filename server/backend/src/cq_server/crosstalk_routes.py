@@ -58,7 +58,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .activity_logger import log_activity
-from .auth import get_current_user, scope_filter
+from .auth import get_current_user, is_admin_role, scope_filter
 from .deps import get_store
 from .store._sqlite import SqliteStore
 
@@ -388,7 +388,7 @@ async def reply_on_thread(
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread["status"] != "open":
         raise HTTPException(status_code=409, detail="Thread is closed")
-    if username not in thread["participants"] and role != "admin":
+    if username not in thread["participants"] and not is_admin_role(role):
         raise HTTPException(status_code=403, detail="Not a participant")
 
     # Pick the recipient — for two-party threads, it's the other participant.
@@ -459,7 +459,7 @@ async def list_threads(
         username=username,
         tenant_enterprise=read_ent,
         tenant_group=read_grp,
-        is_admin=(role == "admin"),
+        is_admin=is_admin_role(role),
         limit=limit,
     )
     items = [ThreadSummary(**r) for r in rows]
@@ -480,7 +480,7 @@ async def get_thread(
     thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    if username not in thread["participants"] and role != "admin":
+    if username not in thread["participants"] and not is_admin_role(role):
         raise HTTPException(status_code=403, detail="Not a participant")
 
     msgs = await store.list_crosstalk_messages(
@@ -510,7 +510,7 @@ async def close_thread(
     thread = await store.get_crosstalk_thread(thread_id=thread_id, tenant_enterprise=read_ent, tenant_group=read_grp)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    if username not in thread["participants"] and role != "admin":
+    if username not in thread["participants"] and not is_admin_role(role):
         raise HTTPException(status_code=403, detail="Not a participant")
 
     won = await store.close_crosstalk_thread(
