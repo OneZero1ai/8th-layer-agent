@@ -407,6 +407,6 @@ class TestIdempotencyAndChain:
         ``run_migrations`` silently misses the new revision on stamped
         DBs. Pin the constant so the chain head is the source of truth.
         """
-        # Bumped to 0016_xgroup_consent (Phase 1.0b — Decision 28).
-        # Chains after 0015_phase_1_0c_aigrp_peers_pair_secret_ref.
-        assert HEAD_REVISION == "0023_persona_assignment_audit"
+        # The current chain head. Update this whenever a new migration
+        # lands — this test failing IS the reminder to bump HEAD_REVISION.
+        assert HEAD_REVISION == "0024_user_tour_state"
