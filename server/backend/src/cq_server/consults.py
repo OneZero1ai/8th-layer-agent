@@ -249,6 +249,15 @@ def _forward_request(target: dict[str, Any], payload: dict[str, Any]) -> None:
                 r.text[:200],
             )
             raise HTTPException(status_code=502, detail="peer unreachable")
+        # agent#36 — positive proof the cross-Enterprise forward fired.
+        # Without this, a missing peer reply is indistinguishable from a
+        # forward that never left this L2; the source-side log disambiguates.
+        logger.info(
+            "consults forward-request: peer=%s thread=%s status=%s — cross-Enterprise forward delivered",
+            target["l2_id"],
+            payload.get("thread_id", "?"),
+            r.status_code,
+        )
     except httpx.RequestError as e:
         logger.warning(
             "consults forward-request: peer=%s transport_error=%r",
@@ -285,6 +294,13 @@ def _forward_message(target: dict[str, Any], payload: dict[str, Any]) -> None:
                 r.text[:200],
             )
             raise HTTPException(status_code=502, detail="peer unreachable")
+        # agent#36 — positive proof the cross-Enterprise forward fired.
+        logger.info(
+            "consults forward-message: peer=%s thread=%s status=%s — cross-Enterprise forward delivered",
+            target["l2_id"],
+            payload.get("thread_id", "?"),
+            r.status_code,
+        )
     except httpx.RequestError as e:
         logger.warning(
             "consults forward-message: peer=%s transport_error=%r",
@@ -393,6 +409,17 @@ def _x_enterprise_forward_request(
                     f"on x-enterprise-forward-request: {r.text[:200]}"
                 ),
             )
+        # agent#36 — positive proof the cross-Enterprise forward fired.
+        # A missing peer reply downstream is then attributable to the peer
+        # side (no auto-reply handler, slow cron), not a forward that never
+        # left this L2.
+        logger.info(
+            "consults x-enterprise-forward-request: peer=%s thread=%s status=%s "
+            "— cross-Enterprise forward delivered",
+            target_endpoint["l2_id"],
+            payload.get("thread_id", "?"),
+            r.status_code,
+        )
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=502,
