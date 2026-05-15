@@ -40,91 +40,68 @@ env:
 phases:
   install:
     commands:
-      - echo "=== Installing Go ${GO_VERSION} ==="
-      - curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
-      - export PATH="/usr/local/go/bin:$(go env GOPATH 2>/dev/null || echo $HOME/go)/bin:${PATH}"
-      - go version
-      - echo "=== Installing golangci-lint ${GOLANGCI_LINT_VERSION} ==="
-      - curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin "${GOLANGCI_LINT_VERSION}"
-      - golangci-lint --version
-      - echo "=== Installing uv (astral-sh/setup-uv@v7 analog) ==="
-      - curl -LsSf https://astral.sh/uv/install.sh | sh
-      - export PATH="$HOME/.local/bin:${PATH}"
-      - uv --version
-      - echo "=== Installing Node ${NODE_VERSION} + pnpm ${PNPM_VERSION} ==="
-      - n ${NODE_VERSION} || (curl -fsSL https://raw.githubusercontent.com/tj/n/master/bin/n | bash -s ${NODE_VERSION})
-      - node --version
-      - corepack enable
-      - corepack prepare "pnpm@${PNPM_VERSION}" --activate
-      - pnpm --version
+      - 'echo "=== Installing Go ${GO_VERSION} ==="'
+      - 'curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz'
+      - 'export PATH="/usr/local/go/bin:$(go env GOPATH 2>/dev/null || echo $HOME/go)/bin:${PATH}"'
+      - 'go version'
+      - 'echo "=== Installing golangci-lint ${GOLANGCI_LINT_VERSION} ==="'
+      - 'curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin "${GOLANGCI_LINT_VERSION}"'
+      - 'golangci-lint --version'
+      - 'echo "=== Installing uv (astral-sh/setup-uv@v7 analog) ==="'
+      - 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+      - 'export PATH="$HOME/.local/bin:${PATH}"'
+      - 'uv --version'
+      - 'echo "=== Installing Node ${NODE_VERSION} + pnpm ${PNPM_VERSION} ==="'
+      - 'n ${NODE_VERSION} || (curl -fsSL https://raw.githubusercontent.com/tj/n/master/bin/n | bash -s ${NODE_VERSION})'
+      - 'node --version'
+      - 'corepack enable'
+      - 'corepack prepare "pnpm@${PNPM_VERSION}" --activate'
+      - 'pnpm --version'
 
   build:
     commands:
-      - export PATH="/usr/local/go/bin:$(go env GOPATH 2>/dev/null || echo $HOME/go)/bin:$HOME/.local/bin:${PATH}"
-
-      # --- prompts-sync (ci-prompts-sync.yaml) ---------------------------
-      - echo "::: [prompts-sync] verifying SDK prompt copies match plugin sources"
-      - make check-prompts-sync
-
-      # --- schema (ci-schema.yaml) ---------------------------------------
-      - echo "::: [schema] validate JSON Schema fixtures + values"
-      - make validate-schema
-      - echo "::: [schema] lint + test (Go module + Python package)"
-      - make setup-schema
-      - make lint-schema
-      - make test-schema
-
-      # --- cli (ci-cli.yaml) ---------------------------------------------
-      - echo "::: [cli] setup + lint (golangci-lint, check-licenses, check-notice)"
-      - make setup-cli
-      - make lint-cli
-      - echo "::: [cli] test + build"
-      - make test-cli
-      - (cd cli && make build)
-
-      # --- sdk-go (ci-sdk-go.yaml) ---------------------------------------
-      - echo "::: [sdk-go] setup + lint (prompts-sync, golangci-lint, licenses, notice)"
-      - make setup-sdk-go
-      - make lint-sdk-go
-      - echo "::: [sdk-go] test"
-      - make test-sdk-go
-
-      # --- licenses (ci-licenses.yaml) -----------------------------------
-      # ci-licenses.yaml re-checks SDK + CLI licenses/NOTICE; lint-cli and
-      # lint-sdk-go already cover check-licenses + check-notice for both
-      # modules, so the dedicated workflow is fully subsumed above.
-      - echo "::: [licenses] covered by lint-cli + lint-sdk-go (check-licenses/check-notice)"
-
-      # --- plugin (ci-plugin.yaml) ---------------------------------------
-      - echo "::: [plugin] setup + lint"
-      - make setup-plugin
-      - make lint-plugin
-      - echo "::: [plugin] test (Cursor hook helper)"
-      - make test-plugin
-
-      # --- install (ci-install.yaml) -------------------------------------
-      - echo "::: [install] setup + lint + test (installer + plugin hook)"
-      - make setup-install
-      - make lint-install
-      - make test-install
-
-      # --- sdk-python (ci-sdk-python.yaml) -------------------------------
-      - echo "::: [sdk-python] setup + lint + test"
-      - make setup-sdk-python
-      - make lint-sdk-python
-      - make test-sdk-python
-
-      # --- server (ci-server.yaml) ---------------------------------------
-      - echo "::: [server] setup + lint + test (backend + frontend)"
-      - make setup-server
-      - make lint-server
-      - make test-server
-
-      - echo "=== All CI checks passed ==="
-
+      - 'export PATH="/usr/local/go/bin:$(go env GOPATH 2>/dev/null || echo $HOME/go)/bin:$HOME/.local/bin:${PATH}"'
+      - 'echo "::: [prompts-sync] verifying SDK prompt copies match plugin sources"'
+      - 'make check-prompts-sync'
+      - 'echo "::: [schema] validate JSON Schema fixtures + values"'
+      - 'make validate-schema'
+      - 'echo "::: [schema] lint + test (Go module + Python package)"'
+      - 'make setup-schema'
+      - 'make lint-schema'
+      - 'make test-schema'
+      - 'echo "::: [cli] setup + lint (golangci-lint, check-licenses, check-notice)"'
+      - 'make setup-cli'
+      - 'make lint-cli'
+      - 'echo "::: [cli] test + build"'
+      - 'make test-cli'
+      - '(cd cli && make build)'
+      - 'echo "::: [sdk-go] setup + lint (prompts-sync, golangci-lint, licenses, notice)"'
+      - 'make setup-sdk-go'
+      - 'make lint-sdk-go'
+      - 'echo "::: [sdk-go] test"'
+      - 'make test-sdk-go'
+      - 'echo "::: [licenses] covered by lint-cli + lint-sdk-go (check-licenses/check-notice)"'
+      - 'echo "::: [plugin] setup + lint"'
+      - 'make setup-plugin'
+      - 'make lint-plugin'
+      - 'echo "::: [plugin] test (Cursor hook helper)"'
+      - 'make test-plugin'
+      - 'echo "::: [install] setup + lint + test (installer + plugin hook)"'
+      - 'make setup-install'
+      - 'make lint-install'
+      - 'make test-install'
+      - 'echo "::: [sdk-python] setup + lint + test"'
+      - 'make setup-sdk-python'
+      - 'make lint-sdk-python'
+      - 'make test-sdk-python'
+      - 'echo "::: [server] setup + lint + test (backend + frontend)"'
+      - 'make setup-server'
+      - 'make lint-server'
+      - 'make test-server'
+      - 'echo "=== All CI checks passed ==="'
 cache:
   paths:
-    - /codebuild/output/.uv-cache/**/*
-    - /root/.cache/uv/**/*
-    - /root/.cache/go-build/**/*
-    - /root/go/pkg/mod/**/*
+    - '/codebuild/output/.uv-cache/**/*'
+    - '/root/.cache/uv/**/*'
+    - '/root/.cache/go-build/**/*'
+    - '/root/go/pkg/mod/**/*'
