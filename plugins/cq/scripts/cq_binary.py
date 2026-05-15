@@ -3,7 +3,11 @@
 Stdlib-only module consumed by both `bootstrap.py` (when Claude launches
 the MCP server) and the multi-host installer (`cq_install.binary`). It
 owns the rules for where the binary is cached, how its version is
-verified, and how it is fetched from GitHub releases when absent.
+verified, and how it is fetched from the 8th-Layer release host when
+absent. The 8th-Layer fork ships its own cq binary (it carries the
+`propose_batch` MCP tool, which upstream does not), so release assets
+are served from an 8th-Layer-owned CloudFront distribution rather than
+upstream GitHub releases.
 
 This module is run in two different environments: under whatever Python
 Claude provides, and under the installer's uv-managed venv. It must
@@ -24,7 +28,10 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-REPO = "mozilla-ai/cq"
+# Release host for the 8th-Layer fork's cq binary. Assets live at
+# {CQ_RELEASE_BASE_URL}/cli/v{version}/cq_{OS}_{arch}.{ext}. CloudFront in
+# front of a private S3 bucket (OAC); unauthenticated HTTPS GET.
+CQ_RELEASE_BASE_URL = "https://dyejnuj2nvzpy.cloudfront.net"
 
 
 def cq_binary_name() -> str:
@@ -61,7 +68,7 @@ def default_data_home() -> Path:
 
 
 def download(version: str, system: str, bin_dir: Path, binary: Path) -> None:
-    """Fetch the cq binary from GitHub releases for the current platform."""
+    """Fetch the cq binary from the 8th-Layer release host for this platform."""
     machine = platform.machine()
     arch_map: dict[str, str] = {
         "AMD64": "x86_64",
@@ -81,13 +88,8 @@ def download(version: str, system: str, bin_dir: Path, binary: Path) -> None:
         print(f"Error: unsupported OS: {system}", file=sys.stderr)
         sys.exit(1)
 
-    tag = f"cli/v{version}"
-    asset_base = f"cq_{os_name}_{arch}"
-
-    if system == "Windows":
-        url = f"https://github.com/{REPO}/releases/download/{tag}/{asset_base}.zip"
-    else:
-        url = f"https://github.com/{REPO}/releases/download/{tag}/{asset_base}.tar.gz"
+    ext = "zip" if system == "Windows" else "tar.gz"
+    url = f"{CQ_RELEASE_BASE_URL}/cli/v{version}/cq_{os_name}_{arch}.{ext}"
 
     print(f"cq: downloading v{version} for {os_name}/{arch}...", file=sys.stderr)
 

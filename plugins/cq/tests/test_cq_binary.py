@@ -288,7 +288,7 @@ def test_download_constructs_correct_url_for_aarch64_on_linux(cq_binary, monkeyp
     with contextlib.suppress(TypeError):
         cq_binary.download("0.2.2", "Linux", bin_dir, binary)
 
-    assert captured_url == "https://github.com/mozilla-ai/cq/releases/download/cli/v0.2.2/cq_Linux_arm64.tar.gz"
+    assert captured_url == f"{cq_binary.CQ_RELEASE_BASE_URL}/cli/v0.2.2/cq_Linux_arm64.tar.gz"
 
 
 def test_download_constructs_correct_url_for_arm64_on_windows(cq_binary, monkeypatch, tmp_path):
@@ -311,4 +311,4 @@ def test_download_constructs_correct_url_for_arm64_on_windows(cq_binary, monkeyp
     with contextlib.suppress(TypeError):
         cq_binary.download("0.2.2", "Windows", bin_dir, binary)
 
-    assert captured_url == "https://github.com/mozilla-ai/cq/releases/download/cli/v0.2.2/cq_Windows_arm64.zip"
+    assert captured_url == f"{cq_binary.CQ_RELEASE_BASE_URL}/cli/v0.2.2/cq_Windows_arm64.zip"

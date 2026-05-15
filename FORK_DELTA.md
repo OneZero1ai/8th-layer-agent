@@ -8,8 +8,10 @@ See [`docs/decisions/08-agent-side-fork.md`](https://github.com/OneZero1ai/8th-l
 
 ## What we add over upstream cq
 
-(planned — none merged yet as of fork creation)
+(see git history for what has merged; the list below is the intended delta)
 
+- **`propose_batch` MCP tool** — stores N knowledge units in one MCP round-trip. Additive to upstream's tool surface; the per-unit `propose` is unchanged. Lets `/cq:reflect` cap its tool-call echo at a single invocation regardless of candidate count.
+- **Self-hosted cq binary** — the fork carries Go-side additions (e.g. `propose_batch`) that upstream's published binary does not, so the plugin fetches the binary from an 8th-Layer-owned CloudFront release host rather than upstream GitHub releases. See `plugins/cq/scripts/cq_binary.py`.
 - **AIGRP client-side routing** — Agent Intelligence Graph Routing Protocol. The forked agent maintains a routing table fed by gossip + tenant directory, makes routing decisions client-side, executes peer-to-peer within trust boundaries, defers cross-trust-boundary execution to the tenant Remote for consent enforcement.
 - **DID-KMS bridge** — derives a DID from a KMS-signed Persona public key (`did:web:` proxy V1; `did:keri:` V2+). Populates `provenance.proposer_did` on every Knowledge Unit.
 - **Multi-tenancy hooks** — agent honors tenant + enterprise + team scope from the JWT context (mapped from `CQ_API_KEY`); routing-table entries scope-filtered.
