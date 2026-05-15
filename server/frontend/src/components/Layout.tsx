@@ -67,6 +67,7 @@ export function Layout() {
             {navLink("/dashboard", "Dashboard", "dashboard")}
             {navLink("/network", "Network", "network")}
             {navLink("/crosstalk", "Crosstalk", "crosstalk")}
+            {navLink("/federation", "Federation", "federation")}
             {navLink("/settings/api-keys", "API Keys", "api-keys")}
             {navLink("/admin/personas", "Personas", "personas")}
           </div>

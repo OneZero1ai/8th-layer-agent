@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react"
 import { BrowserRouter, Navigate, Route, Routes } from "react-router"
 import { AuthProvider, useAuth } from "./auth"
 import { Layout } from "./components/Layout"
@@ -13,6 +14,21 @@ import { ReviewPage } from "./pages/ReviewPage"
 import { ThemeProvider } from "./theme"
 import { TourOverlay } from "./tour/TourOverlay"
 import { TourProvider } from "./tour/TourProvider"
+
+// Federation tab is route-split — keeps it (and its fixtures) out of the
+// initial bundle. Honours the +5KB gzip main-bundle ceiling for #172.
+const FederationPage = lazy(() =>
+  import("./pages/FederationPage").then((m) => ({ default: m.FederationPage })),
+)
+
+function FederationFallback() {
+  return (
+    <div className="space-y-8">
+      <p className="eyebrow">Federation</p>
+      <p className="text-sm text-[var(--ink-mute)]">Loading peerings…</p>
+    </div>
+  )
+}
 
 function AppRoutes() {
   const { isAuthenticated } = useAuth()
@@ -35,6 +51,14 @@ function AppRoutes() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/crosstalk" element={<CrosstalkPage />} />
+        <Route
+          path="/federation"
+          element={
+            <Suspense fallback={<FederationFallback />}>
+              <FederationPage />
+            </Suspense>
+          }
+        />
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
         <Route path="/admin/personas" element={<PersonasPage />} />
         <Route path="/admin/invites" element={<InvitesPage />} />
