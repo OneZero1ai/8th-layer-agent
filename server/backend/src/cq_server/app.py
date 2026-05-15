@@ -44,11 +44,11 @@ from .quality import check_propose_quality
 from .reflect import router as reflect_router
 from .reputation_routes import router as reputation_router
 from .review import router as review_router
-from .tour_routes import router as tour_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
 from .theme_routes import router as theme_router
+from .tour_routes import router as tour_router
 
 _STATIC_DIR = Path(__file__).parent / "static"
 

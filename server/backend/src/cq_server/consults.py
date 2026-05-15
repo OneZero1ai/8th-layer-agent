@@ -414,8 +414,7 @@ def _x_enterprise_forward_request(
         # side (no auto-reply handler, slow cron), not a forward that never
         # left this L2.
         logger.info(
-            "consults x-enterprise-forward-request: peer=%s thread=%s status=%s "
-            "— cross-Enterprise forward delivered",
+            "consults x-enterprise-forward-request: peer=%s thread=%s status=%s — cross-Enterprise forward delivered",
             target_endpoint["l2_id"],
             payload.get("thread_id", "?"),
             r.status_code,
