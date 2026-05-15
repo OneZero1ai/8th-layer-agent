@@ -590,19 +590,20 @@ class TestUserHelpers:
         with engine.begin() as conn:
             conn.execute(
                 q.INSERT_USER,
-                {"username": "bob", "password_hash": "hashed", "created_at": created_at},  # pragma: allowlist secret
+                {"username": "bob", "password_hash": "hashed", "role": "user", "created_at": created_at},  # pragma: allowlist secret
             )
         user_via_store = store.sync.get_user("bob")
         assert user_via_store is not None
         with engine.connect() as conn:
             row = conn.execute(q.SELECT_USER_BY_USERNAME, {"username": "bob"}).fetchone()
         assert row is not None
+        # SELECT_USER_BY_USERNAME column order: id, username, password_hash, role, created_at
         assert {
             "id": row[0],
             "username": row[1],
             "password_hash": row[2],
-            "created_at": row[3],
-            "role": "user",
+            "role": row[3],
+            "created_at": row[4],
             "enterprise_id": "default-enterprise",
             "group_id": "default-group",
         } == user_via_store
@@ -610,7 +611,7 @@ class TestUserHelpers:
     async def test_insert_user_duplicate_username_raises(self, db: tuple[SqliteStore, Engine]) -> None:
         """Pins the UNIQUE constraint on users.username."""
         _, engine = db
-        row = {"username": "duplicate", "password_hash": "h", "created_at": datetime.now(UTC).isoformat()}
+        row = {"username": "duplicate", "password_hash": "h", "role": "user", "created_at": datetime.now(UTC).isoformat()}
         with engine.begin() as conn:
             conn.execute(q.INSERT_USER, row)
         with pytest.raises(IntegrityError), engine.begin() as conn:

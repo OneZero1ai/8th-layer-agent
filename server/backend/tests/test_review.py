@@ -270,6 +270,11 @@ class TestGetUnit:
 
     def test_get_requires_auth(self, client: TestClient) -> None:
         unit = _propose(client)
+        # _propose logs in, which persists the cq_session cookie in the
+        # TestClient jar; since cookie auth landed, that cookie would
+        # authenticate this request. Clear it to exercise the genuine
+        # unauthenticated path.
+        client.cookies.clear()
         resp = client.get(f"/review/{unit['id']}")
         assert resp.status_code == 401
 
