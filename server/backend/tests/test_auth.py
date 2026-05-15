@@ -164,6 +164,43 @@ class TestAuthMe:
         assert body["expires_at"] is not None
         assert body["issued_at"] is not None
 
+    def test_review_stats_accepts_api_key(self, api_key_client: TestClient) -> None:
+        """Regression for issue #92 — Bran reported API keys minted via
+        ``POST /auth/api-keys`` worked on ``/propose`` but 401'd with
+        ``Invalid or expired token`` on ``/review/stats``.
+
+        ``/review/stats`` uses ``Depends(require_admin)`` which chains
+        through ``get_current_user``. Pre-PR-#99 ``get_current_user``
+        only verified JWTs, so an API-key bearer hit the JWT failure
+        path. Lock that in: an API key issued to an admin user must
+        be accepted on ``/review/stats``.
+        """
+        # Seed an admin user, get a JWT, mint an API key with it.
+        from cq_server.app import _get_store
+
+        _login(api_key_client)
+        _get_store().sync.set_user_role("peter", "admin")
+        jwt_token = api_key_client.post(
+            "/auth/login",
+            json={"username": "peter", "password": "secret123"},  # pragma: allowlist secret
+        ).json()["token"]
+        created = api_key_client.post(
+            "/auth/api-keys",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            json={"name": "regression-92", "ttl": "30d"},
+        )
+        assert created.status_code == 201
+        api_key_token = created.json()["token"]
+        assert api_key_token.startswith("cqa.v1.")
+
+        resp = api_key_client.get(
+            "/api/v1/review/stats",
+            headers={"Authorization": f"Bearer {api_key_token}"},
+        )
+        # Pre-fix: 401 "Invalid or expired token". Post-fix: 200.
+        assert resp.status_code == 200, resp.text
+        assert "counts" in resp.json()
+
     def test_get_current_user_accepts_api_key(self, api_key_client: TestClient) -> None:
         """Regression for issue #86 — Bran-style API-key call against a
         ``get_current_user``-protected endpoint must not fall back to the
