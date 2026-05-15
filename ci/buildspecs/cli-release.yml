@@ -1,0 +1,78 @@
+version: 0.2
+
+# Build + publish the cq CLI binary for all platforms to the 8th-Layer
+# S3 release bucket. Runs in AWS CodeBuild — project `cq-cli-release`,
+# account 124074140789, us-east-1.
+#
+# Trigger: a `cli/v*` tag push, via the `8th-layer-github` CodeConnections
+# webhook. Or manually:
+#   aws codebuild start-build --project-name cq-cli-release \
+#     --source-version cli/vX.Y.Z --profile 8th-layer-app --region us-east-1
+#
+# This replaces the GitHub Actions `release-cli.yaml`. The binary lands in
+# s3://8l-cli-releases-.../cli/vX.Y.Z/ where the plugin's cq_binary.py
+# fetches it through CloudFront. cli/RELEASING.md documents the manual
+# equivalent — keep the two in sync.
+#
+# Go is installed explicitly (cli/go.mod pins a Go version newer than the
+# CodeBuild image ships) so the build is reproducible regardless of image.
+
+env:
+  variables:
+    RELEASE_BUCKET: 8l-cli-releases-124074140789-us-east-1
+    GO_VERSION: 1.26.1
+
+phases:
+  install:
+    commands:
+      - curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+      - export PATH="/usr/local/go/bin:${PATH}"
+      - go version
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        export PATH="/usr/local/go/bin:${PATH}"
+
+        # Resolve the release version from the tag that triggered the build.
+        REF="${CODEBUILD_WEBHOOK_TRIGGER:-}"
+        case "$REF" in
+          tag/cli/v*) VER="${REF#tag/cli/v}" ;;
+          *)
+            SV="${CODEBUILD_SOURCE_VERSION:-}"
+            case "$SV" in
+              *cli/v*) VER="${SV##*cli/v}" ;;
+              *) echo "ERROR: not a cli/v* tag build (trigger='$REF' source='$SV')"; exit 1 ;;
+            esac
+            ;;
+        esac
+        echo "Releasing cq CLI v${VER}"
+
+        SHA="$(git rev-parse --short HEAD)"
+        DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        VP=github.com/mozilla-ai/cq/cli/internal/version
+        LD="-s -w -X ${VP}.version=${VER} -X ${VP}.commit=${SHA} -X ${VP}.date=${DATE}"
+
+        cd cli
+        OUT="${CODEBUILD_SRC_DIR}/_dist"
+        rm -rf "$OUT"; mkdir -p "$OUT"
+
+        build_unix() {  # OS_label arch_label GOOS GOARCH
+          GOOS="$3" GOARCH="$4" go build -ldflags "$LD" -o /tmp/cq .
+          tar -C /tmp -czf "${OUT}/cq_$1_$2.tar.gz" cq && rm /tmp/cq
+        }
+        build_win() {   # arch_label GOARCH
+          GOOS=windows GOARCH="$2" go build -ldflags "$LD" -o /tmp/cq.exe .
+          ( cd /tmp && zip -q "${OUT}/cq_Windows_$1.zip" cq.exe ) && rm /tmp/cq.exe
+        }
+
+        build_unix Darwin arm64  darwin arm64
+        build_unix Darwin x86_64 darwin amd64
+        build_unix Linux  arm64  linux  arm64
+        build_unix Linux  x86_64 linux  amd64
+        build_win  x86_64 amd64
+        build_win  arm64  arm64
+        ls -la "$OUT"
+
+        aws s3 cp "$OUT/" "s3://${RELEASE_BUCKET}/cli/v${VER}/" --recursive
+        echo "Published cq v${VER} -> s3://${RELEASE_BUCKET}/cli/v${VER}/"
