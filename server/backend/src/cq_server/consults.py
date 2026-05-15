@@ -1113,3 +1113,23 @@ async def get_inbox(
         self_persona=self_persona,
         threads=[_to_thread_out(r) for r in rows],
     )
+
+
+# Registered last so the parameterised path ``/{thread_id}`` does not
+# shadow static routes like ``/inbox`` and ``/forward-request``.
+@router.get("/{thread_id}", response_model=ConsultThreadOut)
+async def get_consult_thread(
+    thread_id: str,
+    store: SqliteStore = Depends(get_store),
+    username: str = Depends(get_current_user),
+) -> ConsultThreadOut:
+    """Fetch thread metadata for a thread the caller participates in."""
+    self_l2_id, self_persona = await _self_identity(store, username)
+    thread = await store.get_consult(thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="thread not found")
+    is_from = thread["from_l2_id"] == self_l2_id and thread["from_persona"] == self_persona
+    is_to = thread["to_l2_id"] == self_l2_id and thread["to_persona"] == self_persona
+    if not (is_from or is_to):
+        raise HTTPException(status_code=403, detail="not a participant in this thread")
+    return _to_thread_out(thread)
