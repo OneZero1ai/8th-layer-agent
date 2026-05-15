@@ -1,9 +1,14 @@
 import type {
+  ActivityListResponse,
   ApiKeysList,
+  ConsultInboxResponse,
+  ConsultMessagesResponse,
   CreatedApiKey,
   CreateInviteRequest,
   CreatePersonaRequest,
   CreatePersonaResponse,
+  CrosstalkThreadListResponse,
+  CrosstalkThreadWithMessages,
   InvitePublic,
   InviteStatus,
   InvitesPublic,
@@ -167,6 +172,64 @@ export const api = {
     request<InvitePublic>(`/admin/invites/${id}`, {
       method: "DELETE",
     }),
+
+  // Activity-log read. The crosstalk tab uses it to derive the
+  // cross-Enterprise consult outbox from consult_open events.
+  listActivity: (
+    params: {
+      persona?: string
+      since?: string
+      until?: string
+      event_type?: string
+      limit?: number
+      cursor?: string
+    } = {},
+  ) => {
+    const qs = new URLSearchParams()
+    if (params.persona) qs.set("persona", params.persona)
+    if (params.since) qs.set("since", params.since)
+    if (params.until) qs.set("until", params.until)
+    if (params.event_type) qs.set("event_type", params.event_type)
+    if (params.limit != null) qs.set("limit", String(params.limit))
+    if (params.cursor) qs.set("cursor", params.cursor)
+    const query = qs.toString()
+    return request<ActivityListResponse>(`/activity${query ? `?${query}` : ""}`)
+  },
+
+  // Crosstalk threads (#171). The list endpoint returns ThreadSummary
+  // (compact shape — no message-count or last-message timestamp). The
+  // per-thread fetch returns the full CrosstalkThread + messages, which
+  // the drawer uses to render the timeline.
+  listCrosstalkThreads: (limit = 100) =>
+    request<CrosstalkThreadListResponse>(`/crosstalk/threads?limit=${limit}`),
+
+  getCrosstalkThread: (threadId: string, limit = 200) =>
+    request<CrosstalkThreadWithMessages>(
+      `/crosstalk/threads/${encodeURIComponent(threadId)}?limit=${limit}`,
+    ),
+
+  closeCrosstalkThread: (threadId: string, reason?: string) =>
+    request<{ thread_id: string; status: string }>(
+      `/crosstalk/threads/${encodeURIComponent(threadId)}/close`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: reason ?? null }),
+      },
+    ),
+
+  // Cross-Enterprise consults (#171). Inbox = consults addressed to this
+  // L2; outbox endpoint does not exist on the backend yet (see issue
+  // surfaced from #171 — derive from /activity event_type=consult_open
+  // for now, or wait for the dedicated endpoint).
+  consultInbox: (includeClosed = true, limit = 100) =>
+    request<ConsultInboxResponse>(
+      `/consults/inbox?include_closed=${includeClosed}&limit=${limit}`,
+    ),
+
+  consultMessages: (threadId: string) =>
+    request<ConsultMessagesResponse>(
+      `/consults/${encodeURIComponent(threadId)}/messages`,
+    ),
 }
 
 export { ApiError }
