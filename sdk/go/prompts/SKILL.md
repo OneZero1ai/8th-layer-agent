@@ -169,7 +169,7 @@ If no coherent lesson survives sanitization across all affected fields, the cand
 #### Applying VIBE√
 
 - **Direct `propose` calls** (outside `/cq:reflect`) — run the check on the single candidate. If a hard finding exists, present both the original and the sanitized rewrite to the user and let them pick (or skip). If only a soft concern exists, present the concern for awareness before proceeding.
-- **Batch proposals via `/cq:reflect`** — see the `/cq:reflect` command for the batch presentation UX (three templates, provenance annotation). The underlying V/I/B/E classification rules are the same.
+- **Batch proposals via `/cq:reflect`** — clean and soft candidates are sent in a single `propose_batch` call to keep the harness's tool-output noise bounded; hard findings still go through per-candidate `propose` after inline review. See the `/cq:reflect` command for the full batch presentation UX (three templates, provenance annotation). The underlying V/I/B/E classification rules are the same.
 
 ### Confirming Knowledge (`confirm`)
 

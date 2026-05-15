@@ -75,7 +75,33 @@ If a hard finding cannot be coherently sanitized, the candidate fails Step 2's g
 
 #### Auto-propose phase (Step 3a — silent)
 
-For each candidate classified as `clean` or `soft` in Step 2.5, call `propose` immediately without presenting. Soft concerns are not lost — they are listed in the Step 6 final summary so the operator can see what flags were raised.
+Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch`** ONCE with that list. The `propose_batch` tool stores all candidates in one MCP round-trip and returns one combined response, capping the harness's tool-call echo at a single tool invocation regardless of candidate count.
+
+```
+propose_batch(
+  candidates=[
+    {summary: ..., detail: ..., action: ..., domains: [...], languages?, frameworks?, pattern?},
+    ...
+  ]
+)
+```
+
+Use the per-candidate `propose` tool only for hard findings (Step 5), where each candidate needs human judgment and earns its own tool call.
+
+The batch response shape:
+
+```json
+{
+  "stored": [{"index": 0, "id": "ku_...", "summary": "...", "tier": "private"}, ...],
+  "errors": [{"index": 2, "summary": "...", "error": "..."}]
+}
+```
+
+`index` is the candidate's original position in the input list. Carry the `clean`/`soft` classification per index from Step 2.5 so Step 6 can render the correct provenance annotation against each stored ID.
+
+If `candidates` is empty (no clean or soft candidates this session), skip the `propose_batch` call entirely.
+
+Soft concerns are not lost — they are listed in the Step 6 final summary so the operator can see what flags were raised.
 
 Do NOT auto-propose hard findings, even with sanitization. Hard findings always require human judgment because the sanitized rewrite may have stripped content the operator cares about, or the operator may want to escalate the finding rather than store either form.
 
@@ -185,6 +211,15 @@ IDs stored this session:
 ```
 
 Always show the `{total} candidates identified.` line. Omit any line whose count is zero. Omit any VIBE√ findings bullet whose category has no entries.
+
+Render the `IDs stored this session` list by combining the `propose_batch` response (auto-stored clean+soft candidates) with the per-candidate `propose` results from Step 5 (hard findings). For each entry in the batch response's `stored` array, look up the original `clean` or `soft` classification by `index` and use it as the bracketed annotation. If the batch response includes any `errors` entries, list them as a final bullet:
+
+```
+Errors during batch store:
+- index {n} ("{summary}"): {error}
+```
+
+Errors do not block the summary — surface them so the operator knows which candidates fell out, then move on.
 
 The bracketed annotation on each stored ID records the VIBE√ provenance of what was stored:
 
