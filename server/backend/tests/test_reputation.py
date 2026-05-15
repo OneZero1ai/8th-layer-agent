@@ -237,7 +237,6 @@ class TestSigning:
     def test_unsigned_event_when_no_key_available(
         self,
         conn: sqlite3.Connection,
-        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When signing is disabled (key load fails / unavailable), event
@@ -245,20 +244,18 @@ class TestSigning:
         unaffected — preserves the v1-alpha behaviour for legacy deploys."""
         from cq_server import forward_sign
 
-        # Point at a directory we can't write to, then force a reload —
-        # load_or_create_l2_privkey returns None on OSError.
-        bad_path = tmp_path / "no_perm" / "key.bin"
-        bad_path.parent.mkdir(mode=0o000)
-        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(bad_path))
+        # Disable signing deterministically by stubbing the key loader to
+        # return None. The previous approach — pointing at a chmod-000
+        # directory — is silently defeated when tests run as root (CI
+        # containers): root bypasses directory permissions, the key gets
+        # created, the event is signed, and the assertion fails.
+        monkeypatch.setattr(forward_sign, "load_or_create_l2_privkey", lambda: None)
         forward_sign.reload_l2_privkey()
 
         try:
             eid = reputation.record_event(conn, event_type="consult.closed", body={"thread_id": "th_unsigned"})
             conn.commit()
-            if eid is None:
-                # If load_or_create_l2_privkey raised (ran on a system that
-                # couldn't enforce the chmod 000), the test isn't meaningful.
-                pytest.skip("filesystem allowed key creation despite chmod 000")
+            assert eid is not None
 
             row = conn.execute(
                 "SELECT signature_b64u, signing_key_id FROM reputation_events WHERE event_id = ?",
@@ -268,5 +265,6 @@ class TestSigning:
             assert sig is None, "expected NULL signature when key unavailable"
             assert kid is None, "expected NULL signing_key_id when key unavailable"
         finally:
-            bad_path.parent.chmod(0o755)  # let pytest clean up the tmpdir
+            # Restore the real loader, then reload so later tests get a key.
+            monkeypatch.undo()
             forward_sign.reload_l2_privkey()
