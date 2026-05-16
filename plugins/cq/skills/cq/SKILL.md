@@ -136,6 +136,18 @@ Provide all three insight fields:
 - **detail** — Fuller explanation with enough context to understand the issue. Include a timestamp and source where possible.
 - **action** — Concrete instruction on what to do about it. Prefer principle + verification method over exact values.
 
+#### Attribution (`created_by`)
+
+Attribution is **not** something you set. The L2 always derives a KU's
+`created_by` from the authenticated caller (the username behind your
+`CQ_API_KEY`) and discards any `created_by` in the request body. The
+value echoed in a `propose` response is therefore informational only —
+if it shows empty or differs from the canonical author, that is a
+display artifact, not a failure: the stored KU, the audit log, and
+`GET /api/v1/units/<id>` all carry the correct L2-derived author. Do not
+rely on the `propose` response's `created_by` for authoritative
+attribution.
+
 #### VIBE√ safety check
 
 Before calling `propose`, evaluate every candidate against four safety dimensions. This applies to all propose calls — those triggered by `/cq:reflect` and direct proposes made while working on a task.
