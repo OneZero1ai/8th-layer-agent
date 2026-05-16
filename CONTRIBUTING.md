@@ -37,6 +37,20 @@ Use descriptive branch names with one of these prefixes:
 - Write clear commit messages that explain *why* the change was made, not just *what* changed.
 - Keep commits atomic; each commit should represent one logical change.
 
+### Container images — do not hand-push
+
+Do **not** run `docker push` for `cq-server` (or any `public.ecr.aws/w2i0e4m6/*`
+image) from a workstation. The CodeBuild `cq-server-image` project
+(`ci/buildspecs/cq-server-image.yml`) builds and pushes a multi-arch
+(`linux/amd64` + `linux/arm64`) image index on every merge to `main`.
+
+A manual `docker push` from Apple Silicon without `--platform` produces an
+**arm64-only** manifest. Fargate is x86_64-only, so the next provisioning
+deploy then fails with `CannotPullContainerError ... does not contain
+descriptor matching platform 'linux/amd64'`. If you must build an image
+locally for testing, always pass `--platform linux/amd64` and push it under
+a throwaway tag — never `:latest`.
+
 ## Submitting Your Contribution
 
 1. Fork the repository and clone your fork.
