@@ -98,8 +98,22 @@ Parameters:
       parameter works as-is; a customer-managed-CMK-encrypted parameter
       additionally needs a key grant for the task execution role.
 
+  AutoApprovePropose:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: |
+      When "true", cq-server auto-approves VIBE-clean KUs at propose
+      time (sets `CQ_AUTO_APPROVE_PROPOSE`) so they are immediately
+      queryable without a manual review step (agent#180 / #123).
+      Recommended for solo-operator / single-L2 deployments. Leave
+      "false" for multi-operator deployments where the review-queue
+      ritual applies. Hard-finding KUs always route through the
+      pending_review tier regardless of this flag.
+
 Conditions:
   HasAdminPasswordParam: !Not [!Equals [!Ref AdminPasswordSsmParam, ""]]
+  AutoApproveOn: !Equals [!Ref AutoApprovePropose, "true"]
 
 Resources:
   # =====================================================================
@@ -441,6 +455,12 @@ Resources:
             - { Name: CQ_DIRECTORY_PULL_INTERVAL_SEC, Value: "60" }
             - { Name: CQ_AIGRP_IS_FIRST_DEPLOY, Value: "true" }
             - { Name: CQ_AIGRP_SEED_PEER_URL, Value: "" }
+            # agent#180 — only emitted when AutoApprovePropose=true, so a
+            # default deploy leaves the env unset (status='pending').
+            - !If
+              - AutoApproveOn
+              - { Name: CQ_AUTO_APPROVE_PROPOSE, Value: "true" }
+              - !Ref "AWS::NoValue"
             # Plain (non-secret) — the SSM path is logged at first-boot
             # bootstrap so operators can see where the seed came from.
             # The password itself is mounted via Secrets below.
