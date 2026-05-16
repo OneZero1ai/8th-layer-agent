@@ -35,7 +35,7 @@ respond:
 
 > `CQ_ADDR` and/or `CQ_API_KEY` not set. See the runbook step 9
 > (configure your Claude Code session) at
-> https://github.com/OneZero1ai/crosstalk-enterprise/blob/main/docs/runbooks/01-customer-onboarding-zero-to-peered.md
+> https://github.com/OneZero1ai/8th-layer-core/blob/main/docs/runbooks/01-customer-onboarding-zero-to-peered.md
 
 …and stop.
 
