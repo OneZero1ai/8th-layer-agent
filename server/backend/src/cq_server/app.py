@@ -345,7 +345,10 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # passed via the CFN template. Mint a pending invite for that email
     # so the founder can claim → register passkey → land in admin UI.
     # Idempotent: skipped when any non-system user already exists.
-    from .bootstrap_admin import bootstrap_first_admin_if_needed
+    from .bootstrap_admin import (
+        bootstrap_first_admin_if_needed,
+        bootstrap_password_admin_if_needed,
+    )
 
     try:
         await bootstrap_first_admin_if_needed(_store)
@@ -354,6 +357,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
         _logging.getLogger("bootstrap_admin").exception(
             "bootstrap_first_admin_if_needed raised; continuing without first-admin invite"
+        )
+
+    # agent#165 — operator onboarding path. On a first boot with
+    # CQ_INITIAL_ADMIN_PASSWORD set (SSM-backed via the task def
+    # secrets: block), seed a password-login admin so the operator can
+    # log in + mint an agent API key. Idempotent: no-op once any user
+    # exists. Complementary to the email-invite path above.
+    try:
+        await bootstrap_password_admin_if_needed(_store)
+    except Exception:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger("bootstrap_admin").exception(
+            "bootstrap_password_admin_if_needed raised; continuing without password admin"
         )
 
     # Provisioning crash recovery moved to 8th-layer-directory per

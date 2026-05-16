@@ -116,6 +116,114 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
     )
 
 
+_DEFAULT_ADMIN_USERNAME = "admin"
+
+
+async def bootstrap_password_admin_if_needed(store: SqliteStore) -> None:
+    """Seed a password-login admin on first boot from an SSM-backed env.
+
+    The operator onboarding path (agent#165): an operator sets an SSM
+    parameter holding the initial admin password *before* deploying the
+    L2 stack; the task definition mounts it as ``CQ_INITIAL_ADMIN_PASSWORD``
+    via the ECS ``secrets:`` integration. On the very first boot — users
+    table empty — this seeds a real ``admin`` user with role=admin so the
+    operator can log in, mint an agent API key, and plant it. This
+    replaces the manual ``aws ecs execute-command`` + ``seed-users.py``
+    dance that blocked smoke-check #5 during the TeamDW standup.
+
+    Alternative to :func:`bootstrap_first_admin_if_needed` (the founder
+    path, ``CQ_INITIAL_ADMIN_EMAIL`` → magic-link invite → passkey) — an
+    L2 should set one or the other. If both are set the email path wins
+    (it runs first; this function detects its ``_bootstrap_system``
+    marker row and defers), so an L2 never gets two admin principals.
+
+    Idempotency: skipped when ``CQ_INITIAL_ADMIN_PASSWORD`` is unset,
+    when any real (non-system) user already exists, OR when the email
+    path's ``_bootstrap_system`` row is present. Once a real admin
+    exists — including one rotated by a later manual edit — re-deploying
+    with the env still set is a no-op, so a password rotation can never
+    re-seed over a live admin.
+
+    Never raises — boot must not fail because of a bootstrap hiccup.
+    """
+    password = os.environ.get("CQ_INITIAL_ADMIN_PASSWORD", "")
+    if not password:
+        return
+    username = os.environ.get("CQ_INITIAL_ADMIN_USERNAME", "").strip() or _DEFAULT_ADMIN_USERNAME
+    # Informational only — the SSM path, never the password, is logged.
+    ssm_path = os.environ.get("CQ_INITIAL_ADMIN_PASSWORD_SSM_PATH", "").strip()
+
+    try:
+        if await _users_exist(store):
+            log.debug("bootstrap_password_admin: skipped — users already present")
+            return
+        # Mutual exclusion with the email/magic-link path. If
+        # bootstrap_first_admin_if_needed already ran it left the
+        # _bootstrap_system row behind (and a pending founder invite) —
+        # _users_exist excludes that row, so without this guard the
+        # password path would *also* seed an admin, leaving the L2 with
+        # two independent admin principals on one tenancy. The two
+        # bootstraps are alternatives, not complements: the email path
+        # ran first (app.py lifespan order), so it wins; defer to it.
+        if await _system_row_exists(store):
+            log.warning(
+                "[BOOTSTRAP_ADMIN] password-admin bootstrap skipped — the email "
+                "first-admin bootstrap already claimed this L2. Set only one of "
+                "CQ_INITIAL_ADMIN_EMAIL / CQ_INITIAL_ADMIN_PASSWORD."
+            )
+            return
+    except Exception:  # noqa: BLE001
+        log.exception("bootstrap_password_admin: user-count probe failed; skipping")
+        return
+
+    # Pin the admin to the L2's own tenancy. A user left on the
+    # 'default-enterprise'/'default-group' server_default cannot transact
+    # on the real tenancy — cross-Enterprise consults 403 with a
+    # forwarder mismatch (see scripts/seed-users.py). Pin only when BOTH
+    # are set; a partial config falls back to defaults — warn so the
+    # operator notices the half-wired tenancy rather than discovering it
+    # via empty tenancy-scoped reads later.
+    ent_raw = os.environ.get("CQ_ENTERPRISE", "").strip()
+    grp_raw = os.environ.get("CQ_GROUP", "").strip()
+    if bool(ent_raw) != bool(grp_raw):
+        log.warning(
+            "[BOOTSTRAP_ADMIN] only one of CQ_ENTERPRISE/CQ_GROUP is set "
+            "(enterprise=%r group=%r); seeding admin on the default tenancy. "
+            "Set both or neither.",
+            ent_raw,
+            grp_raw,
+        )
+    enterprise_id: str | None = ent_raw or None
+    group_id: str | None = grp_raw or None
+    if enterprise_id is None or group_id is None:
+        enterprise_id = group_id = None
+
+    from .auth import hash_password
+
+    try:
+        await store.create_user(
+            username=username,
+            password_hash=hash_password(password),
+            role="admin",
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("bootstrap_password_admin: admin user creation failed; skipping")
+        return
+
+    # Bracketed sentinel — greppable in CloudWatch Logs Insights.
+    # The password is NEVER logged; only the SSM path it came from.
+    source = f"SSM {ssm_path}" if ssm_path else "CQ_INITIAL_ADMIN_PASSWORD env"
+    log.warning(
+        "[BOOTSTRAP_ADMIN] admin user '%s' (role=admin, enterprise=%s, group=%s) seeded from %s",
+        username,
+        enterprise_id or "default-enterprise",
+        group_id or "default-group",
+        source,
+    )
+
+
 async def _users_exist(store: SqliteStore) -> bool:
     """Return True iff at least one row in users (excluding the system row).
 
@@ -128,6 +236,29 @@ async def _users_exist(store: SqliteStore) -> bool:
         with store._engine.connect() as conn:  # noqa: SLF001
             row = conn.execute(
                 text("SELECT COUNT(*) FROM users WHERE username != :sys"),
+                {"sys": _SYSTEM_USERNAME},
+            ).first()
+            return int(row[0]) if row else 0
+
+    import asyncio
+
+    count = await asyncio.get_event_loop().run_in_executor(None, _count)
+    return count > 0
+
+
+async def _system_row_exists(store: SqliteStore) -> bool:
+    """Return True iff the ``_bootstrap_system`` marker row exists.
+
+    Its presence means :func:`bootstrap_first_admin_if_needed` already
+    ran on this L2 — used by the password path to defer to the email
+    path when both are configured.
+    """
+    from sqlalchemy import text
+
+    def _count() -> int:
+        with store._engine.connect() as conn:  # noqa: SLF001
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM users WHERE username = :sys"),
                 {"sys": _SYSTEM_USERNAME},
             ).first()
             return int(row[0]) if row else 0

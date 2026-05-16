@@ -229,6 +229,16 @@ INSERT_USER: TextClause = text(
     "VALUES (:username, :password_hash, :role, :created_at)"
 )
 
+# Like INSERT_USER but pins enterprise_id / group_id explicitly instead
+# of letting the column server_default ('default-enterprise' /
+# 'default-group') apply. Required for any user that must transact on a
+# real tenancy — a user left on the defaults breaks cross-Enterprise
+# consults (the forwarder-mismatch 403 described in scripts/seed-users.py).
+INSERT_USER_WITH_TENANCY: TextClause = text(
+    "INSERT INTO users (username, password_hash, role, created_at, enterprise_id, group_id) "
+    "VALUES (:username, :password_hash, :role, :created_at, :enterprise_id, :group_id)"
+)
+
 SELECT_USER_BY_USERNAME: TextClause = text(
     "SELECT id, username, password_hash, role, created_at FROM users WHERE username = :username"
 )

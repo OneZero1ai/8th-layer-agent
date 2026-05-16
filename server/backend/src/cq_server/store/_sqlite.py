@@ -191,8 +191,23 @@ class SqliteStore:
             expires_at=expires_at,
         )
 
-    async def create_user(self, username: str, password_hash: str, role: str = "user") -> None:
-        await self._run_sync(self._create_user_sync, username, password_hash, role)
+    async def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        role: str = "user",
+        *,
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> None:
+        await self._run_sync(
+            self._create_user_sync,
+            username,
+            password_hash,
+            role,
+            enterprise_id,
+            group_id,
+        )
 
     # --- WebAuthn / passkey credentials (FO-1a, #191) ---------------------
 
@@ -1580,21 +1595,34 @@ class SqliteStore:
             "revoked_at": None,
         }
 
-    def _create_user_sync(self, username: str, password_hash: str, role: str = "user") -> None:
-        from ._queries import INSERT_USER
+    def _create_user_sync(
+        self,
+        username: str,
+        password_hash: str,
+        role: str = "user",
+        enterprise_id: str | None = None,
+        group_id: str | None = None,
+    ) -> None:
+        from ._queries import INSERT_USER, INSERT_USER_WITH_TENANCY
 
         created_at = datetime.now(UTC).isoformat()
+        params: dict[str, str] = {
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "created_at": created_at,
+        }
+        # Pin tenancy explicitly only when the caller supplies it;
+        # otherwise the column server_default applies (legacy behaviour).
+        if enterprise_id is not None and group_id is not None:
+            query = INSERT_USER_WITH_TENANCY
+            params["enterprise_id"] = enterprise_id
+            params["group_id"] = group_id
+        else:
+            query = INSERT_USER
         try:
             with self._engine.begin() as conn:
-                conn.execute(
-                    INSERT_USER,
-                    {
-                        "username": username,
-                        "password_hash": password_hash,
-                        "role": role,
-                        "created_at": created_at,
-                    },
-                )
+                conn.execute(query, params)
         except IntegrityError as e:
             if e.orig is not None:
                 raise e.orig from e
