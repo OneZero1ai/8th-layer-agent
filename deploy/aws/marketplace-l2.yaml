@@ -79,6 +79,13 @@ Parameters:
   AdminPasswordSsmParam:
     Type: String
     Default: ""
+    # Empty (disabled) or a leading-slash SSM parameter name. The
+    # leading slash is required: the exec-role policy builds the ARN as
+    # ":parameter${AdminPasswordSsmParam}", which is only well-formed
+    # when the name starts with "/". Reject a bad value at stack-create
+    # rather than failing opaquely at task start.
+    AllowedPattern: "^(/.*)?$"
+    ConstraintDescription: Must be empty or an SSM parameter name beginning with "/".
     Description: |
       Optional. Name of a pre-existing SSM SecureString parameter
       holding the initial admin password (e.g.

@@ -20,7 +20,10 @@ import pytest
 from sqlalchemy import text
 
 from cq_server.auth import hash_password, verify_password
-from cq_server.bootstrap_admin import bootstrap_password_admin_if_needed
+from cq_server.bootstrap_admin import (
+    _SYSTEM_USERNAME,
+    bootstrap_password_admin_if_needed,
+)
 from cq_server.store import SqliteStore
 
 
@@ -90,6 +93,21 @@ async def test_idempotent_when_user_already_exists(
     assert _user_row(store, "admin") is None, "must not seed over an existing user base"
     founder = _user_row(store, "founder")
     assert founder is not None and verify_password("orig-pw", founder[0])
+
+
+async def test_defers_to_email_path_when_system_row_present(
+    store: SqliteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate bootstrap_first_admin_if_needed having already run: it
+    # leaves the _bootstrap_system marker row (and a pending invite) but
+    # no real user. The password path must NOT also seed an admin —
+    # otherwise the L2 ends up with two admin principals.
+    await store.create_user(_SYSTEM_USERNAME, hash_password("!disabled!"))
+    monkeypatch.setenv("CQ_INITIAL_ADMIN_PASSWORD", "would-be-second-admin")
+
+    await bootstrap_password_admin_if_needed(store)
+
+    assert _user_row(store, "admin") is None, "must defer to the email bootstrap path"
 
 
 async def test_honours_custom_username(
