@@ -95,6 +95,24 @@ class TestLoginEndpoint:
         resp = client.post("/auth/login", json={"username": "nobody", "password": self.test_password})
         assert resp.status_code == 401
 
+    def test_login_empty_users_table_returns_401_fast(self, client: TestClient) -> None:
+        """agent#166 regression: login against a completely empty users
+        table must return a prompt 401, never hang into a 504.
+
+        The ``client`` fixture seeds no users, so the table is genuinely
+        empty here. The handler's ``user is None`` short-circuit returns
+        before ``verify_password`` is ever reached. If this regresses
+        into a hang the TestClient call blocks and CI flags the timeout;
+        the elapsed-time assertion is a generous belt-and-braces guard.
+        """
+        import time as _time
+
+        t0 = _time.monotonic()
+        resp = client.post("/auth/login", json={"username": "admin", "password": "anything"})
+        elapsed = _time.monotonic() - t0
+        assert resp.status_code == 401
+        assert elapsed < 5.0, f"login on empty users table took {elapsed:.1f}s — agent#166 regression"
+
 
 class TestAuthMe:
     test_password = "secret123"  # pragma: allowlist secret
