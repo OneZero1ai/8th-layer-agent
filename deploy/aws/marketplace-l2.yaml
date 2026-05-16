@@ -76,6 +76,24 @@ Parameters:
       role. Carried in the stack for documentation/audit only — it is
       NOT used at runtime by any resource in this template.
 
+  AdminPasswordSsmParam:
+    Type: String
+    Default: ""
+    Description: |
+      Optional. Name of a pre-existing SSM SecureString parameter
+      holding the initial admin password (e.g.
+      "/8th-layer/<slug>/admin-password"). When set, cq-server seeds a
+      password-login `admin` user on first boot (agent#165) so an
+      operator can log in and mint an agent API key. Leave empty for the
+      marketplace self-service path — the founder gets in via the
+      CQ_INITIAL_ADMIN_EMAIL magic-link instead. The parameter must
+      exist before stack creation. An `alias/aws/ssm`-encrypted
+      parameter works as-is; a customer-managed-CMK-encrypted parameter
+      additionally needs a key grant for the task execution role.
+
+Conditions:
+  HasAdminPasswordParam: !Not [!Equals [!Ref AdminPasswordSsmParam, ""]]
+
 Resources:
   # =====================================================================
   # SECRETS — auto-generated, stored in Secrets Manager, mounted to the
@@ -296,6 +314,21 @@ Resources:
                   - !Ref JwtSecret
                   - !Ref ApiKeyPepper
                   - !Ref AigrpPeerKey
+        # agent#165 — only present when AdminPasswordSsmParam is set.
+        # Lets ECS resolve the CQ_INITIAL_ADMIN_PASSWORD SecureString at
+        # task start. ssm:GetParameters with WithDecryption suffices for
+        # an alias/aws/ssm-encrypted parameter; a customer CMK needs a
+        # separate key grant (called out on the parameter's Description).
+        - !If
+          - HasAdminPasswordParam
+          - PolicyName: AdminPasswordSsmRead
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: [ssm:GetParameters]
+                  Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminPasswordSsmParam}"
+          - !Ref "AWS::NoValue"
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -401,10 +434,24 @@ Resources:
             - { Name: CQ_DIRECTORY_PULL_INTERVAL_SEC, Value: "60" }
             - { Name: CQ_AIGRP_IS_FIRST_DEPLOY, Value: "true" }
             - { Name: CQ_AIGRP_SEED_PEER_URL, Value: "" }
+            # Plain (non-secret) — the SSM path is logged at first-boot
+            # bootstrap so operators can see where the seed came from.
+            # The password itself is mounted via Secrets below.
+            - !If
+              - HasAdminPasswordParam
+              - { Name: CQ_INITIAL_ADMIN_PASSWORD_SSM_PATH, Value: !Ref AdminPasswordSsmParam }
+              - !Ref "AWS::NoValue"
           Secrets:
             - { Name: CQ_JWT_SECRET,      ValueFrom: !Ref JwtSecret }
             - { Name: CQ_API_KEY_PEPPER,  ValueFrom: !Ref ApiKeyPepper }
             - { Name: CQ_AIGRP_PEER_KEY,  ValueFrom: !Ref AigrpPeerKey }
+            # agent#165 — first-boot password-admin seed. Only wired when
+            # AdminPasswordSsmParam is set; ECS resolves the SSM
+            # SecureString at task start into CQ_INITIAL_ADMIN_PASSWORD.
+            - !If
+              - HasAdminPasswordParam
+              - { Name: CQ_INITIAL_ADMIN_PASSWORD, ValueFrom: !Ref AdminPasswordSsmParam }
+              - !Ref "AWS::NoValue"
           # Container-level health check uses python (urllib) rather than
           # curl because the cq-server image (Python slim base) doesn't
           # ship curl/wget. The image already declares the same probe in

@@ -116,6 +116,84 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
     )
 
 
+_DEFAULT_ADMIN_USERNAME = "admin"
+
+
+async def bootstrap_password_admin_if_needed(store: SqliteStore) -> None:
+    """Seed a password-login admin on first boot from an SSM-backed env.
+
+    The operator onboarding path (agent#165): an operator sets an SSM
+    parameter holding the initial admin password *before* deploying the
+    L2 stack; the task definition mounts it as ``CQ_INITIAL_ADMIN_PASSWORD``
+    via the ECS ``secrets:`` integration. On the very first boot — users
+    table empty — this seeds a real ``admin`` user with role=admin so the
+    operator can log in, mint an agent API key, and plant it. This
+    replaces the manual ``aws ecs execute-command`` + ``seed-users.py``
+    dance that blocked smoke-check #5 during the TeamDW standup.
+
+    Distinct from :func:`bootstrap_first_admin_if_needed` (the founder
+    path, ``CQ_INITIAL_ADMIN_EMAIL`` → magic-link invite → passkey). The
+    two are complementary; an L2 may set either, both, or neither.
+
+    Idempotency: skipped when any non-system user already exists OR when
+    ``CQ_INITIAL_ADMIN_PASSWORD`` is unset. The empty-users check means
+    that once any admin exists — including one rotated by a later manual
+    edit — re-deploying with the env still set is a no-op forever, so a
+    password rotation can never re-seed over a live admin.
+
+    Never raises — boot must not fail because of a bootstrap hiccup.
+    """
+    password = os.environ.get("CQ_INITIAL_ADMIN_PASSWORD", "")
+    if not password:
+        return
+    username = os.environ.get("CQ_INITIAL_ADMIN_USERNAME", "").strip() or _DEFAULT_ADMIN_USERNAME
+    # Informational only — the SSM path, never the password, is logged.
+    ssm_path = os.environ.get("CQ_INITIAL_ADMIN_PASSWORD_SSM_PATH", "").strip()
+
+    try:
+        if await _users_exist(store):
+            log.debug("bootstrap_password_admin: skipped — users already present")
+            return
+    except Exception:  # noqa: BLE001
+        log.exception("bootstrap_password_admin: user-count probe failed; skipping")
+        return
+
+    # Pin the admin to the L2's own tenancy. A user left on the
+    # 'default-enterprise'/'default-group' server_default cannot transact
+    # on the real tenancy — cross-Enterprise consults 403 with a
+    # forwarder mismatch (see scripts/seed-users.py). Only pin when both
+    # are set; otherwise fall back to the column defaults.
+    enterprise_id = os.environ.get("CQ_ENTERPRISE", "").strip() or None
+    group_id = os.environ.get("CQ_GROUP", "").strip() or None
+    if enterprise_id is None or group_id is None:
+        enterprise_id = group_id = None
+
+    from .auth import hash_password
+
+    try:
+        await store.create_user(
+            username=username,
+            password_hash=hash_password(password),
+            role="admin",
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("bootstrap_password_admin: admin user creation failed; skipping")
+        return
+
+    # Bracketed sentinel — greppable in CloudWatch Logs Insights.
+    # The password is NEVER logged; only the SSM path it came from.
+    source = f"SSM {ssm_path}" if ssm_path else "CQ_INITIAL_ADMIN_PASSWORD env"
+    log.warning(
+        "[BOOTSTRAP_ADMIN] admin user '%s' (role=admin, enterprise=%s, group=%s) seeded from %s",
+        username,
+        enterprise_id or "default-enterprise",
+        group_id or "default-group",
+        source,
+    )
+
+
 async def _users_exist(store: SqliteStore) -> bool:
     """Return True iff at least one row in users (excluding the system row).
 
