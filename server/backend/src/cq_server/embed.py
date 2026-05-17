@@ -34,9 +34,19 @@ def is_enabled() -> bool:
 @lru_cache(maxsize=1)
 def _client():
     import boto3
+    from botocore.config import Config
 
     region = os.environ.get("CQ_EMBED_REGION", DEFAULT_REGION)
-    return boto3.client("bedrock-runtime", region_name=region)
+    # Bounded timeouts + no retries: an unbounded invoke_model hang
+    # outlasts CloudFront's 30s origin timeout and 504s the whole
+    # /propose request. Worst case here is ~13s; embed_text swallows
+    # the failure and the embedding is backfilled later.
+    cfg = Config(
+        connect_timeout=3,
+        read_timeout=10,
+        retries={"max_attempts": 1},
+    )
+    return boto3.client("bedrock-runtime", region_name=region, config=cfg)
 
 
 def _pack(vector: list[float]) -> bytes:

@@ -1,5 +1,6 @@
 """cq knowledge store API."""
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -1633,12 +1634,15 @@ async def propose_unit(
         tier=Tier.PRIVATE,
         created_by=username,
     )
-    embed_payload = embed_text(
+    # embed_text() is a blocking boto3 call; offload it so a slow
+    # Bedrock response cannot stall the asyncio event loop.
+    embed_payload = await asyncio.to_thread(
+        embed_text,
         compose_text(
             request.insight.summary,
             request.insight.detail,
             request.insight.action,
-        )
+        ),
     )
     if embed_payload is not None:
         embedding_bytes, embedding_model = embed_payload
