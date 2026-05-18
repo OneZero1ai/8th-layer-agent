@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from "./auth"
 import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
 import { ApiKeysPage } from "./pages/ApiKeysPage"
+import { CreateL2Page } from "./pages/CreateL2Page"
 import { CrosstalkPage } from "./pages/CrosstalkPage"
 import { DashboardPage } from "./pages/DashboardPage"
 import { InvitesPage } from "./pages/InvitesPage"
@@ -62,6 +63,7 @@ function AppRoutes() {
         <Route path="/settings/api-keys" element={<ApiKeysPage />} />
         <Route path="/admin/personas" element={<PersonasPage />} />
         <Route path="/admin/invites" element={<InvitesPage />} />
+        <Route path="/admin/l2s/new" element={<CreateL2Page />} />
       </Route>
       <Route path="*" element={<Navigate to="/review" replace />} />
     </Routes>
