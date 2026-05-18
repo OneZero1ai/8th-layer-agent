@@ -70,6 +70,7 @@ export function Layout() {
             {navLink("/federation", "Federation", "federation")}
             {navLink("/settings/api-keys", "API Keys", "api-keys")}
             {navLink("/admin/personas", "Personas", "personas")}
+            {navLink("/admin/l2s/new", "Add L2", "add-l2")}
           </div>
           <div className="flex items-center gap-4">
             <TourLauncher />

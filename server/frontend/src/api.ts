@@ -1,3 +1,4 @@
+import type { CreateL2Request, CreateL2Response } from "./l2wizard/types"
 import type {
   ActivityListResponse,
   ApiKeysList,
@@ -230,6 +231,42 @@ export const api = {
     request<ConsultMessagesResponse>(
       `/consults/${encodeURIComponent(threadId)}/messages`,
     ),
+
+  // FO-3 (agent#193 / Decision 32) — Create-L2 wizard.
+  //
+  // createL2 posts the wizard's {l2_slug, description, aws_region} to the
+  // cq-server L2-provision proxy (PR #292). The proxy resolves the caller's
+  // Enterprise + AWS binding server-side; the browser never sends those.
+  // The 202 response carries the SSE `stream_url` the progress step opens.
+  createL2: (body: CreateL2Request) =>
+    request<CreateL2Response>("/admin/l2s", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // checkL2SlugAvailable does a debounced live availability probe for the
+  // wizard's name step. The cq-server proxy's slug-availability route is not
+  // part of PR #292 (the create call is the authoritative uniqueness check —
+  // it 409s L2_SLUG_TAKEN). Until a dedicated GET lands, a 404 (route absent)
+  // resolves to `unknown` so the UI falls back to client-side regex
+  // validation rather than hard-blocking the wizard. A 409 means taken; a
+  // 2xx body's `available` flag is honoured when the route does exist.
+  checkL2SlugAvailable: async (
+    slug: string,
+  ): Promise<"available" | "taken" | "unknown"> => {
+    try {
+      const resp = await request<{ available?: boolean }>(
+        `/admin/l2s/slug-available?slug=${encodeURIComponent(slug)}`,
+      )
+      if (resp && resp.available === false) return "taken"
+      return "available"
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) return "taken"
+      // 404 → route not deployed; anything else → treat as unknown so the
+      // wizard never hard-blocks on a probe that may not exist yet.
+      return "unknown"
+    }
+  },
 }
 
 export { ApiError }
