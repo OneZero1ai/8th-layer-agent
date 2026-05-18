@@ -245,18 +245,19 @@ export const api = {
     }),
 
   // checkL2SlugAvailable does a debounced live availability probe for the
-  // wizard's name step. The cq-server proxy's slug-availability route is not
-  // part of PR #292 (the create call is the authoritative uniqueness check —
-  // it 409s L2_SLUG_TAKEN). Until a dedicated GET lands, a 404 (route absent)
-  // resolves to `unknown` so the UI falls back to client-side regex
-  // validation rather than hard-blocking the wizard. A 409 means taken; a
-  // 2xx body's `available` flag is honoured when the route does exist.
+  // wizard's name step. It hits the cq-server proxy's slug-availability
+  // passthrough (agent#193, PR #295) — a path-param route matching the
+  // directory contract: GET .../l2s/slug-available/{l2_slug}. The directory
+  // answers 200 {available:true} / 409 {available:false}; a 404 (route not
+  // deployed on this L2 yet) still resolves to `unknown` so the UI falls
+  // back to client-side regex rather than hard-blocking the wizard. The
+  // create call remains the authoritative uniqueness check (409 at provision).
   checkL2SlugAvailable: async (
     slug: string,
   ): Promise<"available" | "taken" | "unknown"> => {
     try {
       const resp = await request<{ available?: boolean }>(
-        `/admin/l2s/slug-available?slug=${encodeURIComponent(slug)}`,
+        `/admin/l2s/slug-available/${encodeURIComponent(slug)}`,
       )
       if (resp && resp.available === false) return "taken"
       return "available"
