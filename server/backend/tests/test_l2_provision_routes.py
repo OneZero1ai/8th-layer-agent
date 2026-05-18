@@ -100,9 +100,7 @@ def root_key_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(
-    tmp_path: Path, root_key_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[TestClient]:
+def client(tmp_path: Path, root_key_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """A TestClient with one Enterprise-A admin and one Enterprise-A plain user."""
     monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "l2prov.db"))
     monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
@@ -227,9 +225,7 @@ class TestCreateL2Forward:
         assert fwd.method == "POST"
         assert str(fwd.url) == f"{PROVISIONING_BASE}/api/v1/enterprises/{ENT_A}/l2s"
 
-    def test_post_body_is_a_signed_envelope(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_post_body_is_a_signed_envelope(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """Directory #22 auth contract — the proxy actually signs the body.
 
         The forward body must be a SignedEnvelope (not the plain wizard
@@ -305,9 +301,7 @@ class TestCreateL2Forward:
         payload = _assert_signed_envelope(json.loads(seen[0].content), expected_enterprise_id=ENT_A)
         assert payload["enterprise_id"] == ENT_A
 
-    def test_missing_identity_key_is_500(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_identity_key_is_500(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """No Enterprise root key mount → 500 IDENTITY_KEY_UNAVAILABLE, no forward."""
         monkeypatch.delenv("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", raising=False)
         seen = _mock_provisioning(monkeypatch, lambda r: httpx.Response(202, json={}))
@@ -322,9 +316,7 @@ class TestCreateL2Forward:
         # The proxy must NOT have forwarded an unsigned request.
         assert seen == []
 
-    def test_upstream_error_envelope_passed_through(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_upstream_error_envelope_passed_through(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         def _handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 409,
@@ -345,9 +337,7 @@ class TestCreateL2Forward:
         assert resp.status_code == 409
         assert resp.json()["code"] == "L2_SLUG_TAKEN"
 
-    def test_upstream_403_forbidden_passed_through(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_upstream_403_forbidden_passed_through(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """A directory 403 FORBIDDEN (wrong Enterprise) relays verbatim."""
 
         def _handler(request: httpx.Request) -> httpx.Response:
@@ -366,9 +356,7 @@ class TestCreateL2Forward:
         assert resp.status_code == 403
         assert resp.json()["code"] == "FORBIDDEN"
 
-    def test_transport_failure_maps_to_502(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_transport_failure_maps_to_502(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         def _handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -409,9 +397,7 @@ class TestStreamAuth:
         resp = client.get("/api/v1/admin/l2s/jobs/job-1/stream")
         assert resp.status_code == 401
 
-    def test_stream_missing_identity_key_is_500(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_stream_missing_identity_key_is_500(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", raising=False)
         token = _login(client, USER_A)
         resp = client.get(
@@ -596,9 +582,7 @@ async def test_stream_survives_transient_poll_failure(
     assert "event: completed" in blob
 
 
-async def test_stream_404_job_closes_as_failed(
-    monkeypatch: pytest.MonkeyPatch, stream_key: Ed25519PrivateKey
-) -> None:
+async def test_stream_404_job_closes_as_failed(monkeypatch: pytest.MonkeyPatch, stream_key: Ed25519PrivateKey) -> None:
     """A 404 from the directory poll route is terminal — stream closes failed."""
     rows = [{"_http_status": 404, "error": "not found", "code": "NOT_FOUND", "detail": ""}]
     _install_scripted(monkeypatch, rows)
@@ -624,3 +608,149 @@ async def test_stream_auth_rejected_closes_as_failed(
     failed = [f for f in frames if "event: failed" in f][0]
     payload = json.loads(failed.split("data: ", 1)[1].strip())
     assert "identity proof" in payload["error"]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/admin/l2s/slug-available/{l2_slug} — slug-availability passthrough
+# ---------------------------------------------------------------------------
+#
+# The wizard's slug field debounce-probes this route for a live "is this L2
+# slug free" hint. It is a thin passthrough to the directory's auth-gated
+# GET .../l2s/slug-available/{l2_slug} — the directory returns 200
+# {available: true} when free / 409 {available: false} when taken, and the
+# proxy presents the same X-8L-Identity-Proof header the SSE poll loop builds.
+
+
+class TestSlugAvailableAuth:
+    def test_requires_authentication(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/admin/l2s/slug-available/sales")
+        assert resp.status_code == 401
+
+    def test_non_admin_forbidden(self, client: TestClient) -> None:
+        token = _login(client, USER_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
+
+class TestSlugAvailableForward:
+    def test_available_slug_returns_200_and_forwards_to_callers_enterprise(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A free slug → directory 200 {available: true}, relayed verbatim.
+
+        The forward URL must carry the caller's OWN enterprise_id and the
+        directory's slug-available path; the browser never sends a tenancy.
+        """
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"l2_slug": "sales", "available": True})
+
+        seen = _mock_provisioning(monkeypatch, _handler)
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"l2_slug": "sales", "available": True}
+
+        # Tenancy: the forward URL carries the caller's own enterprise_id.
+        assert len(seen) == 1
+        fwd = seen[0]
+        assert fwd.method == "GET"
+        assert str(fwd.url) == (f"{PROVISIONING_BASE}/api/v1/enterprises/{ENT_A}/l2s/slug-available/sales")
+
+    def test_taken_slug_returns_409_passthrough(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A taken slug → directory 409 {available: false}, relayed verbatim.
+
+        The directory's 409 body is the {l2_slug, available} answer shape,
+        NOT a {error, code, detail} envelope — it must pass straight through.
+        """
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(409, json={"l2_slug": "taken", "available": False})
+
+        _mock_provisioning(monkeypatch, _handler)
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/taken",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 409
+        assert resp.json() == {"l2_slug": "taken", "available": False}
+
+    def test_forward_sends_signed_identity_proof_header(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Directory #22 auth contract — the GET carries a signed identity proof.
+
+        The body-less GET presents an X-8L-Identity-Proof header whose
+        SignedEnvelope verifies and binds to the caller's Enterprise.
+        """
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"l2_slug": "sales", "available": True})
+
+        seen = _mock_provisioning(monkeypatch, _handler)
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        proof = seen[0].headers.get("X-8L-Identity-Proof")
+        assert proof, "forward request missing X-8L-Identity-Proof header"
+        envelope = _decode_proof_header(proof)
+        _assert_signed_envelope(envelope, expected_enterprise_id=ENT_A)
+        # The signing key is the Enterprise root key.
+        root = load_private_key(Path(os.environ["CQ_ENTERPRISE_ROOT_PRIVKEY_PATH"]))
+        assert envelope["signing_key_id"] == public_key_b64u(root)
+
+    def test_missing_identity_key_is_500(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No Enterprise root key mount → 500 IDENTITY_KEY_UNAVAILABLE, no forward."""
+        monkeypatch.delenv("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", raising=False)
+        seen = _mock_provisioning(monkeypatch, lambda r: httpx.Response(200, json={}))
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 500
+        assert resp.json()["code"] == "IDENTITY_KEY_UNAVAILABLE"
+        # The proxy must NOT have forwarded an unsigned request.
+        assert seen == []
+
+    def test_transport_failure_maps_to_502(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        _mock_provisioning(monkeypatch, _handler)
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 502
+        assert resp.json()["code"] == "PROVISIONING_UNREACHABLE"
+
+    def test_upstream_auth_rejection_passed_through(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A directory 403 FORBIDDEN (rejected proof) relays its envelope verbatim."""
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403,
+                json={"error": "enterprise mismatch", "code": "FORBIDDEN", "detail": ""},
+            )
+
+        _mock_provisioning(monkeypatch, _handler)
+        token = _login(client, ADMIN_A)
+        resp = client.get(
+            "/api/v1/admin/l2s/slug-available/sales",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["code"] == "FORBIDDEN"

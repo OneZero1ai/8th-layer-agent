@@ -654,3 +654,113 @@ async def stream_l2_job(
             "Connection": "keep-alive",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/admin/l2s/slug-available/{l2_slug} — slug-availability passthrough
+# ---------------------------------------------------------------------------
+#
+# FO-3 Phase 3's Create-L2 wizard (agent#193) debounce-probes this route from
+# its slug field for a live "is this L2 slug free" check. The directory owns
+# the authoritative answer — the proxy holds no L2-slug state — so this is a
+# thin passthrough to the directory's
+# ``GET .../enterprises/{enterprise_id}/l2s/slug-available/{l2_slug}``.
+#
+# Like the SSE job-poll, this directory GET is auth-gated (directory #22 /
+# directory PR #22's FO-3 contract): the caller presents an Enterprise-root
+# identity proof in the ``X-8L-Identity-Proof`` header — the SAME proof the
+# poll loop builds. The directory's contract:
+#   200 {l2_slug, available: true}   — slug is free
+#   409 {l2_slug, available: false}  — slug is taken
+# Both are relayed verbatim with their status; the create call remains the
+# authoritative 409 at provision time, this is only the wizard's live hint.
+
+
+@router.get(
+    "/slug-available/{l2_slug}",
+    summary="Check whether an L2 slug is free in the caller's Enterprise (proxy → provisioning service)",
+    # The handler returns either the directory's {l2_slug, available} body or
+    # a JSONResponse error envelope — neither is a fixed pydantic model.
+    response_model=None,
+)
+async def slug_available(
+    l2_slug: str,
+    admin: str = Depends(require_admin),
+    store: SqliteStore = Depends(get_store),
+) -> JSONResponse:
+    """FO-3 Phase 2 — proxy the wizard's live L2-slug availability probe.
+
+    Auth: ``require_admin`` — the wizard's slug field is admin-only, and a
+    slug-existence answer is itself tenancy information. Tenancy: the check
+    runs against the calling admin's own Enterprise (resolved from their user
+    row); the browser never sends ``enterprise_id``.
+
+    Forwards to the directory's
+    ``GET /api/v1/enterprises/{enterprise_id}/l2s/slug-available/{l2_slug}``
+    with a freshly-signed ``X-8L-Identity-Proof`` header (directory #22 auth
+    contract). The directory returns ``200 {l2_slug, available: true}`` when
+    the slug is free and ``409 {l2_slug, available: false}`` when taken; both
+    are relayed verbatim with their status. Transport failures map to
+    ``502 PROVISIONING_UNREACHABLE``; a missing identity-key mount → 500.
+    """
+    try:
+        enterprise_id = await _resolve_caller_enterprise(store, admin)
+    except _TenancyError as exc:
+        return _error("TENANCY", "Caller is not scoped to an Enterprise.", str(exc), status=403)
+
+    # Directory #22 auth contract: the body-less GET carries the Enterprise-
+    # root identity proof in a header. Load the key up-front so a missing
+    # mount fails as a clean 500 rather than sending an unsigned (rejected)
+    # request — identical handling to the create + SSE routes.
+    try:
+        privkey = _load_enterprise_root_key()
+    except _SigningError as exc:
+        log.error("FO-3 slug-available: cannot sign directory identity proof: %s", exc)
+        return _error(
+            "IDENTITY_KEY_UNAVAILABLE",
+            "This L2 cannot authenticate to the provisioning service.",
+            str(exc),
+            status=500,
+        )
+
+    base = get_provisioning_api_url()
+    forward_url = f"{base}/api/v1/enterprises/{enterprise_id}/l2s/slug-available/{l2_slug}"
+    headers = {"X-8L-Identity-Proof": _build_identity_proof_header(privkey, enterprise_id=enterprise_id)}
+
+    try:
+        async with httpx.AsyncClient(timeout=_FORWARD_TIMEOUT_SEC) as http:
+            resp = await http.get(forward_url, headers=headers)
+    except httpx.HTTPError as exc:
+        log.warning("FO-3 slug-available forward failed: %s (%s)", exc, forward_url)
+        return _error(
+            "PROVISIONING_UNREACHABLE",
+            "The provisioning service is unreachable. Please retry shortly.",
+            str(exc),
+            status=502,
+        )
+
+    # Relay the directory's verdict verbatim. 200 and 409 are both expected
+    # "answers" here (free / taken) and carry a {l2_slug, available} body,
+    # not a {error, code, detail} envelope — pass them straight through.
+    if resp.status_code in (200, 409):
+        try:
+            body = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            return _error(
+                "PROVISIONING_ERROR",
+                "The provisioning service returned an unreadable response.",
+                f"status {resp.status_code}",
+                status=502,
+            )
+        return JSONResponse(status_code=resp.status_code, content=body)
+
+    # Anything else (401/403 rejected proof, 404 unknown Enterprise, 422
+    # malformed slug, 5xx) is a real error — surface the directory's
+    # {error, code, detail} envelope verbatim where it speaks one.
+    log.info(
+        "FO-3 slug-available upstream non-answer: status=%s enterprise=%s slug=%s",
+        resp.status_code,
+        enterprise_id,
+        l2_slug,
+    )
+    return _passthrough_upstream_error(resp)
