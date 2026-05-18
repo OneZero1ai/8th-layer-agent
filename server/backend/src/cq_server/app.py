@@ -37,6 +37,7 @@ from .deps import API_KEY_PEPPER_ENV
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
 from .invite_routes import router as invite_router
+from .l2_provision_routes import router as l2_provision_router
 from .migrations import run_migrations
 from .network import router as network_router
 from .passkey_routes import router as passkey_router
@@ -483,6 +484,10 @@ api_router.include_router(admin_xgroup_consent_router)
 api_router.include_router(invite_router)
 # FO-2-backend (#228) endpoints relocated to 8th-layer-directory per
 # agent#239 — provision.8th-layer.ai now points at the directory's ALB.
+# FO-3 Phase 2 (agent#193 / Decision 32) — thin authenticated proxy +
+# SSE passthrough for the Create-L2 wizard. Forwards to the directory
+# provisioning service; holds no provisioning state.
+api_router.include_router(l2_provision_router)
 # AS-1 (#229) — admin Personas CRUD endpoints.
 api_router.include_router(persona_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
