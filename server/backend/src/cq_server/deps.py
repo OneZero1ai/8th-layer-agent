@@ -1,6 +1,7 @@
 """FastAPI dependencies shared across routers."""
 
 import hmac
+import os
 
 from fastapi import BackgroundTasks, Depends, HTTPException, Request
 
@@ -8,6 +9,24 @@ from .api_keys import decode_token, hash_secret
 from .store._sqlite import SqliteStore
 
 API_KEY_PEPPER_ENV = "CQ_API_KEY_PEPPER"  # pragma: allowlist secret
+
+# FO-3 (agent#193 / Decision 32) — central provisioning service base URL.
+# The cq-server admin shell is a thin proxy onto the cq-directory
+# provisioning service (`provision.8th-layer.ai`, 8th-layer-app account)
+# which owns the L2-create job runner. cq-server holds no provisioning
+# state; it forwards the wizard's create call and polls the job for SSE.
+CQ_PROVISIONING_API_URL_ENV = "CQ_PROVISIONING_API_URL"
+DEFAULT_PROVISIONING_API_URL = "https://provision.8th-layer.ai"
+
+
+def get_provisioning_api_url() -> str:
+    """Return the base URL of the cq-directory provisioning service.
+
+    Reads ``CQ_PROVISIONING_API_URL`` (production default
+    ``https://provision.8th-layer.ai``). Trailing slash stripped so
+    callers can append ``/api/v1/...`` paths unconditionally.
+    """
+    return os.environ.get(CQ_PROVISIONING_API_URL_ENV, DEFAULT_PROVISIONING_API_URL).rstrip("/")
 
 
 def get_store(request: Request) -> SqliteStore:
