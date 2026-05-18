@@ -71,7 +71,7 @@ log = logging.getLogger(__name__)
 # routes derive the caller's Enterprise from the verified signature over
 # this key and assert it equals the path enterprise_id — closing the
 # cross-tenant hole that directory PR #22 originally had.
-CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV = "CQ_ENTERPRISE_ROOT_PRIVKEY_PATH"
+CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV = "CQ_ENTERPRISE_ROOT_PRIVKEY_PATH"  # pragma: allowlist secret
 
 router = APIRouter(prefix="/admin/l2s", tags=["admin", "provisioning-l2"])
 
