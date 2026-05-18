@@ -512,6 +512,12 @@ Resources:
       Scheme: internet-facing
       Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
       SecurityGroups: [!Ref AlbSecurityGroup]
+      # 420s idle timeout: the FO-3 Create-L2 wizard streams an SSE
+      # progress feed for the full ~5min L2 standup. The 60s default
+      # would drop the connection mid-standup. See Decision 32 #4.
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "420"
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
