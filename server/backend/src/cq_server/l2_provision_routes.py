@@ -198,9 +198,7 @@ async def _resolve_caller_enterprise(store: SqliteStore, username: str) -> str:
         raise _TenancyError("user row missing for authenticated admin")
     enterprise_id = user.get("enterprise_id")
     if not enterprise_id:
-        raise _TenancyError(
-            "caller user row has no enterprise_id; FO-3 L2-provision requires a tenancy-scoped admin"
-        )
+        raise _TenancyError("caller user row has no enterprise_id; FO-3 L2-provision requires a tenancy-scoped admin")
     return enterprise_id
 
 
@@ -257,8 +255,7 @@ def _load_enterprise_root_key() -> Ed25519PrivateKey:
     path = os.environ.get(CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV, "")
     if not path:
         raise _SigningError(
-            f"{CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV} is unset — the proxy cannot sign "
-            "the directory identity proof"
+            f"{CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV} is unset — the proxy cannot sign the directory identity proof"
         )
     try:
         return load_private_key(Path(path))
