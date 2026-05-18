@@ -46,19 +46,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .auth import get_current_user, require_admin
+from .crypto import b64u, canonicalize, load_private_key, sign_envelope
 from .deps import get_provisioning_api_url, get_store
 from .store._sqlite import SqliteStore
 
 log = logging.getLogger(__name__)
+
+# Enterprise root Ed25519 private-key path — the SAME key the cq-server
+# already uses to sign directory /announce and heartbeat envelopes
+# (``directory_client`` reads the identical env var). The directory's FO-3
+# routes derive the caller's Enterprise from the verified signature over
+# this key and assert it equals the path enterprise_id — closing the
+# cross-tenant hole that directory PR #22 originally had.
+CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV = "CQ_ENTERPRISE_ROOT_PRIVKEY_PATH"
 
 router = APIRouter(prefix="/admin/l2s", tags=["admin", "provisioning-l2"])
 
@@ -195,6 +208,101 @@ class _TenancyError(Exception):
     """Internal — raised by _resolve_caller_enterprise, mapped to a 403 envelope."""
 
 
+class _SigningError(Exception):
+    """Internal — raised when the Enterprise root key cannot be loaded/used.
+
+    Mapped by the route to a 500 ``IDENTITY_KEY_UNAVAILABLE`` envelope: the
+    proxy cannot present the directory's required credential, so the request
+    cannot proceed. This is a server-misconfiguration condition (the
+    ``CQ_ENTERPRISE_ROOT_PRIVKEY_PATH`` mount is missing), not a client error.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Enterprise-root-key identity proofs (directory FO-3 auth contract)
+# ---------------------------------------------------------------------------
+#
+# The directory's FO-3 routes (8th-layer-directory #22, contract now locked)
+# authenticate the caller by an Enterprise-root Ed25519 signature, NOT a
+# bearer token: the directory verifies the signature, derives the caller's
+# Enterprise from the signing key, and asserts it equals the path
+# enterprise_id. This is the same key + JCS-canonicalize + Ed25519-sign
+# primitive the cq-server already uses for directory /announce + heartbeat.
+#
+#   POST .../l2s        — request BODY is a SignedEnvelope; inner payload is
+#                         {l2_slug, description, aws_region, enterprise_id, ts}.
+#   GET  .../l2s/jobs/* — GET has no body; an X-8L-Identity-Proof header
+#                         carries base64url(JSON SignedEnvelope) whose inner
+#                         payload is {enterprise_id, ts}.
+#
+# ``ts`` is RFC3339, regenerated per request — proofs are single-use, the
+# directory's replay-skew window is 300s. A stale ts → 400 VALIDATION, which
+# the proxy avoids by always signing with a fresh ts immediately before send.
+
+
+def _rfc3339_now() -> str:
+    """Return an RFC3339 UTC timestamp (``...Z``) for an identity-proof ``ts``."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _load_enterprise_root_key() -> Ed25519PrivateKey:
+    """Load the Enterprise root Ed25519 private key from the configured mount.
+
+    Reads ``CQ_ENTERPRISE_ROOT_PRIVKEY_PATH`` — the identical env var the
+    directory client uses for /announce signing. Raises :class:`_SigningError`
+    when the var is unset or the key file is missing/unreadable; the route
+    maps that to a 500 so a misconfigured L2 fails loudly rather than sending
+    an unsigned (and therefore directory-rejected) request.
+    """
+    path = os.environ.get(CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV, "")
+    if not path:
+        raise _SigningError(
+            f"{CQ_ENTERPRISE_ROOT_PRIVKEY_PATH_ENV} is unset — the proxy cannot sign "
+            "the directory identity proof"
+        )
+    try:
+        return load_private_key(Path(path))
+    except (FileNotFoundError, ValueError) as exc:
+        raise _SigningError(f"cannot load Enterprise root key from {path}: {exc}") from exc
+
+
+def _build_create_envelope(
+    privkey: Ed25519PrivateKey,
+    *,
+    enterprise_id: str,
+    l2_slug: str,
+    description: str,
+    aws_region: str,
+) -> dict[str, Any]:
+    """Build the SignedEnvelope body for ``POST .../enterprises/{id}/l2s``.
+
+    The inner payload carries the wizard fields plus the resolved
+    ``enterprise_id`` (the directory checks it equals the path) and a fresh
+    ``ts``. :func:`crypto.sign_envelope` produces the exact wire shape the
+    directory expects: ``{payload, payload_canonical, signature, signing_key_id}``.
+    """
+    payload = {
+        "l2_slug": l2_slug,
+        "description": description,
+        "aws_region": aws_region,
+        "enterprise_id": enterprise_id,
+        "ts": _rfc3339_now(),
+    }
+    return sign_envelope(privkey, payload)
+
+
+def _build_identity_proof_header(privkey: Ed25519PrivateKey, *, enterprise_id: str) -> str:
+    """Build the ``X-8L-Identity-Proof`` header value for body-less GETs.
+
+    The directory's job-poll route has no request body, so the SignedEnvelope
+    travels in a header: ``base64url(JSON SignedEnvelope)`` whose inner
+    payload is ``{enterprise_id, ts}``. A fresh ``ts`` per call keeps every
+    proof inside the directory's 300s replay window.
+    """
+    envelope = sign_envelope(privkey, {"enterprise_id": enterprise_id, "ts": _rfc3339_now()})
+    return b64u(canonicalize(envelope))
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/admin/l2s — create proxy
 # ---------------------------------------------------------------------------
@@ -215,9 +323,10 @@ async def create_l2(
 
     Auth: ``require_admin``. Tenancy: the L2 is created in the calling
     admin's own Enterprise (resolved from their user row). Forwards to the
-    directory's ``POST /api/v1/enterprises/{enterprise_id}/l2s`` and relays
-    the ``{job_id, l2_id, status, poll_url}`` response, augmented with a
-    ``stream_url`` for the SSE progress endpoint.
+    directory's ``POST /api/v1/enterprises/{enterprise_id}/l2s`` — the body
+    is an Enterprise-root-signed ``SignedEnvelope`` (directory #22 auth
+    contract) — and relays the ``{job_id, l2_id, status, poll_url}``
+    response, augmented with a ``stream_url`` for the SSE progress endpoint.
     """
     try:
         enterprise_id = await _resolve_caller_enterprise(store, admin)
@@ -227,18 +336,33 @@ async def create_l2(
     base = get_provisioning_api_url()
     forward_url = f"{base}/api/v1/enterprises/{enterprise_id}/l2s"
 
-    # The directory's CreateL2Request takes exactly these three fields; the
-    # AWS binding + admin_email are derived directory-side from the
-    # Enterprise's FO-2 record (PR #22), so nothing else crosses.
-    payload = {
-        "l2_slug": body.l2_slug,
-        "description": body.description,
-        "aws_region": body.aws_region,
-    }
+    # Directory #22 auth contract: the request body is a SignedEnvelope, NOT
+    # a plain dict. Sign the wizard fields + the resolved enterprise_id with
+    # the Enterprise root key (the same key the cq-server signs /announce
+    # with). The directory verifies the signature, derives the Enterprise,
+    # and asserts it equals the path enterprise_id. AWS binding + admin_email
+    # are still derived directory-side from the Enterprise's FO-2 record.
+    try:
+        privkey = _load_enterprise_root_key()
+    except _SigningError as exc:
+        log.error("FO-3 create-L2: cannot sign directory identity proof: %s", exc)
+        return _error(
+            "IDENTITY_KEY_UNAVAILABLE",
+            "This L2 cannot authenticate to the provisioning service.",
+            str(exc),
+            status=500,
+        )
+    envelope = _build_create_envelope(
+        privkey,
+        enterprise_id=enterprise_id,
+        l2_slug=body.l2_slug,
+        description=body.description,
+        aws_region=body.aws_region,
+    )
 
     try:
         async with httpx.AsyncClient(timeout=_FORWARD_TIMEOUT_SEC) as http:
-            resp = await http.post(forward_url, json=payload)
+            resp = await http.post(forward_url, json=envelope)
     except httpx.HTTPError as exc:
         log.warning("FO-3 create-L2 forward failed: %s (%s)", exc, forward_url)
         return _error(
@@ -318,8 +442,20 @@ def _sse_event(payload: dict[str, Any], *, event: str | None = None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-async def _poll_job_once(http: httpx.AsyncClient, base: str, enterprise_id: str, job_id: str) -> dict[str, Any]:
+async def _poll_job_once(
+    http: httpx.AsyncClient,
+    base: str,
+    enterprise_id: str,
+    job_id: str,
+    privkey: Ed25519PrivateKey,
+) -> dict[str, Any]:
     """Fetch the directory's job row once. Never raises — returns a status dict.
+
+    The directory's job-poll route requires an Enterprise-root identity
+    proof (directory #22 auth contract). The GET has no body, so the
+    SignedEnvelope travels in the ``X-8L-Identity-Proof`` header, freshly
+    signed with a new ``ts`` on EVERY poll so the proof never goes stale
+    against the directory's 300s replay window.
 
     A transport error or non-2xx upstream response is converted into a
     payload the stream can emit without crashing: the generator decides
@@ -327,14 +463,22 @@ async def _poll_job_once(http: httpx.AsyncClient, base: str, enterprise_id: str,
     (``GET /api/v1/enterprises/{enterprise_id}/l2s/jobs/{job_id}``).
     """
     poll_url = f"{base}/api/v1/enterprises/{enterprise_id}/l2s/jobs/{job_id}"
+    # Fresh proof per poll — a reused ts would 400 VALIDATION mid-stream.
+    headers = {"X-8L-Identity-Proof": _build_identity_proof_header(privkey, enterprise_id=enterprise_id)}
     try:
-        resp = await http.get(poll_url, timeout=_FORWARD_TIMEOUT_SEC)
+        resp = await http.get(poll_url, headers=headers, timeout=_FORWARD_TIMEOUT_SEC)
     except httpx.HTTPError as exc:
         log.debug("FO-3 SSE poll transport error job=%s: %s", job_id, exc)
         return {"_transient_error": f"poll transport error: {exc}"}
     if resp.status_code == 404:
         # The job genuinely does not exist (or expired) — terminal.
         return {"status": "FAILED", "error": "provisioning job not found", "_not_found": True}
+    if resp.status_code in (401, 403):
+        # Identity proof rejected — wrong Enterprise or unverifiable key.
+        # This is not a flaky upstream; it will not self-heal by retrying,
+        # so end the stream rather than spin a doomed poll loop.
+        log.warning("FO-3 SSE poll auth rejected (%s) job=%s", resp.status_code, job_id)
+        return {"status": "FAILED", "error": f"provisioning service rejected identity proof ({resp.status_code})"}
     if resp.status_code >= 400:
         log.debug("FO-3 SSE poll upstream %s job=%s", resp.status_code, job_id)
         return {"_transient_error": f"poll upstream status {resp.status_code}"}
@@ -344,13 +488,20 @@ async def _poll_job_once(http: httpx.AsyncClient, base: str, enterprise_id: str,
         return {"_transient_error": "poll response unreadable"}
 
 
-async def _job_event_stream(base: str, enterprise_id: str, job_id: str) -> AsyncIterator[str]:
+async def _job_event_stream(
+    base: str,
+    enterprise_id: str,
+    job_id: str,
+    privkey: Ed25519PrivateKey,
+) -> AsyncIterator[str]:
     """Async generator yielding SSE frames for one L2-create job.
 
-    Server-side-polls the directory every ``_POLL_INTERVAL_SEC``. Emits a
-    ``phase`` event on every phase / status transition, a ``heartbeat``
-    event at least every ``_HEARTBEAT_EVERY_SEC`` so the connection stays
-    warm, and a terminal ``completed`` / ``failed`` event before closing.
+    Server-side-polls the directory every ``_POLL_INTERVAL_SEC``. Each poll
+    presents a freshly-signed Enterprise-root identity proof (directory #22
+    auth contract — see :func:`_poll_job_once`). Emits a ``phase`` event on
+    every phase / status transition, a ``heartbeat`` event at least every
+    ``_HEARTBEAT_EVERY_SEC`` so the connection stays warm, and a terminal
+    ``completed`` / ``failed`` event before closing.
 
     A poll or logging failure must NOT crash the stream (task brief): a
     transient upstream error emits a ``heartbeat`` carrying a soft warning
@@ -367,7 +518,7 @@ async def _job_event_stream(base: str, enterprise_id: str, job_id: str) -> Async
 
     async with httpx.AsyncClient() as http:
         while elapsed < _STREAM_MAX_SEC:
-            row = await _poll_job_once(http, base, enterprise_id, job_id)
+            row = await _poll_job_once(http, base, enterprise_id, job_id, privkey)
 
             transient = row.get("_transient_error")
             if transient:
@@ -478,11 +629,26 @@ async def stream_l2_job(
             status=403,
         )
 
+    # The poll loop signs an Enterprise-root identity proof per directory
+    # call (directory #22 auth contract). Load the key up-front so a missing
+    # mount fails as a clean 500 rather than opening a stream that would
+    # then emit nothing but auth-rejected frames.
+    try:
+        privkey = _load_enterprise_root_key()
+    except _SigningError as exc:
+        log.error("FO-3 SSE stream: cannot sign directory identity proof: %s", exc)
+        return _error(
+            "IDENTITY_KEY_UNAVAILABLE",
+            "This L2 cannot authenticate to the provisioning service.",
+            str(exc),
+            status=500,
+        )
+
     base = get_provisioning_api_url()
     log.info("FO-3 SSE stream opening job=%s enterprise=%s user=%s", job_id, enterprise_id, username)
 
     return StreamingResponse(
-        _job_event_stream(base, enterprise_id, job_id),
+        _job_event_stream(base, enterprise_id, job_id, privkey),
         media_type="text/event-stream",
         headers={
             # Defeat proxy buffering so events reach the browser as emitted.
