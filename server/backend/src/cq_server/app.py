@@ -614,29 +614,100 @@ async def aigrp_lookup(
         limit=request.max_results * 3,  # over-fetch so filters have headroom
     )
 
+    # --- Cross-L2 fan-out (agent#316) ----------------------------------
+    # After the local semantic query, also fan a signed forward-query at
+    # every sibling L2 in the same Enterprise, merge the remote hits with
+    # the local ones, and re-rank the union by similarity. The receiver's
+    # existing policy (_decide_policy_for_ku) returns summary_only for
+    # cross-group KUs and keeps cross-Enterprise consent-gated — this path
+    # only adds intra-Enterprise fan-out, it does not touch that boundary.
+    #
+    # Non-blocking: fan_out_forward_query wraps every peer call in
+    # return_exceptions=True; a slow/dead peer contributes zero hits and
+    # the lookup degrades to local-only. Local-only behaviour is byte-for-
+    # byte unchanged when there are no peers.
+    #
+    # Bloom prefilter: the lookup request carries only freeform context,
+    # no domain tags — so the query's domain set is taken from the local
+    # hits' domains (the corpus's own answer to "what is this query
+    # about"). Peers whose domain_bloom matches none of those are skipped
+    # before the HTTP call. With no local hits there are no domains, so
+    # the prefilter is a no-op and all peers are queried.
+    remote_hits: list[aigrp.RemoteHit] = []
+    try:
+        peers = await store.list_aigrp_peers(aigrp.enterprise())
+    except Exception:  # noqa: BLE001 — peer table read must never fail the lookup.
+        peers = []
+    if peers:
+        query_domains: set[str] = set()
+        for unit, _sim in raw_hits:
+            query_domains.update(unit.domains)
+        remote_hits = await aigrp.fan_out_forward_query(
+            peers,
+            query_vec=list(query_vec),
+            query_text=request.context,
+            query_domains=query_domains,
+            requester_l2_id=aigrp.self_l2_id(),
+            requester_enterprise=aigrp.enterprise(),
+            requester_group=aigrp.group(),
+            requester_persona=request.persona,
+            max_results=request.max_results,
+            bearer_resolver=_aigrp_outbound_bearer,
+        )
+
+    # Merge local + remote into one candidate list, then re-rank by
+    # similarity. Each candidate is (ku_id, summary, action, domains,
+    # similarity, confidence, created_by) — the AigrpLookupHit shape.
+    candidates: list[AigrpLookupHit] = [
+        AigrpLookupHit(
+            ku_id=unit.id,
+            summary=unit.insight.summary,
+            action=unit.insight.action,
+            domains=list(unit.domains),
+            similarity=sim,
+            confidence=unit.evidence.confidence,
+            created_by=unit.created_by,
+        )
+        for unit, sim in raw_hits
+    ]
+    candidates.extend(
+        AigrpLookupHit(
+            ku_id=rh.ku_id,
+            # summary_only remote hits omit action — fall back to empty.
+            summary=rh.summary,
+            action=rh.action or "",
+            domains=rh.domains,
+            similarity=rh.similarity,
+            confidence=rh.confidence,
+            created_by=rh.created_by,
+        )
+        for rh in remote_hits
+    )
+    # De-dup by ku_id (a KU could surface both locally and via a peer
+    # that mirrored it); keep the higher-similarity copy.
+    by_id: dict[str, AigrpLookupHit] = {}
+    for cand in candidates:
+        existing = by_id.get(cand.ku_id)
+        if existing is None or cand.similarity > existing.similarity:
+            by_id[cand.ku_id] = cand
+    merged = sorted(by_id.values(), key=lambda h: h.similarity, reverse=True)
+
+    # Apply min_similarity / min_confidence / exclude_self over the merged
+    # set, then cap at max_results — identical filter semantics to the
+    # former local-only loop, just over local+remote candidates.
     filtered: list[AigrpLookupHit] = []
     dropped = 0
-    for unit, sim in raw_hits:
-        if sim < request.min_similarity:
+    for cand in merged:
+        if cand.similarity < request.min_similarity:
             dropped += 1
             continue
-        if unit.evidence.confidence < request.min_confidence:
+        if cand.confidence < request.min_confidence:
             dropped += 1
             continue
-        if request.exclude_self and request.persona and unit.created_by == request.persona:
+        if request.exclude_self and request.persona and cand.created_by == request.persona:
             dropped += 1
             continue
-        filtered.append(
-            AigrpLookupHit(
-                ku_id=unit.id,
-                summary=unit.insight.summary,
-                action=unit.insight.action,
-                domains=list(unit.domains),
-                similarity=sim,
-                confidence=unit.evidence.confidence,
-                created_by=unit.created_by,
-            )
-        )
+        filtered.append(cand)
         if len(filtered) >= request.max_results:
             break
 
@@ -971,6 +1042,12 @@ class AigrpForwardQueryHit(BaseModel):
     and omitted (None) under ``summary_only``. ``redacted_fields`` lists
     the field names that were withheld so the requester knows what to
     ask for via a higher-trust channel if they need it.
+
+    ``confidence`` (agent#316) carries the KU's evidence confidence so a
+    forwarding L2 can apply ``aigrp/lookup``'s ``min_confidence`` filter
+    consistently across local and remote hits. It is *not* redacted
+    under ``summary_only`` — confidence is a scalar quality signal, not
+    KU body content, so the cross-group policy leaves it intact.
     """
 
     ku_id: str
@@ -979,6 +1056,7 @@ class AigrpForwardQueryHit(BaseModel):
     action: str | None = None
     domains: list[str]
     sim_score: float
+    confidence: float = 0.0
     redacted_fields: list[str] = Field(default_factory=list)
 
 
@@ -1174,6 +1252,7 @@ async def aigrp_forward_query(
                     action=None,
                     domains=list(unit.domains),
                     sim_score=hit["similarity"],
+                    confidence=unit.evidence.confidence,
                     redacted_fields=redacted,
                 )
             )
@@ -1186,6 +1265,7 @@ async def aigrp_forward_query(
                     action=unit.insight.action,
                     domains=list(unit.domains),
                     sim_score=hit["similarity"],
+                    confidence=unit.evidence.confidence,
                     redacted_fields=[],
                 )
             )
