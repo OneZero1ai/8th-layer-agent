@@ -23,11 +23,40 @@ Parameters:
   EnterpriseSlug:
     Type: String
     Description: |
-      URL-safe enterprise slug — used as identifier + subdomain prefix
-      (e.g. "acme" → acme.8th-layer.ai). Must match the slug registered
-      with the 8th-Layer directory in phase 2.
+      URL-safe slug — used for resource naming + subdomain prefix
+      (e.g. "acme" → acme.8th-layer.ai) + CFN stack name. For an
+      FO-1 first-L2 deploy this equals the Enterprise slug. For an
+      FO-2 additional-L2 deploy this is the *L2's own* slug, which
+      differs from its parent Enterprise — so it must NOT be used as
+      the cq-server tenancy id. See CqEnterpriseId/CqGroupId below.
     AllowedPattern: "^[a-z0-9][a-z0-9-]{2,62}$"
     ConstraintDescription: 3-63 chars, lowercase alphanumeric + hyphen.
+
+  CqEnterpriseId:
+    Type: String
+    Default: ""
+    Description: |
+      The cq-server tenancy enterprise id — becomes CQ_ENTERPRISE on
+      the task, which stamps tenant_enterprise on every activity_log
+      row, KU, and agent. This is the *parent Enterprise* slug, which
+      for an FO-2 additional-L2 deploy is NOT the same as EnterpriseSlug
+      (the L2's own slug). Leave empty for FO-1 first-L2 deploys, where
+      the L2 slug IS the Enterprise — the template then falls back to
+      EnterpriseSlug. agent#303.
+    AllowedPattern: "^([a-z0-9][a-z0-9-]{2,62})?$"
+    ConstraintDescription: Empty, or 3-63 chars lowercase alphanumeric + hyphen.
+
+  CqGroupId:
+    Type: String
+    Default: default
+    Description: |
+      The cq-server tenancy group id within the Enterprise — becomes
+      CQ_GROUP on the task, stamping tenant_group on activity_log rows,
+      KUs, and agents. Defaults to "default" (single-group deployments);
+      provisioning passes the L2's real group when one is assigned.
+      agent#303.
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+    ConstraintDescription: 1-63 chars, lowercase alphanumeric + hyphen.
 
   AwsRegion:
     Type: String
@@ -114,6 +143,10 @@ Parameters:
 Conditions:
   HasAdminPasswordParam: !Not [!Equals [!Ref AdminPasswordSsmParam, ""]]
   AutoApproveOn: !Equals [!Ref AutoApprovePropose, "true"]
+  # agent#303 — when CqEnterpriseId is left empty (FO-1 first-L2 deploy),
+  # the L2 slug IS the Enterprise, so CQ_ENTERPRISE falls back to
+  # EnterpriseSlug. FO-2 deploys pass the real parent Enterprise id.
+  HasCqEnterpriseId: !Not [!Equals [!Ref CqEnterpriseId, ""]]
 
 Resources:
   # =====================================================================
@@ -446,8 +479,15 @@ Resources:
           Environment:
             - { Name: CQ_PORT, Value: "3000" }
             - { Name: CQ_DB_PATH, Value: /data/cq.db }
-            - { Name: CQ_ENTERPRISE, Value: !Ref EnterpriseSlug }
-            - { Name: CQ_GROUP, Value: default }
+            # agent#303 — CQ_ENTERPRISE / CQ_GROUP drive tenancy stamping
+            # (tenant_enterprise / tenant_group on activity_log, KUs, agents).
+            # CQ_ENTERPRISE must be the *parent Enterprise* id, which for an
+            # FO-2 additional-L2 deploy is NOT EnterpriseSlug (the L2's own
+            # slug). Fall back to EnterpriseSlug only when CqEnterpriseId is
+            # unset (FO-1 first-L2, where the slug IS the Enterprise).
+            - Name: CQ_ENTERPRISE
+              Value: !If [HasCqEnterpriseId, !Ref CqEnterpriseId, !Ref EnterpriseSlug]
+            - { Name: CQ_GROUP, Value: !Ref CqGroupId }
             - { Name: CQ_DIRECTORY_URL, Value: !Ref DirectoryUrl }
             - { Name: CQ_ENTERPRISE_ROOT_PUBKEY, Value: !Ref RootPubkeyB64u }
             - { Name: CQ_DIRECTORY_ENABLED, Value: "true" }
