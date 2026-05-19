@@ -1,6 +1,7 @@
 import type { CreateL2Request, CreateL2Response } from "./l2wizard/types"
 import type {
   ActivityListResponse,
+  AgentKeyListResponse,
   ApiKeysList,
   ConsultInboxResponse,
   ConsultMessagesResponse,
@@ -14,6 +15,8 @@ import type {
   InviteStatus,
   InvitesPublic,
   MessageResponse,
+  MintAgentKeyRequest,
+  MintAgentKeyResponse,
   PatchPersonaRequest,
   PatchPersonaResponse,
   PersonaListResponse,
@@ -243,6 +246,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // FO-4 (agent#194): mint a new agent persona + cqa.v1.* key. The 201
+  // response carries the plaintext `token` exactly once plus the assembled
+  // `install` paths — the caller must surface it immediately and never
+  // re-fetch (the backend stores only the hash).
+  mintAgentKey: (body: MintAgentKeyRequest) =>
+    request<MintAgentKeyResponse>("/admin/agent-keys", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // listAgentKeys returns the agent-persona keys in the caller's tenancy
+  // for the admin table; never includes plaintext.
+  listAgentKeys: () => request<AgentKeyListResponse>("/admin/agent-keys"),
 
   // checkL2SlugAvailable does a debounced live availability probe for the
   // wizard's name step. It hits the cq-server proxy's slug-availability

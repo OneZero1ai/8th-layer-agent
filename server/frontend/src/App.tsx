@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router"
 import { AuthProvider, useAuth } from "./auth"
 import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
+import { AddAgentPage } from "./pages/AddAgentPage"
 import { ApiKeysPage } from "./pages/ApiKeysPage"
 import { CreateL2Page } from "./pages/CreateL2Page"
 import { CrosstalkPage } from "./pages/CrosstalkPage"
@@ -64,6 +65,7 @@ function AppRoutes() {
         <Route path="/admin/personas" element={<PersonasPage />} />
         <Route path="/admin/invites" element={<InvitesPage />} />
         <Route path="/admin/l2s/new" element={<CreateL2Page />} />
+        <Route path="/admin/agents/new" element={<AddAgentPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/review" replace />} />
     </Routes>
