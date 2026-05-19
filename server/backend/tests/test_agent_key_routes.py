@@ -148,3 +148,24 @@ def test_list_populated_never_leaks_plaintext(client: TestClient) -> None:
     for row in body["data"]:
         assert "token" not in row
         assert row["prefix"]  # 8-char display prefix is present
+
+
+def test_list_is_tenancy_scoped(client: TestClient) -> None:
+    """An admin sees only agent keys in their own Enterprise/L2.
+
+    The default admin lands agents in the default scope; a second admin in
+    Enterprise 'ent-b' lands agents there. Neither list call may surface
+    the other tenancy's keys.
+    """
+    store = _get_store()
+    pw = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt()).decode()
+    store.sync.create_user("admin@ent-b", pw, role="admin", enterprise_id="ent-b", group_id="grp-b")
+
+    _mint(client, _login(client, ADMIN), "Default Agent")
+    _mint(client, _login(client, "admin@ent-b"), "EntB Agent")
+
+    seen_default = client.get("/api/v1/admin/agent-keys", headers=_login(client, ADMIN)).json()
+    seen_entb = client.get("/api/v1/admin/agent-keys", headers=_login(client, "admin@ent-b")).json()
+
+    assert {r["agent_username"] for r in seen_default["data"]} == {"agent-default-agent"}
+    assert {r["agent_username"] for r in seen_entb["data"]} == {"agent-entb-agent"}

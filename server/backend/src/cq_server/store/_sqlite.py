@@ -372,14 +372,21 @@ class SqliteStore:
     async def list_api_keys_for_user(self, user_id: int) -> list[dict[str, Any]]:
         return await self._run_sync(self._list_api_keys_for_user_sync, user_id)
 
-    async def list_agent_api_keys(self) -> list[dict[str, Any]]:
-        """List every API key owned by an agent-persona user (FO-4).
+    async def list_agent_api_keys(
+        self, *, enterprise_id: str, group_id: str
+    ) -> list[dict[str, Any]]:
+        """List agent-persona API keys scoped to one ``(enterprise_id, group_id)``.
 
-        Joins ``api_keys`` to ``persona_assignments`` via the owning user
-        and filters to ``persona='agent'``. Each row carries the api-key
-        public fields plus the owning ``agent_username``.
+        Joins ``api_keys`` to ``persona_assignments`` via the owning user,
+        filters to ``persona='agent'``, and restricts to the owning user's
+        tenancy so an admin never sees another Enterprise/L2's agent keys.
+        Each row carries the api-key public fields plus ``agent_username``.
         """
-        return await self._run_sync(self._list_agent_api_keys_sync)
+        return await self._run_sync(
+            self._list_agent_api_keys_sync,
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
 
     async def list_units(
         self,
@@ -1979,9 +1986,12 @@ class SqliteStore:
             for row in rows
         ]
 
-    def _list_agent_api_keys_sync(self) -> list[dict[str, Any]]:
+    def _list_agent_api_keys_sync(
+        self, *, enterprise_id: str, group_id: str
+    ) -> list[dict[str, Any]]:
         # Inline SQL: joins api_keys → users → persona_assignments to
-        # surface only agent-persona keys (FO-4 admin table).
+        # surface only agent-persona keys (FO-4 admin table), scoped to
+        # the owning user's tenancy so no cross-Enterprise/L2 leak.
         stmt = text(
             "SELECT ak.id, ak.name, ak.labels, ak.key_prefix, ak.ttl, "
             "ak.expires_at, ak.created_at, ak.last_used_at, ak.revoked_at, "
@@ -1990,10 +2000,14 @@ class SqliteStore:
             "JOIN users u ON ak.user_id = u.id "
             "JOIN persona_assignments pa ON pa.username = u.username "
             "WHERE pa.persona = 'agent' "
+            "AND u.enterprise_id = :enterprise_id "
+            "AND u.group_id = :group_id "
             "ORDER BY ak.created_at DESC"
         )
         with self._engine.connect() as conn:
-            rows = conn.execute(stmt).fetchall()
+            rows = conn.execute(
+                stmt, {"enterprise_id": enterprise_id, "group_id": group_id}
+            ).fetchall()
         return [
             {
                 "id": row[0],

@@ -106,6 +106,43 @@ export interface ApiKeysList {
   count: number
 }
 
+// --- FO-4: Self-service Add Agent (agent#194 / Decision 33) ---------------
+
+export type AgentHarness =
+  | "claude-code"
+  | "claude-desktop"
+  | "openclaw"
+  | "other"
+
+export interface MintAgentKeyRequest {
+  agent_name: string
+  harness: AgentHarness
+  ttl: string
+}
+
+/** Scalar pieces the UI renders into install paths (join cmd / plugin / QR). */
+export interface AgentInstallPaths {
+  join_command: string
+  enterprise_id: string
+  l2: string
+  persona: string
+}
+
+export interface AgentKeyPublic extends ApiKeyPublic {
+  agent_username: string
+}
+
+/** Mint response — `token` is the plaintext key, returned exactly once. */
+export interface MintAgentKeyResponse extends AgentKeyPublic {
+  token: string
+  install: AgentInstallPaths
+}
+
+export interface AgentKeyListResponse {
+  data: AgentKeyPublic[]
+  count: number
+}
+
 export interface MessageResponse {
   message: string
 }

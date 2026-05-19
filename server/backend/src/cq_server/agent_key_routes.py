@@ -3,7 +3,7 @@
 Endpoints (all gated on ``require_admin``, mounted under ``/api/v1``):
 
   POST /admin/agent-keys   — mint a new agent persona + cqa.v1.* key
-  GET  /admin/agent-keys   — list every agent-persona key on this L2
+  GET  /admin/agent-keys   — list agent-persona keys in the caller's tenancy
 
 An "agent" here is a stub ``users`` row carrying a ``persona_assignments``
 row at ``persona='agent'`` plus an ``api_keys`` row — the exact shape a
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
@@ -132,6 +133,21 @@ def _to_agent_public(row: dict, agent_username: str) -> AgentKeyPublic:
     return AgentKeyPublic(**base.model_dump(), agent_username=agent_username)
 
 
+async def _resolve_admin_tenancy(store: SqliteStore, admin: str) -> tuple[str, str]:
+    """Resolve the calling admin's ``(enterprise_id, group_id)``.
+
+    Both the mint and list paths scope to this tuple so a minted agent and
+    the admin who lists it always agree on tenancy — closing the cross-
+    Enterprise/L2 leak a node-wide list would otherwise have. Falls back to
+    the default scope when the admin row carries no tenancy, the same
+    convention the rest of cq-server uses (see ``auth.scope_filter``).
+    """
+    admin_user = await store.get_user(admin)
+    enterprise_id = (admin_user or {}).get("enterprise_id") or DEFAULT_ENTERPRISE_ID
+    group_id = (admin_user or {}).get("group_id") or DEFAULT_GROUP_ID
+    return enterprise_id, group_id
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -162,28 +178,30 @@ async def mint_agent_key(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     username = _AGENT_USERNAME_PREFIX + _slugify_agent_name(req.agent_name)
+    dup_detail = f"an agent named {req.agent_name!r} already exists (username {username!r}) — pick a different name"
 
     if await store.get_user(username) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"an agent named {req.agent_name!r} already exists (username {username!r}) — pick a different name",
-        )
+        raise HTTPException(status_code=409, detail=dup_detail)
 
     # Inherit the minting admin's tenancy so the agent lands in this L2.
-    admin_user = await store.get_user(admin)
-    enterprise_id = (admin_user or {}).get("enterprise_id") or DEFAULT_ENTERPRISE_ID
-    group_id = (admin_user or {}).get("group_id") or DEFAULT_GROUP_ID
+    enterprise_id, group_id = await _resolve_admin_tenancy(store, admin)
 
     # 1. Stub user — random password hash, never usable for login. The
-    #    agent authenticates only via its cqa.v1.* bearer key.
+    #    agent authenticates only via its cqa.v1.* bearer key. The
+    #    get_user pre-check above is racy; the UNIQUE(username) constraint
+    #    is the real arbiter, so a concurrent collision still 409s rather
+    #    than surfacing as an unhandled 500.
     stub_hash = hash_password(uuid.uuid4().hex)
-    await store.create_user(
-        username,
-        stub_hash,
-        role="user",
-        enterprise_id=enterprise_id,
-        group_id=group_id,
-    )
+    try:
+        await store.create_user(
+            username,
+            stub_hash,
+            role="user",
+            enterprise_id=enterprise_id,
+            group_id=group_id,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail=dup_detail) from exc
 
     # 2. Persona assignment — marks the stub user as an agent.
     now = datetime.now(UTC).isoformat()
@@ -240,11 +258,14 @@ async def list_agent_keys(
     admin: str = Depends(require_admin),
     store: SqliteStore = Depends(get_store),
 ) -> AgentKeyListResponse:
-    """List every agent-persona key on this L2 (never returns plaintext).
+    """List agent-persona keys in the caller's Enterprise/L2 tenancy.
 
-    Revoked and expired keys are included with ``is_active: false`` so the
-    admin table doubles as a revocation-history audit.
+    Scoped to the calling admin's ``(enterprise_id, group_id)`` so no
+    cross-tenancy leak; never returns plaintext. Revoked and expired keys
+    are included with ``is_active: false`` so the admin table doubles as a
+    revocation-history audit.
     """
-    rows = await store.list_agent_api_keys()
+    enterprise_id, group_id = await _resolve_admin_tenancy(store, admin)
+    rows = await store.list_agent_api_keys(enterprise_id=enterprise_id, group_id=group_id)
     data = [_to_agent_public(row, agent_username=row["agent_username"]) for row in rows]
     return AgentKeyListResponse(data=data, count=len(data))
