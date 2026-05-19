@@ -1933,6 +1933,63 @@ if _CORS_ORIGINS:
         allow_credentials=False,
     )
 
+# --- API responses must never be cached by an intermediary. ---
+#
+# agent#306 — root cause. The L2 sits behind a CDN in some deployments
+# (``mvp-s1.8th-layer.ai`` fronts the ALB with Cloudflare -> CloudFront).
+# Dynamic API responses left the L2 with NO ``Cache-Control`` header, so
+# the CDN was free to apply its default caching to GET responses. The
+# observable symptom: ``GET /api/v1/activity`` served a STALE cached page
+# that never showed the ``aigrp_lookup`` rows the L2 had since written —
+# read-path instrumentation looked "not firing" when it was firing fine,
+# the audit read was just cached. A cache that ignores the
+# ``Authorization`` header can also leak one caller's response to
+# another, or serve an unauthenticated 200 in place of a live 401.
+#
+# The activity log is the audit record of record; it — and every other
+# dynamic API response — must always be live. Stamp ``no-store`` on all
+# API responses so no CDN, proxy, or browser cache can ever hold them.
+# Static assets (mounted below under ``/assets``) keep their own
+# long-lived caching headers from ``StaticFiles`` and are unaffected:
+# the guard only touches the API route trees.
+_API_PREFIXES = ("/api/v1/", "/api/v1")
+
+
+@app.middleware("http")
+async def _no_store_api_responses(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Default dynamic API responses to ``Cache-Control: no-store``.
+
+    Applies to the ``/api/v1`` route tree and to the root-mounted API
+    routes (the SDK-compat mount). The static SPA assets served from
+    ``/assets`` are intentionally excluded so their immutable-hashed
+    filenames keep CDN caching. ``no-store`` (not merely ``no-cache``)
+    is deliberate: it forbids storing the response at all, which is the
+    correct contract for an audit log and for auth-scoped data.
+
+    A route that has *already* set its own ``Cache-Control`` is left
+    untouched — e.g. ``GET /theme`` deliberately sends
+    ``public, max-age=300`` for its near-static branding payload. This
+    middleware only supplies the safe default for the routes that said
+    nothing; it never overrides a deliberate per-route caching policy.
+    """
+    response = await call_next(request)
+    if "cache-control" in response.headers:
+        # Route opted into an explicit policy — respect it.
+        return response
+    path = request.url.path
+    is_api = path.startswith(_API_PREFIXES) or path in {"/health", "/stats"}
+    if not is_api and not path.startswith("/assets"):
+        # Root-mounted API routes (SDK compat) — anything that is not a
+        # static asset and not the SPA HTML shell is a dynamic API
+        # response. The SPA fallback sets its own headers; an explicit
+        # no-store on a JSON API response is always safe.
+        ctype = response.headers.get("content-type", "")
+        is_api = ctype.startswith("application/json")
+    if is_api:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 # Mount API routes at root (SDK compatibility) and at /api (frontend).
 app.include_router(api_router)
 app.include_router(api_router, prefix="/api/v1")

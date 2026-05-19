@@ -243,6 +243,52 @@ class TestAigrpLookupLogs:
         assert summary["hits"] == 0
         assert summary["ku_ids"] == []
 
+    def test_lookup_writes_row_on_zero_result_lookup(
+        self,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lookup that embeds fine but matches nothing still logs (agent#306).
+
+        The S1 acceptance smoke pinned this explicitly: even a
+        no-result lookup must be auditable. This is distinct from the
+        embedding-unavailable path — here ``embed_text`` succeeds and
+        the handler runs the full filter loop; ``semantic_query`` just
+        returns an empty candidate set. The ``aigrp_lookup`` row must
+        still be written, with ``embed_unavailable: False`` and an
+        empty ``ku_ids``.
+        """
+        _seed_user(username="empty-look", password="pw")  # pragma: allowlist secret
+        api_key = _mint_api_key(client, _login_jwt(client, "empty-look", "pw"))
+
+        _stub_embed(monkeypatch)
+        store = _get_store()
+
+        async def _no_hits(_vec, *, limit: int = 10):  # noqa: ANN001
+            return []
+
+        monkeypatch.setattr(store, "semantic_query", _no_hits)
+
+        resp = client.post(
+            "/api/v1/aigrp/lookup",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"context": "nothing will match this", "trigger": "tool_failure"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["results"] == []
+
+        rows = _activity_rows(tmp_path / "activity.db")
+        lookup_rows = [r for r in rows if r["event_type"] == "aigrp_lookup"]
+        assert len(lookup_rows) == 1
+        payload = json.loads(lookup_rows[0]["payload"])
+        assert payload["embed_unavailable"] is False
+        assert payload["trigger"] == "tool_failure"
+        summary = json.loads(lookup_rows[0]["result_summary"])
+        assert summary["hits"] == 0
+        assert summary["ku_ids"] == []
+        assert "elapsed_ms" in summary
+
     def test_lookup_succeeds_when_append_activity_raises(
         self,
         client: TestClient,
@@ -352,3 +398,70 @@ class TestForwardQueryLogs:
         summary = json.loads(row["result_summary"])
         assert summary["ku_ids"] == []
         assert summary["result_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# CDN-cacheability guard — agent#306 root cause
+# ---------------------------------------------------------------------------
+
+
+class TestApiResponsesAreNotCacheable:
+    """API responses must carry ``Cache-Control: no-store`` (agent#306).
+
+    The L2 sits behind a CDN in some deployments. Without an explicit
+    no-store header the CDN cached ``GET /api/v1/activity`` and served a
+    stale page that never reflected freshly-written ``aigrp_lookup``
+    rows — the false "read-path instrumentation not firing" symptom #306
+    was filed for. The audit log, and every dynamic API response, must
+    always be live.
+    """
+
+    def test_activity_read_sends_no_store(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_user(username="cache-look", password="pw")  # pragma: allowlist secret
+        api_key = _mint_api_key(client, _login_jwt(client, "cache-look", "pw"))
+        resp = client.get(
+            "/api/v1/activity",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers.get("cache-control") == "no-store"
+
+    def test_aigrp_lookup_response_sends_no_store(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_user(username="cache-look2", password="pw")  # pragma: allowlist secret
+        api_key = _mint_api_key(client, _login_jwt(client, "cache-look2", "pw"))
+        monkeypatch.setattr(app_module, "embed_text", lambda _t: None)
+        resp = client.post(
+            "/api/v1/aigrp/lookup",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"context": "x", "trigger": "user_prompt"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers.get("cache-control") == "no-store"
+
+    def test_root_mounted_api_route_sends_no_store(
+        self,
+        client: TestClient,
+    ) -> None:
+        """The SDK-compat root mount (no ``/api/v1`` prefix) is covered too."""
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-store"
+
+    def test_unauthenticated_401_is_not_cacheable(
+        self,
+        client: TestClient,
+    ) -> None:
+        """An auth failure must not be cacheable either — a cached 401
+        (or a cached 200 in its place) is how the CDN leaked stale auth
+        state in agent#306."""
+        resp = client.get("/api/v1/activity")
+        assert resp.status_code == 401
+        assert resp.headers.get("cache-control") == "no-store"
