@@ -36,6 +36,12 @@ from ._legacy import (
     self_l2_id,
     self_url,
 )
+from .federation import (
+    RemoteHit,
+    fan_out_forward_query,
+    forward_query_peer,
+    select_peers_for_query,
+)
 from .runtime import (
     bootstrap_root_if_needed,
     derive_bearer_token,
@@ -55,8 +61,12 @@ __all__ = [
     "bootstrap_root_if_needed",
     "compute_centroid",
     "compute_domain_bloom",
+    "RemoteHit",
     "derive_bearer_token",
     "enterprise",
+    "fan_out_forward_query",
+    "forward_query_peer",
+    "select_peers_for_query",
     "group",
     "invalidate_pair_cache",
     "is_first_deploy",
