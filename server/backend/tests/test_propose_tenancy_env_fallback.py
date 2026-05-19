@@ -79,12 +79,10 @@ def _propose(client: TestClient, api_key: str) -> dict:
             "insight": {
                 "summary": "agent#324 env fallback KU",
                 "detail": (
-                    "Filed by the agent#324 regression suite to pin "
-                    "the env-fallback branch of _resolve_write_tenancy."
+                    "Filed by the agent#324 regression suite to pin the env-fallback branch of _resolve_write_tenancy."
                 ),
                 "action": (
-                    "Stamp enterprise_id/group_id from CQ_ENTERPRISE/"
-                    "CQ_GROUP when the user row is at defaults."
+                    "Stamp enterprise_id/group_id from CQ_ENTERPRISE/CQ_GROUP when the user row is at defaults."
                 ),
             },
         },
@@ -119,7 +117,7 @@ class TestEnvFallbackForDefaultUser:
         monkeypatch.setenv("CQ_ENTERPRISE", "mvp-s2")
         monkeypatch.setenv("CQ_GROUP", "group-a")
 
-        _seed_default_user(username="founder", password="pw")
+        _seed_default_user(username="founder", password="pw")  # pragma: allowlist secret
         api_key = _login_and_mint(client, "founder", "pw")
         resp = _propose(client, api_key)
         assert resp.status_code == 201, resp.text
@@ -148,8 +146,7 @@ class TestEnvFallbackForDefaultUser:
         store.sync.create_user("override", hash_password("pw"))
         with store._engine.begin() as conn:
             conn.exec_driver_sql(
-                "UPDATE users SET enterprise_id = ?, group_id = ? "
-                "WHERE username = ?",
+                "UPDATE users SET enterprise_id = ?, group_id = ? WHERE username = ?",
                 ("explicit-ent", "explicit-grp", "override"),
             )
 
@@ -158,9 +155,7 @@ class TestEnvFallbackForDefaultUser:
         assert resp.status_code == 201, resp.text
         unit = resp.json()
         ent, grp = _read_scope(tmp_path / "tenancy_env.db", unit["id"])
-        assert (ent, grp) == ("explicit-ent", "explicit-grp"), (
-            "Row-level explicit tenancy must override the L2 env."
-        )
+        assert (ent, grp) == ("explicit-ent", "explicit-grp"), "Row-level explicit tenancy must override the L2 env."
 
     def test_dev_l2_no_env_no_explicit_row_falls_back_to_defaults(
         self,
@@ -174,7 +169,7 @@ class TestEnvFallbackForDefaultUser:
         Production L2s configure env; the 400 path fires only when
         even the row's tenancy columns are empty (the legacy 500
         branch in propose_unit catches the empty-string case)."""
-        _seed_default_user(username="devuser", password="pw")
+        _seed_default_user(username="devuser", password="pw")  # pragma: allowlist secret
         api_key = _login_and_mint(client, "devuser", "pw")
         resp = _propose(client, api_key)
         assert resp.status_code == 201, resp.text
@@ -198,7 +193,7 @@ class TestEnvFallbackForDefaultUser:
         monkeypatch.setenv("CQ_ENTERPRISE", "mvp-s2")
         # Intentionally do NOT set CQ_GROUP.
 
-        _seed_default_user(username="halfwired", password="pw")
+        _seed_default_user(username="halfwired", password="pw")  # pragma: allowlist secret
         api_key = _login_and_mint(client, "halfwired", "pw")
         resp = _propose(client, api_key)
         assert resp.status_code == 201, resp.text

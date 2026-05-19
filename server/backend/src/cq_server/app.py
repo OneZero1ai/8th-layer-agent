@@ -49,8 +49,8 @@ from .reputation_routes import router as reputation_router
 from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
-from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
 from .store._sqlite import SqliteStore
+from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
 from .theme_routes import router as theme_router
 from .tour_routes import router as tour_router
 
@@ -1826,10 +1826,7 @@ def _resolve_write_tenancy(user: dict) -> tuple[str, str]:
     # schema-level defaults — in which case the env is the
     # tie-breaker so a configured L2 never silently writes into
     # default-*.
-    row_is_default = (
-        row_ent in ("", DEFAULT_ENTERPRISE_ID)
-        and row_grp in ("", DEFAULT_GROUP_ID)
-    )
+    row_is_default = row_ent in ("", DEFAULT_ENTERPRISE_ID) and row_grp in ("", DEFAULT_GROUP_ID)
     if not row_is_default and row_ent and row_grp:
         return row_ent, row_grp
 
