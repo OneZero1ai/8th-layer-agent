@@ -71,6 +71,7 @@ export function Layout() {
             {navLink("/settings/api-keys", "API Keys", "api-keys")}
             {navLink("/admin/personas", "Personas", "personas")}
             {navLink("/admin/l2s/new", "Add L2", "add-l2")}
+            {navLink("/admin/agents/new", "Add Agent", "add-agent")}
           </div>
           <div className="flex items-center gap-4">
             <TourLauncher />
