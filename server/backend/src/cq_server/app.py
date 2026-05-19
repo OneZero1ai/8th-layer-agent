@@ -50,6 +50,7 @@ from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
+from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
 from .theme_routes import router as theme_router
 from .tour_routes import router as tour_router
 
@@ -1793,6 +1794,66 @@ async def query_units(
     return results
 
 
+def _resolve_write_tenancy(user: dict) -> tuple[str, str]:
+    """Resolve the ``(enterprise_id, group_id)`` tuple to stamp on a write.
+
+    Resolution order — agent#324:
+
+    1. The user row's explicit tenancy, when it's non-default and
+       non-empty. Agent keys minted by an admin on a configured L2
+       inherit that L2's tenancy via :func:`_resolve_admin_tenancy`, so
+       this branch is the common case.
+    2. The L2's configured ``CQ_ENTERPRISE`` / ``CQ_GROUP`` env vars.
+       This rescues the case where the user row was created before the
+       L2 had its tenancy env set (the founder-bootstrap path didn't
+       pin tenancy on the system user pre-fix), but the L2 itself
+       knows what tenancy it represents.
+    3. Otherwise — neither row nor env carry tenancy — raise 400. A
+       silent fall-through to ``default-enterprise``/``default-group``
+       is the bug pattern this resolver exists to prevent.
+
+    The dev path (an unconfigured L2 running locally with no env) is
+    *not* a 400 case: such a user row is created on the
+    ``default-enterprise``/``default-group`` tenancy and the caller
+    explicitly opted into that by not setting env. The 400 only fires
+    when neither the row nor the env carry a real tenancy AND the row
+    is missing the tenancy columns entirely (empty strings) — the
+    legacy 500 branch in ``propose_unit`` still catches that.
+    """
+    row_ent = (user.get("enterprise_id") or "").strip()
+    row_grp = (user.get("group_id") or "").strip()
+    # Treat the row as authoritative unless it carries the
+    # schema-level defaults — in which case the env is the
+    # tie-breaker so a configured L2 never silently writes into
+    # default-*.
+    row_is_default = row_ent in ("", DEFAULT_ENTERPRISE_ID) and row_grp in ("", DEFAULT_GROUP_ID)
+    if not row_is_default and row_ent and row_grp:
+        return row_ent, row_grp
+
+    env_ent = os.environ.get("CQ_ENTERPRISE", "").strip()
+    env_grp = os.environ.get("CQ_GROUP", "").strip()
+    if env_ent and env_grp:
+        return env_ent, env_grp
+
+    # Row is default and env is unset (or partial). On an
+    # unconfigured-but-functional dev L2 the row will carry the
+    # defaults non-empty — fall back to those rather than 400, so the
+    # local-dev workflow keeps working.
+    if row_ent and row_grp:
+        return row_ent, row_grp
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "L2 tenancy not configured: the authenticated user has no "
+            "enterprise/group tenancy on its row and CQ_ENTERPRISE / "
+            "CQ_GROUP are not set on this L2. Set both env vars on the "
+            "task definition and restart, or remint the agent key on a "
+            "configured-tenancy admin."
+        ),
+    )
+
+
 @api_router.post("/propose", status_code=201)
 async def propose_unit(
     request: ProposeRequest,
@@ -1833,6 +1894,13 @@ async def propose_unit(
             status_code=500,
             detail="User row missing tenancy claims; refusing to proceed",
         )
+
+    # agent#324: when the user row carries the schema defaults
+    # (``default-enterprise``/``default-group``) on an L2 that DOES
+    # know its tenancy (CQ_ENTERPRISE/CQ_GROUP set), stamp from env
+    # instead of letting the KU land in default-*. The resolver also
+    # 400s when neither row nor env carry real tenancy.
+    enterprise_id, group_id = _resolve_write_tenancy(user)
 
     normalized = normalize_domains(request.domains)
     if not normalized:
