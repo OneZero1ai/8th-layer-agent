@@ -4,8 +4,13 @@
 #   docker build -t cq-server server/
 
 # --- Stage 1: build the frontend static assets. ---
+#
+# Base images come from AWS's ECR Public Docker Hub mirror, not docker.io
+# directly: anonymous docker.io pulls from shared CodeBuild IPs hit HTTP
+# 429 rate limits, which had been silently failing every cq-server-image
+# build. The mirror is rate-limit-free and needs no credentials.
 
-FROM node:22-slim AS frontend
+FROM public.ecr.aws/docker/library/node:22-slim AS frontend
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
@@ -19,7 +24,7 @@ RUN pnpm build
 
 # --- Stage 2: Python backend with embedded frontend. ---
 
-FROM python:3.12.11-slim
+FROM public.ecr.aws/docker/library/python:3.12.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \
     && rm -rf /var/lib/apt/lists/*
