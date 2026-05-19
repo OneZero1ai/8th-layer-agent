@@ -244,6 +244,163 @@ class TestForwardQueryClient:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Forward signing — the request carries a valid Ed25519 signature
+#     that the receiver's verification path accepts.
+# ---------------------------------------------------------------------------
+
+
+class TestForwardQuerySigning:
+    def test_request_carries_signature_the_receiver_accepts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A converged-mesh receiver has the peer's pubkey on file and
+        hard-403s a forward-query with a missing/invalid signature
+        (see _legacy.require_forwarder_identity). This pins that
+        forward_query_peer emits a SIGNATURE_HEADER whose bytes verify
+        against the matching pubkey — i.e. exactly what the receiver
+        checks via verify_forward_signature."""
+        from cq_server import forward_sign
+
+        # Give this L2 a real Ed25519 keypair on disk.
+        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(tmp_path / "l2_key.bin"))
+        forward_sign.reload_l2_privkey()
+        pubkey_b64u = forward_sign.self_public_key_b64u()
+        assert pubkey_b64u is not None  # signing must be enabled
+
+        captured: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            import json as _json
+
+            captured["sig"] = request.headers.get(forward_sign.SIGNATURE_HEADER)
+            captured["forwarder"] = request.headers.get("x-8l-forwarder-l2-id")
+            captured["body"] = _json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"policy_applied": "full_body", "result_count": 0, "results": []},
+            )
+
+        async def _run() -> None:
+            transport = httpx.MockTransport(_handler)
+            async with httpx.AsyncClient(transport=transport) as mock_client:
+                await federation.forward_query_peer(
+                    _peer_row(l2_id="acme/group-b", domains=["iam"]),
+                    query_vec=[1.0, 0.0],
+                    query_text="iam key rotation",
+                    requester_l2_id="acme/group-a",
+                    requester_enterprise="acme",
+                    requester_group="group-a",
+                    requester_persona="agent-a1",
+                    max_results=5,
+                    bearer_resolver=lambda _l2: "derived-bearer",
+                    client=mock_client,
+                )
+
+        asyncio.run(_run())
+
+        # The header is present...
+        assert captured["sig"], "forward-query must carry an Ed25519 signature header"
+        # ...and verifies exactly the way the receiver verifies it:
+        # JCS(body_for_sig) || forwarder_l2_id, body_for_sig being the
+        # posted JSON body 1:1.
+        assert forward_sign.verify_forward_signature(
+            pubkey_b64u,
+            captured["body"],
+            captured["forwarder"],
+            captured["sig"],
+        ), "signature must verify against the matching pubkey"
+
+        # A signature over a different forwarder id must NOT verify —
+        # confirms the forwarder id is bound into the signed input.
+        assert not forward_sign.verify_forward_signature(
+            pubkey_b64u,
+            captured["body"],
+            "acme/group-evil",
+            captured["sig"],
+        )
+
+        forward_sign.reload_l2_privkey()  # reset cache for other tests
+
+    def test_no_signature_header_when_signing_disabled(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When no L2 keypair is available, sign_forward_request returns
+        None and the header is omitted (legacy receivers still accept)."""
+        from cq_server import forward_sign
+
+        monkeypatch.setenv("CQ_AIGRP_L2_PRIVKEY_PATH", str(tmp_path / "missing_key.bin"))
+        monkeypatch.setattr(forward_sign, "load_or_create_l2_privkey", lambda: None)
+        forward_sign.reload_l2_privkey()
+        assert forward_sign.get_l2_privkey() is None
+
+        captured: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            captured["sig"] = request.headers.get(forward_sign.SIGNATURE_HEADER)
+            return httpx.Response(
+                200,
+                json={"policy_applied": "full_body", "result_count": 0, "results": []},
+            )
+
+        async def _run() -> None:
+            transport = httpx.MockTransport(_handler)
+            async with httpx.AsyncClient(transport=transport) as mock_client:
+                await federation.forward_query_peer(
+                    _peer_row(l2_id="acme/group-b", domains=["iam"]),
+                    query_vec=[1.0],
+                    query_text="x",
+                    requester_l2_id="acme/group-a",
+                    requester_enterprise="acme",
+                    requester_group="group-a",
+                    requester_persona="agent-a1",
+                    max_results=5,
+                    bearer_resolver=lambda _l2: "b",
+                    client=mock_client,
+                )
+
+        asyncio.run(_run())
+        assert captured["sig"] is None
+
+        forward_sign.reload_l2_privkey()  # reset cache for other tests
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard — peers with unsafe endpoint_url are skipped
+# ---------------------------------------------------------------------------
+
+
+class TestEndpointSsrfGuard:
+    def test_non_https_and_private_hosts_skipped(self) -> None:
+        unsafe_endpoints = [
+            "http://peer.example/",  # non-https scheme
+            "https://localhost/",
+            "https://127.0.0.1:8080/",
+            "https://10.1.2.3/",
+            "https://192.168.1.5/",
+            "https://169.254.169.254/",  # cloud metadata endpoint
+            "https://172.16.0.1/",
+            "https://172.31.255.1/",
+        ]
+        peers = [
+            _peer_row(l2_id=f"acme/group-{i}", domains=["iam"], endpoint=ep)
+            for i, ep in enumerate(unsafe_endpoints)
+        ]
+        selected = federation.select_peers_for_query(peers, query_domains=["iam"])
+        assert selected == [], f"unsafe endpoints were not all skipped: {selected}"
+
+    def test_public_https_peer_kept(self) -> None:
+        # 172.32.x is outside RFC1918 172.16/12 — must NOT be skipped.
+        for ep in ("https://peer.example/", "https://172.32.0.1/"):
+            peer = _peer_row(l2_id="acme/group-b", domains=["iam"], endpoint=ep)
+            selected = federation.select_peers_for_query([peer], query_domains=["iam"])
+            assert [p["l2_id"] for p in selected] == ["acme/group-b"], ep
+
+
+# ---------------------------------------------------------------------------
 # 2. Fan-out in aigrp_lookup — local + remote merge and re-rank
 # ---------------------------------------------------------------------------
 

@@ -37,6 +37,7 @@ from typing import Any
 import httpx
 
 from . import _legacy
+from .. import forward_sign
 
 log = logging.getLogger("aigrp.federation")
 
@@ -46,6 +47,35 @@ log = logging.getLogger("aigrp.federation")
 # breach degrades to local-only, never an error.
 _CONNECT_TIMEOUT_SEC = 3.0
 _READ_TIMEOUT_SEC = 8.0
+
+
+def _endpoint_is_safe(endpoint_url: str) -> bool:
+    """Minimal SSRF guard for a peer ``endpoint_url`` used as a POST target.
+
+    Rejects an endpoint when its scheme is not ``https://`` or its host
+    string is loopback / link-local / RFC1918 private space. This is a
+    deliberately small defensive check — full receiver-side hardening
+    (DNS-resolution pinning, redirect clamping) is tracked as a separate
+    issue. A string-level host check cannot catch a hostname that
+    *resolves* to a private address, but it cheaply blocks the obvious
+    ``http://`` and literal-private-IP foot-guns.
+    """
+    url = (endpoint_url or "").strip().lower()
+    if not url.startswith("https://"):
+        return False
+    host = url[len("https://") :].split("/", 1)[0].split("@")[-1].split(":", 1)[0]
+    if host in ("localhost", "") or host.endswith(".localhost"):
+        return False
+    if host.startswith(("127.", "10.", "192.168.", "169.254.", "0.")):
+        return False
+    if host == "::1" or host.startswith("[::1]"):
+        return False
+    # RFC1918 172.16.0.0/12 — second octet 16..31.
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return False
+    return True
 
 
 class RemoteHit:
@@ -109,6 +139,9 @@ def select_peers_for_query(
     - this L2 itself (``l2_id == self_l2_id``),
     - stub peers with no ``endpoint_url`` (consumer-only, can't be
       queried),
+    - peers whose ``endpoint_url`` fails the minimal SSRF guard
+      (:func:`_endpoint_is_safe` — non-https scheme or private/loopback
+      host),
     - peers whose ``domain_bloom`` matches none of ``query_domains``
       (Bloom prefilter — their corpus can't hold a relevant KU).
 
@@ -122,7 +155,16 @@ def select_peers_for_query(
     for peer in peers:
         if peer.get("l2_id") == self_id:
             continue
-        if not peer.get("endpoint_url"):
+        endpoint_url = peer.get("endpoint_url")
+        if not endpoint_url:
+            continue
+        if not _endpoint_is_safe(str(endpoint_url)):
+            log.warning(
+                "aigrp federation: skipping peer %s — endpoint_url %r failed the "
+                "SSRF guard (non-https scheme or private/loopback host)",
+                peer.get("l2_id"),
+                endpoint_url,
+            )
             continue
         bloom = peer.get("domain_bloom")
         if domains and bloom and not _legacy.bloom_matches_any(bloom, domains):
@@ -181,6 +223,20 @@ async def forward_query_peer(
         "authorization": f"Bearer {bearer_resolver(peer_l2_id)}",
         _legacy.FORWARDER_HEADER: requester_l2_id,
     }
+    # Sprint-4 forward signing (#44): the receiver's
+    # ``require_forwarder_identity`` verifies an Ed25519 signature over
+    # ``JCS(body) || forwarder_l2_id`` whenever it has the peer's pubkey
+    # on file — and a converged mesh always does (pubkeys land on the
+    # first /aigrp/hello and every poll). Without this header the
+    # receiver hard-403s and federation degrades to local-only forever.
+    # The signing input must be the exact dict POSTed as JSON: the
+    # receiver verifies against ``body.model_dump(mode="json")``, whose
+    # fields match ``body`` 1:1. ``sign_forward_request`` returns ``None``
+    # when no L2 keypair is on disk — omit the header then (mirrors
+    # consults.py; the receiver's legacy code path accepts unsigned).
+    sig = forward_sign.sign_forward_request(body, requester_l2_id)
+    if sig:
+        headers[forward_sign.SIGNATURE_HEADER] = sig
     timeout = httpx.Timeout(_READ_TIMEOUT_SEC, connect=_CONNECT_TIMEOUT_SEC)
 
     try:
