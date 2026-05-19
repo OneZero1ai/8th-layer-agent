@@ -1,0 +1,90 @@
+version: 0.2
+
+# Publish the marketplace L2 CloudFormation template to its S3 home.
+# Runs in AWS CodeBuild — project `marketplace-l2-publish` (MUST be
+# created; see "CodeBuild project setup" below), account 124074140769
+# (the 8th-layer-app account, 124074140789), us-east-1.
+#
+# Trigger: push to `main`, via the `8th-layer-github` CodeConnections
+# webhook — the same connection cq-server-image.yml uses. Manual run:
+#   aws codebuild start-build --project-name marketplace-l2-publish \
+#     --profile 8th-layer-app --region us-east-1
+#
+# Why this exists (drift fix):
+#   `deploy/aws/marketplace-l2.yaml` in this repo is the SINGLE SOURCE
+#   OF TRUTH for the L2 provisioning template. The 8th-Layer directory's
+#   provisioning service fetches it from
+#     s3://8l-provisioning-templates-124074140789/marketplace-l2/latest/marketplace-l2.yaml
+#   via an SSM-stored URL (SSM_MARKETPLACE_TEMPLATE_URL) when it creates
+#   a customer L2 CFN stack. Before this buildspec existed there was NO
+#   pipeline syncing repo -> S3, so the repo template, the live S3 copy,
+#   and the directory worker's CFN Parameters list drifted into three
+#   inconsistent param contracts. This step makes every merge to `main`
+#   re-publish the template so S3 can never lag the repo again.
+#
+# This buildspec is deliberately a single-purpose `aws s3 cp` — it does
+# NOT run lint/test (ci.yml owns that and gates the PR before merge).
+# It only runs AFTER merge, on the `main` branch, so it never publishes
+# un-reviewed template changes.
+#
+# ---------------------------------------------------------------------
+# CodeBuild project setup (one-time, not encoded here):
+#   - Project name : marketplace-l2-publish
+#   - Source       : GitHub OneZero1ai/8th-layer-agent via the
+#                     `8th-layer-github` CodeConnections connection.
+#   - Buildspec    : ci/buildspecs/marketplace-l2-publish.yml
+#   - Webhook FilterGroups:
+#       * EVENT = PUSH
+#       * HEAD_REF = ^refs/heads/main$
+#       * (recommended) FILE_PATH = ^deploy/aws/marketplace-l2\.yaml$
+#         so the build only fires when the template actually changes.
+#         Omitting it is harmless — the copy is idempotent — just noisier.
+#   - Service role : needs s3:PutObject (+ s3:PutObjectAcl if the bucket
+#                     enforces one) on
+#                     arn:aws:s3:::8l-provisioning-templates-124074140789/marketplace-l2/latest/*
+#   - privilegedMode: not required (no Docker).
+#   - Compute      : smallest general1.small is plenty.
+# ---------------------------------------------------------------------
+
+env:
+  variables:
+    TEMPLATE_SRC: deploy/aws/marketplace-l2.yaml
+    TEMPLATE_S3_URI: s3://8l-provisioning-templates-124074140789/marketplace-l2/latest/marketplace-l2.yaml
+    AWS_REGION: us-east-1
+
+phases:
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        # Defensive guard: only ever publish from `main`. The webhook
+        # FilterGroups already enforce this, but a manual `start-build`
+        # against a feature branch would otherwise push un-reviewed YAML
+        # to the live S3 path.
+        REF="${CODEBUILD_WEBHOOK_HEAD_REF:-}"
+        if [ -n "$REF" ] && [ "$REF" != "refs/heads/main" ]; then
+          echo "ERROR: marketplace-l2-publish only runs on main (got '$REF')"
+          exit 1
+        fi
+        test -f "$TEMPLATE_SRC" || { echo "ERROR: $TEMPLATE_SRC missing"; exit 1; }
+        # Fail fast on a syntactically broken template rather than
+        # publishing it. validate-template is a cheap region-level call.
+        aws cloudformation validate-template \
+          --region "$AWS_REGION" \
+          --template-body "file://${TEMPLATE_SRC}" >/dev/null
+        echo "Template validated OK — $TEMPLATE_SRC"
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        aws s3 cp "$TEMPLATE_SRC" "$TEMPLATE_S3_URI" \
+          --content-type text/yaml
+        echo "Published $TEMPLATE_SRC -> $TEMPLATE_S3_URI"
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        # Confirm the object exists at the expected key after the copy.
+        aws s3 ls "$TEMPLATE_S3_URI" \
+          || { echo "ERROR: template not found at $TEMPLATE_S3_URI after publish"; exit 1; }
+        echo "marketplace-l2 template publish complete."
