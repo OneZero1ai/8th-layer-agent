@@ -14,17 +14,23 @@ version: 0.2
 # Silicon without `--platform`. Fargate is x86_64-only, so the next
 # provisioning smoke failed with `CannotPullContainerError ... does not
 # contain descriptor matching platform 'linux/amd64'`. This buildspec
-# makes every `main` build a reproducible linux/amd64 + linux/arm64
-# image index — no more hand-pushes, no more drift.
+# makes every `main` build a reproducible linux/amd64 image — no more
+# hand-pushes, no more drift.
+#
+# amd64-only (operator decision 2026-05-19): the QEMU `tonistiigi/binfmt`
+# pull needed for cross-arch emulation is a docker.io image and was 429
+# rate-limiting every build from shared CodeBuild IPs. Fargate is x86_64
+# anyway, so linux/arm64 was a speculative bonus. Restore multi-arch once
+# Docker Hub creds are staged (task #175) — re-add the binfmt step and
+# `linux/arm64` to PLATFORMS then.
 #
 # The CodeBuild project MUST set `privilegedMode: true` — `docker buildx`
-# needs it both for the builder daemon and for the QEMU binfmt register
-# step that enables cross-arch builds.
+# needs it for the builder daemon.
 
 env:
   variables:
     IMAGE_REPO: public.ecr.aws/w2i0e4m6/cq-server
-    PLATFORMS: linux/amd64,linux/arm64
+    PLATFORMS: linux/amd64
     AWS_REGION: us-east-1
 
 phases:
@@ -36,11 +42,12 @@ phases:
         aws ecr-public get-login-password --region us-east-1 \
           | docker login --username AWS --password-stdin public.ecr.aws
 
-        # Register QEMU emulators so the non-native arch can be built.
-        docker run --rm --privileged tonistiigi/binfmt --install all
+        # amd64-only: no QEMU binfmt step — the build is native to the
+        # CodeBuild x86_64 fleet. (Cross-arch would re-add the
+        # `docker run tonistiigi/binfmt --install all` register step.)
 
-        # A buildx builder backed by docker-container is required for
-        # multi-platform output (the default "docker" driver can't).
+        # A buildx builder backed by docker-container, used for the
+        # `--push` image-index output.
         docker buildx create --name cqbuilder --driver docker-container --use
         docker buildx inspect --bootstrap
 
@@ -53,11 +60,9 @@ phases:
         set -euo pipefail
         SHA="$(cat /tmp/image_sha_tag)"
 
-        # One buildx invocation emits a single multi-arch image index for
-        # both platforms and pushes it directly — `--push` is required
-        # because a multi-platform result cannot load into the local
-        # docker image store. The Dockerfile lives in server/, and its
-        # COPY --from=frontend stage needs server/ as the build context.
+        # buildx build + push directly to ECR Public. The Dockerfile
+        # lives in server/, and its COPY --from=frontend stage needs
+        # server/ as the build context.
         docker buildx build \
           --platform "${PLATFORMS}" \
           --file server/Dockerfile \
@@ -76,6 +81,4 @@ phases:
         echo "$MANIFEST"
         echo "$MANIFEST" | grep -q 'linux/amd64' \
           || { echo "ERROR: ${IMAGE_REPO}:latest has no linux/amd64 manifest"; exit 1; }
-        echo "$MANIFEST" | grep -q 'linux/arm64' \
-          || { echo "ERROR: ${IMAGE_REPO}:latest has no linux/arm64 manifest"; exit 1; }
-        echo "cq-server image pushed multi-arch — :latest and :${SHA}"
+        echo "cq-server image pushed linux/amd64 — :latest and :${SHA}"
