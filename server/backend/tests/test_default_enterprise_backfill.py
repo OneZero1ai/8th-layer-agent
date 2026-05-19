@@ -409,4 +409,4 @@ class TestIdempotencyAndChain:
         """
         # The current chain head. Update this whenever a new migration
         # lands — this test failing IS the reminder to bump HEAD_REVISION.
-        assert HEAD_REVISION == "0024_user_tour_state"
+        assert HEAD_REVISION == "0025_activity_log_aigrp_lookup_event"
