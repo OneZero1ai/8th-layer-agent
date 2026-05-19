@@ -11,6 +11,12 @@ Display a summary of the cq knowledge store.
 
 1. Call the `status` MCP tool (no arguments needed).
 2. Format the response as a readable summary using the sections below.
+3. Run the ambient-hook liveness check:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/claude_code/cq_aigrp_pull.py" --mode status`
+   and append its single output line under an **Ambient Pull** section. This
+   tells the operator whether the `UserPromptSubmit` AIGRP hook can actually
+   reach the L2 — a `LIVE` line means ambient retrieval is working; an
+   `INACTIVE` line means it is silently no-op'ing (see issue #279).
 
 ## Output Format
 
@@ -36,6 +42,9 @@ local: {count} | private: {count} | public: {count}
 ■ 0.5-0.7: {count} units
 ■ 0.3-0.5: {count} units
 ■ 0.0-0.3: {count} units
+
+### Ambient Pull
+{liveness line from cq_aigrp_pull.py --mode status}
 ```
 
 The `tier_counts` field contains the tier breakdown. Display all tiers present in the response. Omit tiers with a count of 0.
