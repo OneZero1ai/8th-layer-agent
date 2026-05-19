@@ -560,13 +560,23 @@ class AigrpLookupResponse(BaseModel):
 @api_router.post("/aigrp/lookup")
 async def aigrp_lookup(
     request: AigrpLookupRequest,
-    _username: str = Depends(get_current_user),
+    background_tasks: BackgroundTasks,
+    username: str = Depends(get_current_user),
 ) -> AigrpLookupResponse:
     """Automatic-trigger lookup for AIGRP-pull (Phase 2).
 
     Fired by the harness on every prompt / session-start / tool-failure.
     Embeds the freeform context, runs semantic search, filters by
     confidence + similarity + exclude_self, returns ranked hits.
+
+    Activity log (agent#284): every lookup schedules a non-blocking
+    ``aigrp_lookup`` ``activity_log`` row — the read-path counterpart to
+    the write-path instrumentation. ``payload`` carries the trigger and
+    request filters; ``result_summary`` carries the matched ``ku_id``s
+    with similarity scores and the hit/filtered counts. The audit write
+    runs after the response is sealed via ``BackgroundTasks``; a logging
+    failure never affects the lookup — critical on this path, which is
+    the highest-volume read in the fleet.
     """
     import time
 
@@ -576,6 +586,25 @@ async def aigrp_lookup(
     if payload is None:
         # Don't 503 here — the hook is best-effort and a 503 would
         # log loudly on every prompt if Bedrock is briefly slow.
+        # Still log the lookup: a zero-result event with no embedding
+        # is a real fleet-analytics signal (Bedrock degraded → empty
+        # ambient context). cache/embed miss is recorded in payload.
+        background_tasks.add_task(
+            log_activity,
+            store,
+            username=username,
+            event_type="aigrp_lookup",
+            payload={
+                "trigger": request.trigger,
+                "session_id": request.session_id,
+                "max_results": request.max_results,
+                "min_confidence": request.min_confidence,
+                "min_similarity": request.min_similarity,
+                "embed_unavailable": True,
+            },
+            result_summary={"ku_ids": [], "hits": 0, "filtered_count": 0, "elapsed_ms": 0},
+            thread_or_chain_id=request.session_id or None,
+        )
         return AigrpLookupResponse(trigger=request.trigger, results=[], elapsed_ms=0, filtered_count=0)
     from .embed import unpack
 
@@ -612,6 +641,30 @@ async def aigrp_lookup(
             break
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=username,
+        event_type="aigrp_lookup",
+        payload={
+            "trigger": request.trigger,
+            "session_id": request.session_id,
+            "max_results": request.max_results,
+            "min_confidence": request.min_confidence,
+            "min_similarity": request.min_similarity,
+            "embed_unavailable": False,
+        },
+        result_summary={
+            # Matched KU ids + their similarity scores — the feedback
+            # signal for "which KUs actually get consulted" (#284).
+            "ku_ids": [h.ku_id for h in filtered],
+            "matches": [{"ku_id": h.ku_id, "similarity": h.similarity} for h in filtered],
+            "hits": len(filtered),
+            "filtered_count": dropped,
+            "elapsed_ms": elapsed_ms,
+        },
+        thread_or_chain_id=request.session_id or None,
+    )
     return AigrpLookupResponse(
         trigger=request.trigger,
         results=filtered,
@@ -984,6 +1037,7 @@ def _decide_policy_for_ku(
 async def aigrp_forward_query(
     body: AigrpForwardQueryRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     _peer: None = Depends(aigrp.require_peer_key),
 ) -> AigrpForwardQueryResponse:
     """Cross-L2 forward-query — Phase 6 step 2.
@@ -1004,6 +1058,16 @@ async def aigrp_forward_query(
     receiver pins it to ``body.requester_l2_id`` and to its own Enterprise.
     Closes cross-Enterprise impersonation; sibling-L2 spoof inside an
     Enterprise is the residual gap (sprint 4 / Ed25519).
+
+    Activity log (agent#284): in addition to the existing
+    ``cross_l2_audit`` row (the security audit of cross-L2 access), a
+    non-blocking ``query`` ``activity_log`` row is scheduled — the
+    read-path counterpart to ``GET /query``'s instrumentation. It is a
+    *system* event (``persona=None``) filed under this L2's own
+    Enterprise/Group: the requesting persona belongs to a different L2,
+    so the local activity log records "this L2 served a forward-query"
+    with the requester identity in ``payload``. A logging failure never
+    affects the response.
     """
     import uuid
 
@@ -1050,6 +1114,22 @@ async def aigrp_forward_query(
                 policy_applied="denied",
                 result_count=0,
                 consent_id=None,
+            )
+            background_tasks.add_task(
+                log_activity,
+                _get_store(),
+                username=None,
+                event_type="query",
+                payload={
+                    "source": "forward_query",
+                    "requester_l2_id": body.requester_l2_id,
+                    "requester_enterprise": body.requester_enterprise,
+                    "requester_group": body.requester_group,
+                    "requester_persona": body.requester_persona or None,
+                    "max_results": body.max_results,
+                    "policy_applied": "denied",
+                },
+                result_summary={"ku_ids": [], "result_count": 0, "cache_hit": False},
             )
             return AigrpForwardQueryResponse(
                 responder_l2_id=responder_l2_id,
@@ -1128,6 +1208,26 @@ async def aigrp_forward_query(
         consent_id=consent_id,
     )
 
+    background_tasks.add_task(
+        log_activity,
+        store,
+        username=None,
+        event_type="query",
+        payload={
+            "source": "forward_query",
+            "requester_l2_id": body.requester_l2_id,
+            "requester_enterprise": body.requester_enterprise,
+            "requester_group": body.requester_group,
+            "requester_persona": body.requester_persona or None,
+            "max_results": body.max_results,
+            "policy_applied": response_policy,
+        },
+        result_summary={
+            "ku_ids": [h.ku_id for h in results],
+            "result_count": len(results),
+            "cache_hit": False,
+        },
+    )
     return AigrpForwardQueryResponse(
         responder_l2_id=responder_l2_id,
         responder_enterprise=responder_enterprise,

@@ -475,7 +475,7 @@ class TestHeadRevisionAndHistory:
 
         # The current chain head. Each new migration MUST move this
         # constant; this test failing is the reminder.
-        assert HEAD_REVISION == "0024_user_tour_state"
+        assert HEAD_REVISION == "0025_activity_log_aigrp_lookup_event"
 
     @pytest.mark.parametrize("invalid_dir", [None])
     def test_alembic_history_includes_0011(self, invalid_dir: object) -> None:
