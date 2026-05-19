@@ -372,6 +372,15 @@ class SqliteStore:
     async def list_api_keys_for_user(self, user_id: int) -> list[dict[str, Any]]:
         return await self._run_sync(self._list_api_keys_for_user_sync, user_id)
 
+    async def list_agent_api_keys(self) -> list[dict[str, Any]]:
+        """List every API key owned by an agent-persona user (FO-4).
+
+        Joins ``api_keys`` to ``persona_assignments`` via the owning user
+        and filters to ``persona='agent'``. Each row carries the api-key
+        public fields plus the owning ``agent_username``.
+        """
+        return await self._run_sync(self._list_agent_api_keys_sync)
+
     async def list_units(
         self,
         *,
@@ -1966,6 +1975,37 @@ class SqliteStore:
                 "created_at": row[6],
                 "last_used_at": row[7],
                 "revoked_at": row[8],
+            }
+            for row in rows
+        ]
+
+    def _list_agent_api_keys_sync(self) -> list[dict[str, Any]]:
+        # Inline SQL: joins api_keys → users → persona_assignments to
+        # surface only agent-persona keys (FO-4 admin table).
+        stmt = text(
+            "SELECT ak.id, ak.name, ak.labels, ak.key_prefix, ak.ttl, "
+            "ak.expires_at, ak.created_at, ak.last_used_at, ak.revoked_at, "
+            "u.username "
+            "FROM api_keys ak "
+            "JOIN users u ON ak.user_id = u.id "
+            "JOIN persona_assignments pa ON pa.username = u.username "
+            "WHERE pa.persona = 'agent' "
+            "ORDER BY ak.created_at DESC"
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "labels": json.loads(row[2] or "[]"),
+                "key_prefix": row[3],
+                "ttl": row[4],
+                "expires_at": row[5],
+                "created_at": row[6],
+                "last_used_at": row[7],
+                "revoked_at": row[8],
+                "agent_username": row[9],
             }
             for row in rows
         ]
