@@ -34,9 +34,16 @@ __all__ = [
 
 
 # Locked enum — must stay in sync with the CHECK constraint in
-# ``alembic/versions/0011_activity_log.py`` and with the schema
+# ``alembic/versions/0011_activity_log.py`` (extended by
+# ``0025_activity_log_aigrp_lookup_event.py``) and with the schema
 # sketch in issue #108. Adding a new value requires a new Alembic
 # migration that swaps the constraint via batch-recreate.
+#
+# ``aigrp_lookup`` (agent#284) is the read-path ambient-query event —
+# fired by ``POST /api/v1/aigrp/lookup`` on every harness prompt. It is
+# distinct from ``query`` (explicit KU search via ``GET /query`` /
+# cross-L2 ``aigrp/forward-query``) so the read endpoint can filter
+# ambient lookups apart from deliberate searches.
 EVENT_TYPES: frozenset[str] = frozenset(
     {
         "query",
@@ -51,6 +58,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "consult_open",
         "consult_reply",
         "consult_close",
+        "aigrp_lookup",
     }
 )
 
