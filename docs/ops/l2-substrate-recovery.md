@@ -80,9 +80,10 @@ The restore is a CFN parameter change, no manual EBS surgery required.
 
    The volume has `UpdateReplacePolicy: Snapshot` + a `SnapshotId`
    property — CFN snapshots the existing (possibly corrupt) volume,
-   then creates a new one from the chosen restore point. The ASG
-   instance refresh provisions a fresh EC2 host that attaches the new
-   volume on boot via UserData.
+   then creates a new one from the chosen restore point. CFN
+   re-creates the `EcsHostVolumeAttachment` against the existing EC2
+   host (or recreates the host if the volume's AZ changed), and
+   UserData mounts the restored filesystem at /mnt/cq-data on boot.
 
 3. **Wait for stack rollout (~5-10 min):**
 
@@ -108,18 +109,25 @@ The restore is a CFN parameter change, no manual EBS surgery required.
    curl -sS https://<slug>.8th-layer.ai/health
    ```
 
-5. **After verifying, clear the parameter so a future update doesn't
-   re-restore.** Run the same update-stack call but pass
-   `ParameterKey=RestoreFromSnapshotId,ParameterValue=""`. (Skipping
-   this is benign — CFN only re-creates the volume on actual change
-   detection — but explicit is better than implicit for ops audit.)
+5. **Do NOT clear `RestoreFromSnapshotId` after restore.** `SnapshotId`
+   is an immutable property on `AWS::EC2::Volume`. Toggling it from
+   `snap-XXX` back to empty triggers volume replacement —
+   CloudFormation will snapshot the just-restored volume then create a
+   fresh blank gp3 in its place, wiping your restored data. Leave the
+   snapshot id in place as a permanent stack parameter; it has no
+   runtime effect after the volume is created.
+
+   To migrate off the snapshot reference (e.g., for ops hygiene), the
+   only safe path is to take a manual `aws ec2 create-snapshot` of the
+   live volume and use that snapshot id as the new permanent parameter
+   value, or stand up a fresh stack.
 
 ## RTO / RPO
 
 | Metric | MVP target | Notes |
 |--------|-----------|-------|
 | RPO | 1 hour | DLM cron `cron(0 * * * ? *)` runs hourly on the hour. Worst case: failure at minute 59 → up to ~60 min of writes lost. |
-| RTO | ~10 minutes | Update-stack (~5 min CFN apply) + ASG instance refresh (~3 min new EC2 + UserData) + ECS task placement (~1 min). |
+| RTO | ~10 minutes | Update-stack (~5 min CFN apply) + EC2 host replacement (~3 min new instance + UserData) + ECS task placement (~1 min). |
 
 Litestream upgrade (separate PR, post-MVP) brings RPO under 60 seconds
 by streaming WAL changes to S3 continuously.
@@ -134,12 +142,13 @@ offline until manual recovery in another AZ. MVP-accepted trade-off.
 1. Pick the most recent snapshot via `describe-snapshots` above.
 2. Edit `deploy/aws/marketplace-l2.yaml` locally — change the
    `CqDataVolume.AvailabilityZone` from `!Select [0, !GetAZs ""]` to
-   `!Select [1, !GetAZs ""]`, and change `AsgCqServer.VPCZoneIdentifier`
-   to `[!Ref PublicSubnetB]`.
+   `!Select [1, !GetAZs ""]`, and change `EcsHost.SubnetId` from
+   `!Ref PublicSubnetA` to `!Ref PublicSubnetB`.
 3. Republish via the standard PR + merge flow (the CodeBuild publisher
    in `ci/buildspecs/marketplace-l2-publish.yml` syncs to S3).
 4. Update the stack with the new template + `RestoreFromSnapshotId`
-   pointing at the snapshot from step 1.
+   pointing at the snapshot from step 1. CFN replaces both the volume
+   (new AZ → new resource) and the EC2 host (new subnet → new resource).
 
 Multi-AZ + concurrent-writer-safe substrate (Postgres on RDS) is tracked
 as [#309](https://github.com/OneZero1ai/8th-layer-agent/issues/309)
@@ -151,10 +160,11 @@ as [#309](https://github.com/OneZero1ai/8th-layer-agent/issues/309)
 is reachable via Session Manager — no SSH keys, no bastion:
 
 ```
-INSTANCE_ID=$(aws autoscaling describe-auto-scaling-instances \
+INSTANCE_ID=$(aws cloudformation describe-stack-resources \
   --profile <l2-profile> --region us-east-1 \
-  --query "AutoScalingInstances[?AutoScalingGroupName=='<slug>-l2-asg'].InstanceId | [0]" \
-  --output text)
+  --stack-name <L2-stack-name> \
+  --logical-resource-id EcsHost \
+  --query 'StackResources[0].PhysicalResourceId' --output text)
 aws ssm start-session --profile <l2-profile> --region us-east-1 \
   --target "$INSTANCE_ID"
 ```
