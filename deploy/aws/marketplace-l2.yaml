@@ -1,23 +1,62 @@
+# =============================================================================
+# WARNING — substrate change from EFS to EBS in this template:
+# Stacks deployed from the prior (EFS) template version include
+# AWS::EFS::FileSystem and related resources that are REMOVED here.
+# CloudFormation will DELETE the EFS filesystem (and its data) on the
+# next update-stack against an EFS-based stack. There is no
+# DeletionPolicy: Retain safety net — those resources are no longer in
+# this template to retroactively annotate.
+#
+# Before update-stacking an EFS-based stack (mvp-s2-a, mvp-s2-b, or any
+# other live EFS-substrate stack) to this template, take a manual data
+# backup (e.g. copy /data out via an EC2 instance attached to the EFS
+# access point) or accept the data loss.
+# =============================================================================
+# 8th-Layer.ai Marketplace L2 stack — stands up a complete, healthy cq-server
+# instance (the customer's Layer-2 semantic backbone) in the customer's AWS
+# account. Instantiated by the 8th-Layer.ai Enterprise Provisioning Service
+# during phase 4 of the 6-phase async provisioning state machine
+# (FO-2-backend; see docs/decisions/31-fo-2-provisioning-contract.md on
+# OneZero1ai/8th-layer-core).
+#
+# Footprint:
+#   - Dedicated VPC (10.0.0.0/16) + 2 public subnets across 2 AZs + IGW.
+#   - ALB (HTTP/80, internet-facing) → ECS-on-EC2 task (port 3000) →
+#     persistent EBS gp3 volume bind-mounted at /data (SQLite at /data/cq.db).
+#   - Single bare `AWS::EC2::Instance` (t4g.small, ARM64) in PublicSubnetA's
+#     AZ — no ASG, no capacity provider. The EBS data volume is a first-
+#     class CFN resource attached via `AWS::EC2::VolumeAttachment`, so CFN
+#     owns the attachment lifecycle (no imperative attach in UserData,
+#     no deadlocks on SnapshotId replacement). ECS task launches with
+#     `LaunchType: EC2` against the container instance the ECS agent
+#     registers from the host. Single-instance topology — replacement on
+#     instance loss is operator-driven, not auto-recovered.
+#   - AWS DLM lifecycle policy snapshots the EBS volume hourly, retains
+#     168 snapshots (7 days). RPO=1h, RTO~10min via snapshot restore.
+#   - HTTPS termination is handled by Cloudflare in front of the ALB; the
+#     stack does not request an ACM cert for the ALB itself.
+#   - Auto-generated secrets (JWT, API key pepper, AIGRP peer key) via
+#     Secrets Manager so the L2 boots fully self-contained.
+#
+# Substrate rationale (agent#323):
+#   SQLite-on-EFS exhibited recurring index corruption under concurrent
+#   AIGRP poll + write traffic — NFSv4.1 POSIX locking semantics don't
+#   match what SQLite expects. Substrate moved to ECS-on-EC2 + persistent
+#   EBS gp3 (local block device, real POSIX locks). Single-AZ availability
+#   is the accepted trade-off for MVP; multi-AZ + Postgres + Litestream
+#   are tracked as separate follow-ups (#309 / #311 / Litestream upgrade).
+#
+# Cost: ~$55-65/mo continuous (ALB ~$20, t4g.small ~$12, EBS gp3 20GiB
+# ~$2, DLM snapshots ~$1/mo at MVP write volume, traffic).
+# =============================================================================
 AWSTemplateFormatVersion: "2010-09-09"
 Description: |
-  8th-Layer.ai Marketplace L2 stack — stands up a complete, healthy cq-server
-  instance (the customer's Layer-2 semantic backbone) in the customer's AWS
-  account. Instantiated by the 8th-Layer.ai Enterprise Provisioning Service
-  during phase 4 of the 6-phase async provisioning state machine
-  (FO-2-backend; see docs/decisions/31-fo-2-provisioning-contract.md on
-  OneZero1ai/8th-layer-core).
-
-  Footprint:
-    - Dedicated VPC (10.0.0.0/16) + 2 public subnets across 2 AZs + IGW.
-    - ALB (HTTP/80, internet-facing) → ECS Fargate task (port 3000) → EFS
-      (SQLite at /data/cq.db).
-    - HTTPS termination is handled by Cloudflare in front of the ALB; the
-      stack does not request an ACM cert for the ALB itself.
-    - Auto-generated secrets (JWT, API key pepper, AIGRP peer key) via
-      Secrets Manager so the L2 boots fully self-contained.
-
-  Cost: ~$30-40/mo continuous (ALB ~$20, Fargate 0.5 vCPU/1 GB ~$15,
-  EFS minimal ~$1, traffic).
+  8th-Layer.ai Marketplace L2 — ALB → ECS-on-EC2 (single t4g.small EC2
+  instance, no ASG) → persistent EBS gp3 at /data (SQLite). CFN-owned
+  AWS::EC2::VolumeAttachment binds the volume before UserData runs. DLM
+  hourly snapshots, 7-day retention. Single-AZ. Substrate moved off
+  SQLite-on-EFS to fix the index-corruption failure mode documented in
+  agent#323; see full rationale in the file-header comments.
 
 Parameters:
   EnterpriseSlug:
@@ -137,6 +176,38 @@ Parameters:
       ritual applies. Hard-finding KUs always route through the
       pending_review tier regardless of this flag.
 
+  CqDbVolumeSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    MaxValue: 1024
+    Description: |
+      Size in GiB of the persistent EBS gp3 volume that backs the L2's
+      SQLite database (mounted at /mnt/cq-data on the host, bind-mounted
+      to /data in the container). 20 GiB is comfortable for MVP design-
+      partner scale — KU + activity-log growth at observed write volume
+      sits well under that. Bump only when DB growth approaches 70% of
+      the volume; gp3 supports online resize via modify-volume.
+
+  RestoreFromSnapshotId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(snap-[0-9a-f]{8,17}|)$"
+    ConstraintDescription: Must be empty or a valid snap-XXXXXXXX id.
+    Description: |
+      Optional. EBS snapshot id (snap-XXXX) to restore the cq-server data
+      volume from. When set on update-stack, CqDataVolume is replaced via
+      UpdateReplacePolicy: Snapshot — the previous volume gets snapshotted
+      then deleted, and a fresh volume is created from RestoreFromSnapshotId.
+      Empty on first deploy = fresh blank gp3 volume.
+
+      After a restore, DO NOT clear this value. Toggling it back to empty
+      also triggers volume replacement (snapshot → delete → fresh blank),
+      wiping the restored data. Leave the snapshot id in place as a
+      permanent stack parameter; it has no runtime effect after the volume
+      is created. See docs/ops/l2-substrate-recovery.md for the full
+      procedure.
+
 Conditions:
   HasAdminEmail: !Not [!Equals [!Ref AdminEmail, ""]]
   AutoApproveOn: !Equals [!Ref AutoApprovePropose, "true"]
@@ -144,6 +215,9 @@ Conditions:
   # the L2 slug IS the Enterprise, so CQ_ENTERPRISE falls back to
   # EnterpriseSlug. FO-2 deploys pass the real parent Enterprise id.
   HasCqEnterpriseId: !Not [!Equals [!Ref CqEnterpriseId, ""]]
+  # agent#323 — toggles SnapshotId on CqDataVolume between absent
+  # (fresh L2) and the restore-from id (recovery path).
+  RestoreFromSnapshot: !Not [!Equals [!Ref RestoreFromSnapshotId, ""]]
 
 Resources:
   # =====================================================================
@@ -258,77 +332,29 @@ Resources:
         - { IpProtocol: tcp, FromPort: 80,  ToPort: 80,  CidrIp: 0.0.0.0/0, Description: "HTTP (ACM HTTP-01 + Cloudflare-origin)" }
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS (reserved for v2; not bound to a listener in v1)" }
 
-  TaskSecurityGroup:
+  # ECS-on-EC2: with `awsvpc` task networking the task itself gets its
+  # own ENI + SG (TaskSecurityGroup). Without awsvpc, the task shares
+  # the host's network namespace and the HostSecurityGroup gates port
+  # 3000. We use `bridge` mode below (simpler with a single task per
+  # host), so the host SG is what the ALB target group reaches.
+  HostSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${EnterpriseSlug} L2 ECS task SG"
+      GroupDescription: !Sub "${EnterpriseSlug} L2 ECS host SG"
       VpcId: !Ref Vpc
 
-  TaskIngressFromAlb:
+  HostIngressFromAlb:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref TaskSecurityGroup
+      GroupId: !Ref HostSecurityGroup
       IpProtocol: tcp
-      FromPort: 3000
-      ToPort: 3000
+      # Bridge-mode ephemeral host ports — ECS picks one per task. Allow
+      # the full ephemeral range from the ALB only (the dynamic port the
+      # task lands on is registered with the target group automatically).
+      FromPort: 32768
+      ToPort: 65535
       SourceSecurityGroupId: !Ref AlbSecurityGroup
-      Description: "cq-server port 3000 from ALB only"
-
-  EfsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub "${EnterpriseSlug} L2 EFS SG"
-      VpcId: !Ref Vpc
-
-  EfsIngressFromTask:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref EfsSecurityGroup
-      IpProtocol: tcp
-      FromPort: 2049
-      ToPort: 2049
-      SourceSecurityGroupId: !Ref TaskSecurityGroup
-      Description: "NFS from cq-server tasks"
-
-  # =====================================================================
-  # EFS — persistent SQLite at /data.
-  # =====================================================================
-  EfsFileSystem:
-    Type: AWS::EFS::FileSystem
-    Properties:
-      Encrypted: true
-      PerformanceMode: generalPurpose
-      ThroughputMode: bursting
-      LifecyclePolicies:
-        - TransitionToIA: AFTER_30_DAYS
-      FileSystemTags:
-        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-efs" }
-
-  EfsMountTargetA:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref EfsFileSystem
-      SubnetId: !Ref PublicSubnetA
-      SecurityGroups: [!Ref EfsSecurityGroup]
-
-  EfsMountTargetB:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref EfsFileSystem
-      SubnetId: !Ref PublicSubnetB
-      SecurityGroups: [!Ref EfsSecurityGroup]
-
-  EfsAccessPoint:
-    Type: AWS::EFS::AccessPoint
-    Properties:
-      FileSystemId: !Ref EfsFileSystem
-      PosixUser: { Uid: "1000", Gid: "1000" }
-      RootDirectory:
-        Path: /cq-data
-        CreationInfo:
-          OwnerUid: "1000"
-          OwnerGid: "1000"
-          Permissions: "0750"
+      Description: "Bridge-mode ephemeral ports from ALB only"
 
   # =====================================================================
   # CloudWatch logs
@@ -340,8 +366,15 @@ Resources:
       RetentionInDays: 30
 
   # =====================================================================
-  # IAM — task execution role (pull image, write logs, fetch secrets)
-  #       + task role (mount EFS, send SES, get secrets at runtime)
+  # IAM
+  #   - TaskExecutionRole: ECS agent pulls image, writes logs, fetches
+  #                        secrets at task start (assumed by ecs-tasks).
+  #   - TaskRole:          runtime (SES, secrets, KMS, ssmmessages for
+  #                        ecs execute-command). No volume perms — EBS
+  #                        is host-attached via CFN VolumeAttachment,
+  #                        not by the task.
+  #   - InstanceRole:      EC2 host runs the ECS agent (assumed by ec2).
+  #   - DlmRole:           AWS DLM assumes this to create snapshots.
   # =====================================================================
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -376,16 +409,6 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: EfsClientAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - elasticfilesystem:ClientMount
-                  - elasticfilesystem:ClientWrite
-                  - elasticfilesystem:ClientRootAccess
-                Resource: !GetAtt EfsFileSystem.Arn
         - PolicyName: SesSendInvites
           PolicyDocument:
             Version: "2012-10-17"
@@ -419,43 +442,248 @@ Resources:
                 Condition:
                   StringEquals:
                     "kms:ViaService": !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+        # Needed for `aws ecs execute-command` (EnableExecuteCommand: true
+        # on the service). The session-manager plugin running inside the
+        # task opens SSM message channels using the TASK role, not the
+        # instance role — without these the exec session fails with
+        # "Channel closed before message".
+        - PolicyName: EcsExecMessages
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # ECS-managed agent: register w/ cluster, pull task defs, push
+        # container telemetry. Standard managed policy for EC2 ECS hosts.
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        # SSM session-manager access (no SSH keys) so ops can shell into
+        # the host for SQLite inspection / .recover during a recovery.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  DlmRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: dlm.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
 
   # =====================================================================
-  # ECS cluster + task + service
+  # PERSISTENT EBS DATA VOLUME — agent#323
+  #
+  # Declared as a first-class CFN resource so its lifecycle is bound to
+  # the stack, not to any one EC2 host. CFN attaches it to the EcsHost
+  # via the EcsHostVolumeAttachment resource (no imperative attach in
+  # UserData, no race with the ECS agent).
+  #
+  # Pinned to PublicSubnetA's AZ — EBS volumes are zonal, so the EC2
+  # host must live in the same AZ (single-AZ topology). Multi-AZ
+  # availability is a follow-up (move to Postgres or Litestream).
+  # =====================================================================
+  CqDataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Size: !Ref CqDbVolumeSizeGiB
+      VolumeType: gp3
+      Encrypted: true
+      SnapshotId: !If
+        - RestoreFromSnapshot
+        - !Ref RestoreFromSnapshotId
+        - !Ref "AWS::NoValue"
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-cq-data" }
+        # DLM lifecycle policy targets this tag to pick the snapshot set.
+        - { Key: cq-l2-data, Value: "true" }
+        - { Key: EnterpriseSlug, Value: !Ref EnterpriseSlug }
+
+  # =====================================================================
+  # ECS cluster (defined before EcsHost so UserData can !Ref it)
   # =====================================================================
   EcsCluster:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Sub "${EnterpriseSlug}-l2-cluster"
-      CapacityProviders: [FARGATE]
+
+  # =====================================================================
+  # EC2 capacity for ECS — single bare AWS::EC2::Instance, no ASG, no
+  # capacity provider. The volume is bound via EcsHostVolumeAttachment
+  # (a CFN-owned attachment), so UserData never calls ec2:AttachVolume.
+  #
+  # Replacement on instance loss is operator-driven: re-run update-stack
+  # (no change) or stack-replace the instance. Single-AZ, single-host
+  # topology is the documented MVP trade-off; HA path is Postgres/RDS
+  # (issue #309) or Litestream (issue #311).
+  # =====================================================================
+  EcsHost:
+    Type: AWS::EC2::Instance
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      # ECS-optimized AL2023 ARM64 AMI via SSM parameter — auto-resolves
+      # to the current AWS-published AMI at stack-create. Pinning a
+      # specific AMI id would force template churn every AMI release;
+      # the SSM alias is the AWS-recommended pattern.
+      ImageId: "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id}}"
+      InstanceType: t4g.small
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds: [!Ref HostSecurityGroup]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      Tags:
+        - { Key: Name, Value: !Sub "${EnterpriseSlug}-l2-ecs-host" }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          # --- Configure the ECS agent (do NOT start it yet) -----------
+          # Write cluster + tunables BEFORE starting ecs so the agent
+          # registers correctly on first start. We enable (start on
+          # next boot) but do NOT --now: starting ecs before the EBS
+          # volume is mounted lets Docker create an empty host directory
+          # at /mnt/cq-data that shadows the eventual mount.
+          mkdir -p /etc/ecs
+          echo "ECS_CLUSTER=${EcsCluster}" >> /etc/ecs/ecs.config
+          # Allow longer task start for the cq-server image pull from
+          # ECR Public (cold pull on a fresh host can take 30-60s).
+          echo "ECS_CONTAINER_START_TIMEOUT=3m" >> /etc/ecs/ecs.config
+          systemctl enable ecs || true
+
+          # Ensure ecs.service refuses to start unless /mnt/cq-data is
+          # mounted. Belt-and-braces with the UserData mountpoint guard
+          # below, but the drop-in handles the reboot case (where
+          # UserData doesn't re-run). The mount unit name is the
+          # systemd-escaped form of the mountpoint path; systemd
+          # auto-generates it from the fstab entry written below.
+          mkdir -p /etc/systemd/system/ecs.service.d
+          cat > /etc/systemd/system/ecs.service.d/10-require-data-mount.conf <<'EOF'
+          [Unit]
+          RequiresMountsFor=/mnt/cq-data
+          After=mnt-cq\x2ddata.mount
+          EOF
+          systemctl daemon-reload
+
+          # --- Mount the persistent EBS data volume -------------------
+          # CFN attaches the volume via EcsHostVolumeAttachment before
+          # this script runs (the attachment is a DependsOn of the
+          # EcsService — but UserData runs after the instance reaches
+          # running, which is after attach-volume returns). The Nitro
+          # device path is /dev/nvme1n1 even though the attachment uses
+          # /dev/sdf. Wait briefly for the kernel to surface it.
+          for i in $(seq 1 60); do
+            if [ -b /dev/nvme1n1 ]; then break; fi
+            sleep 2
+          done
+
+          # Format only if blank (first-ever boot of a fresh volume).
+          # `file -s` reports `data` on an unformatted device and the
+          # filesystem name otherwise. Snapshot-restored volumes are
+          # already formatted, so this is a no-op.
+          if file -s /dev/nvme1n1 | grep -q ': data$'; then
+            mkfs.ext4 /dev/nvme1n1
+          fi
+
+          mkdir -p /mnt/cq-data
+          UUID=$(blkid -s UUID -o value /dev/nvme1n1)
+          grep -q "$UUID" /etc/fstab || \
+            echo "UUID=$UUID /mnt/cq-data ext4 defaults,nofail 0 2" >> /etc/fstab
+          mount -a
+
+          # If restoring from a smaller snapshot into a larger volume,
+          # grow the FS to fill the device. Idempotent: no-op when sizes
+          # already match (e2fsprogs prints "Nothing to do").
+          resize2fs /dev/nvme1n1 || true
+
+          # Container UID 1000 (cq-server `app` user) must own the data.
+          chown -R 1000:1000 /mnt/cq-data
+          chmod 0750 /mnt/cq-data
+
+          # --- Verify mount BEFORE starting ECS ------------------------
+          # Without this guard, Docker bind mounts may shadow the EBS
+          # volume with an empty host directory if /mnt/cq-data isn't
+          # really mounted. Fail fast instead.
+          test -d /mnt/cq-data
+          mountpoint -q /mnt/cq-data || { echo "FATAL: /mnt/cq-data not mounted, refusing to start ecs"; exit 1; }
+
+          # Now safe to start the ECS agent — it will register this
+          # instance into the cluster and accept task placements.
+          systemctl start ecs
+
+  # CFN owns the volume attachment lifecycle. The ECS service DependsOn
+  # this resource, so the cq-server task can't be scheduled before the
+  # volume is bound to the host.
+  EcsHostVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      VolumeId: !Ref CqDataVolume
+      InstanceId: !Ref EcsHost
+      # /dev/sdf at the EC2 API surface; the kernel surfaces this as
+      # /dev/nvme1n1 on Nitro instances (t4g.* are Nitro).
+      Device: /dev/sdf
+
+  # =====================================================================
+  # ECS task + service
+  # ====================================================================
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Sub "${EnterpriseSlug}-l2-cq-server"
-      NetworkMode: awsvpc
-      RequiresCompatibilities: [FARGATE]
+      # bridge networking — task ports map to dynamic ephemeral ports on
+      # the host; the ALB target group resolves the mapping per task.
+      # awsvpc isn't needed (and isn't preferred) for a single-task host.
+      NetworkMode: bridge
+      RequiresCompatibilities: [EC2]
       RuntimePlatform:
-        CpuArchitecture: X86_64
+        CpuArchitecture: ARM64
         OperatingSystemFamily: LINUX
       Cpu: "512"
       Memory: "1024"
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       Volumes:
+        # Host bind mount — the EBS volume is mounted at /mnt/cq-data on
+        # the EC2 host by UserData, then bind-mounted into the container
+        # at /data (matching ENV CQ_DB_PATH=/data/cq.db in the Dockerfile).
         - Name: cq-data
-          EFSVolumeConfiguration:
-            FilesystemId: !Ref EfsFileSystem
-            TransitEncryption: ENABLED
-            AuthorizationConfig:
-              AccessPointId: !Ref EfsAccessPoint
-              IAM: ENABLED
+          Host:
+            SourcePath: /mnt/cq-data
       ContainerDefinitions:
         - Name: cq-server
           Image: !Ref CqServerImage
           Essential: true
           PortMappings:
-            - { ContainerPort: 3000, Protocol: tcp }
+            # HostPort: 0 → ECS picks a dynamic port in the ephemeral
+            # range (32768-65535), and registers it with the target group.
+            - { ContainerPort: 3000, HostPort: 0, Protocol: tcp }
           MountPoints:
             - { SourceVolume: cq-data, ContainerPath: /data }
           Environment:
@@ -541,12 +769,22 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Sub "${EnterpriseSlug}-l2-tg"
+      # Port is required but ignored in bridge-mode / dynamic-port
+      # registration — ECS overrides it per task with the actual host
+      # ephemeral port. Set to 3000 for documentation continuity.
       Port: 3000
       Protocol: HTTP
       ProtocolVersion: HTTP1
       VpcId: !Ref Vpc
-      TargetType: ip
+      # `instance` targets — bridge-mode tasks land on the EC2 host, not
+      # a task-ENI, so ALB routes via instance-id + ephemeral host port.
+      TargetType: instance
       HealthCheckPath: /health
+      # `traffic-port` is required by ECS dynamic-port registration: the
+      # health probe targets whatever ephemeral host port the task landed
+      # on, not a fixed port. cfn-lint E3049 enforces this for HostPort: 0.
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
       HealthCheckIntervalSeconds: 15
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -565,33 +803,66 @@ Resources:
 
   EcsService:
     Type: AWS::ECS::Service
-    DependsOn: [HttpListener, EfsMountTargetA, EfsMountTargetB]
+    # HttpListener gates LB registration; EcsHostVolumeAttachment ensures
+    # /mnt/cq-data is backed by the EBS volume before the task is placed.
+    DependsOn: [HttpListener, EcsHostVolumeAttachment]
     Properties:
       ServiceName: cq-server
       Cluster: !Ref EcsCluster
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: 1
-      LaunchType: FARGATE
+      # ECS-on-EC2 against the container instance registered by the ECS
+      # agent on EcsHost. No capacity provider, no ASG.
+      LaunchType: EC2
       EnableExecuteCommand: true
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-          SecurityGroups: [!Ref TaskSecurityGroup]
       LoadBalancers:
         - ContainerName: cq-server
           ContainerPort: 3000
           TargetGroupArn: !Ref TargetGroup
-      HealthCheckGracePeriodSeconds: 60
+      HealthCheckGracePeriodSeconds: 90
       DeploymentConfiguration:
-        # Spec: rolling update, max 200%, min 100%. Note: SQLite-on-EFS
-        # has a known co-access corruption window — production single-L2
-        # stacks should prefer the recreate strategy used by the existing
-        # customer-l2.yaml (min 0 / max 100). The marketplace template
-        # follows the FO-2-backend spec verbatim; rotate to recreate if
-        # WAL corruption is observed.
-        MinimumHealthyPercent: 100
-        MaximumPercent: 200
+        # SQLite + single-host EBS bind mount: only ONE task can hold the
+        # database open at a time. Recreate strategy (min 0 / max 100):
+        # the old task stops, releases the file locks, then the new task
+        # starts. Brief downtime during deploys — acceptable trade for
+        # avoiding SQLite multi-writer pathologies. (Drove the EFS
+        # corruption that motivated agent#323; not repeating it.)
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+
+  # =====================================================================
+  # DLM — hourly EBS snapshots of the cq-l2-data volume.
+  # Retention 168 snapshots = 7 days at 1/hour. RPO 1h, RTO ~10min via
+  # snapshot-restore (see docs/ops/l2-substrate-recovery.md).
+  # =====================================================================
+  CqDataSnapshotPolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: !Sub "${EnterpriseSlug} L2 cq-data hourly snapshots (agent#323)"
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt DlmRole.Arn
+      PolicyDetails:
+        PolicyType: EBS_SNAPSHOT_MANAGEMENT
+        ResourceTypes: [VOLUME]
+        TargetTags:
+          # Scope the policy to THIS L2's volume — without the
+          # EnterpriseSlug tag a DLM policy in an account hosting
+          # multiple L2 stacks would snapshot every L2's volume on its
+          # own schedule, multiplying snapshot count + cost.
+          - { Key: cq-l2-data, Value: "true" }
+          - { Key: EnterpriseSlug, Value: !Ref EnterpriseSlug }
+        Schedules:
+          - Name: hourly-7d
+            CopyTags: true
+            TagsToAdd:
+              - { Key: SnapshotPolicy, Value: !Sub "${EnterpriseSlug}-l2-hourly" }
+            CreateRule:
+              # Standard DLM cron form: every hour on the hour. The
+              # 6-field aws form is `M H DoM Mo DoW Y` — `0 * * * ? *`
+              # = at minute 0 of every hour.
+              CronExpression: "cron(0 * * * ? *)"
+            RetainRule:
+              Count: 168
 
 Outputs:
   AlbDnsName:
@@ -616,9 +887,16 @@ Outputs:
     Description: ECS service ARN (ops debugging).
     Value: !Ref EcsService
 
-  EfsId:
-    Description: EFS file system ID (ops debugging).
-    Value: !Ref EfsFileSystem
+  CqDataVolumeId:
+    Description: |
+      Persistent EBS data volume id holding /data/cq.db. Recovery scripts
+      use this to locate the canonical volume + walk back through DLM
+      snapshots (see docs/ops/l2-substrate-recovery.md).
+    Value: !Ref CqDataVolume
+
+  CqDataSnapshotPolicyId:
+    Description: DLM lifecycle policy id (hourly snapshots, 7-day retention).
+    Value: !Ref CqDataSnapshotPolicy
 
   TaskDefinitionArn:
     Description: Active task definition ARN (ops debugging).
