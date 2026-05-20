@@ -80,6 +80,90 @@ the security anchor anyway — AAISN is human-readable provenance
 metadata for the receiving admin.
 
 Auth: ``require_admin`` + body-enterprise-DIFFERS-from-caller-tenancy.
+
+## Concurrent writers — addresses #346 concern 3
+
+Three logical writers contend for ``aigrp_directory_peerings`` rows
+post-EBS migration (#327):
+
+(a) **This admin endpoint** (Option A, manual paste).
+    Writes rows with synthetic ``offer_id = manual:<from>:<to>:<l2_id>``
+    via ``store.upsert_directory_peering`` (INSERT … ON CONFLICT(offer_id)
+    DO UPDATE). Transaction boundary: a single
+    ``self._engine.begin()`` block in ``_upsert_directory_peering_sync``;
+    SQLAlchemy issues ``BEGIN IMMEDIATE`` under WAL, taking the
+    database-wide RESERVED lock for the duration of the UPSERT (one
+    statement). SQLite has **no row-level locking** — the unit of
+    mutual exclusion is the whole database file.
+
+(b) **Directory poll loop** (``directory_client._sync_peerings``).
+    Writes rows pulled from ``directory.8th-layer.ai`` with real,
+    bilaterally-signed ``offer_id`` values. Same call into
+    ``store.upsert_directory_peering`` — same transaction boundary as
+    (a). Verifies offer + accept signatures **before** the upsert
+    (``_verify_peering_record``); unverifiable records are skipped.
+
+(c) **The bilateral signed flow** (offer/accept envelope protocol
+    backing Option B). On this L2 the writer is (b) — the directory
+    poll loop ingests the bilateral envelopes after the registry has
+    validated them. There is no separate route on this L2 that
+    fabricates bilateral signed rows; ``forward_sign.py`` only
+    verifies, never writes.
+
+### Conflict resolution
+
+The natural-key collision space is small because:
+
+* (a) emits ``offer_id`` of the form ``manual:<from>:<to>:<l2_id>``.
+* (b) emits the directory's UUID-shaped ``offer_id`` (never starts
+  with ``manual:``).
+
+So an upsert from (a) and an upsert from (b) for the same logical
+``(from, to)`` peer pair land in **distinct rows** with **distinct
+PKs**. The ``find_active_directory_peering`` reader applies
+``status='active' AND expires_at > now`` and picks the
+``ORDER BY active_from DESC`` winner — the most recent active row
+wins regardless of which writer produced it.
+
+**Why INSERT-or-UPSERT and not just INSERT.** We use UPSERT
+(``INSERT … ON CONFLICT(offer_id) DO UPDATE``) — straight INSERT
+would 409 on re-paste of the same announce, breaking the operator
+UX. UPSERT makes re-paste idempotent without sacrificing the PK
+invariant. The ``offer_id`` deterministic format makes
+``re-paste = same row``; distinct admins on the same L2 announcing
+the same peer end up at the same row deliberately (the second paste
+refreshes ``expires_at``). UPSERT is also what (b) does — keeping
+the two writers symmetric simplifies reasoning.
+
+**Manual-row → signed-row precedence.** If (a) lands first and (b)
+later returns a real signed peering for the same ``(from, to)``,
+both rows coexist. The reader's ``ORDER BY active_from DESC LIMIT 1``
+picks the most-recently-active row; in practice (b)'s
+``active_from`` will be later than the manual paste's, so the
+signed row wins as soon as the directory catches up. The manual row
+expires after its TTL (default 30 days) and drops out of the
+``WHERE expires_at > now`` filter — no GC cycle needed.
+
+### Isolation model (SQLite WAL on EBS, post-#327)
+
+SQLite WAL allows **N readers + 1 writer** concurrently. Writers
+serialise on the database lock (``BEGIN IMMEDIATE`` → RESERVED →
+PENDING → EXCLUSIVE during commit). Both (a) and (b) hit the same
+``engine.begin()`` boundary, so their upserts cannot interleave at
+statement granularity — one fully commits before the other starts.
+This is intentional: the table is small (cross-Enterprise peerings,
+O(10s of rows per L2)) and write throughput is low (admin paste +
+periodic directory poll), so global write serialisation is
+acceptable. There is no row-level locking and no need for one.
+
+EBS-vs-EFS distinction (#327): EFS broke the WAL fsync ordering
+guarantee, which is why we migrated. EBS preserves it. With EBS the
+above analysis holds; with EFS it did not (writes could appear to
+commit, then be lost if the EFS server rolled back, leaving the
+in-memory state and on-disk state divergent).
+
+See ``docs/decisions/35-aigrp-directory-peering-concurrent-writers.md``
+for the longer-form note.
 """
 
 from __future__ import annotations
@@ -92,12 +176,20 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .auth import require_admin
 from .deps import get_store
 from .store._sqlite import SqliteStore
+
+# Ed25519 public keys are exactly 32 bytes per RFC 8032 §5.1.5. The
+# ``cryptography`` library does not export a named constant for this,
+# so we hardcode it for use by both the length pre-check and the
+# ``Ed25519PublicKey.from_public_bytes`` curve-point validation below.
+_ED25519_PUBLIC_KEY_SIZE = 32
 
 log = logging.getLogger(__name__)
 
@@ -226,21 +318,81 @@ def _validate_l2_id(l2_id: str, enterprise: str, group: str) -> None:
         )
 
 
-def _validate_pubkey_b64u(pubkey: str) -> None:
-    """Confirm the pubkey decodes from base64url; 422 if it doesn't.
+_INVALID_PUBKEY_DETAIL = "pubkey must be base64url-encoded Ed25519 public key (32 bytes)"
 
-    Mirrors the validation discipline of the intra-Enterprise route's
-    ``_decode_bloom`` — guards against admins pasting a hex string or
-    raw bytes into a field consumers will treat as base64url.
+
+class _InvalidPubkeyError(Exception):
+    """Internal sentinel for the route handler — convert to 400 response."""
+
+
+def _invalid_pubkey_response() -> JSONResponse:
+    """Standard 400 body for any pubkey validation failure.
+
+    Single shape so a fleet operator scripting against this endpoint
+    can ``grep error=invalid_pubkey`` regardless of whether the
+    failure was b64u-decode, length, or curve-point validation. Keeps
+    the on-the-wire surface narrower than leaking the underlying
+    ``ValueError`` message.
     """
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid_pubkey", "detail": _INVALID_PUBKEY_DETAIL},
+    )
+
+
+def _validate_pubkey_ed25519(pubkey: str) -> None:
+    """Verify ``pubkey`` is a real Ed25519 public key — addresses #346 concern 1.
+
+    Three layers of check, all surfaced as the same 400 body
+    (``{"error":"invalid_pubkey","detail":...}`` via
+    ``_invalid_pubkey_response``):
+
+    1. **Base64url decode** — admin must not paste hex / raw bytes /
+       padded standard-base64. Tolerant of missing padding (RFC 4648 §5).
+    2. **Length** — exactly ``_ED25519_PUBLIC_KEY_SIZE`` (32) bytes.
+       A wrong-length key would either silently truncate downstream
+       or break ``forward_sign.verify_forward_signature`` at first
+       use with an opaque error.
+    3. **Curve-point validity** —
+       ``Ed25519PublicKey.from_public_bytes`` does the curve-point
+       check internally (raises ``ValueError`` for malformed keys).
+       This is the same primitive ``crypto.verify_envelope_signature``
+       and ``crypto.verify_raw`` use on the verify path, so any key
+       that passes here will round-trip through the downstream
+       verifiers.
+
+    The handler converts the ``_InvalidPubkeyError`` exception to the
+    canonical 400 response shape before returning.
+
+    Raises:
+        _InvalidPubkeyError: any of the three checks failed.
+    """
+    # Step 1 — base64url decode (tolerant of missing padding).
     try:
         padded = pubkey + "=" * (-len(pubkey) % 4)
-        base64.urlsafe_b64decode(padded)
+        raw = base64.urlsafe_b64decode(padded)
     except (ValueError, TypeError, binascii.Error) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"pubkey is not valid base64url: {exc}",
-        ) from exc
+        log.info("pubkey rejected (b64u decode): %s", exc)
+        raise _InvalidPubkeyError from exc
+
+    # Step 2 — length check before handing to the curve loader so we
+    # produce a precise log line for the common admin-paste error
+    # (truncated copy/paste).
+    if len(raw) != _ED25519_PUBLIC_KEY_SIZE:
+        log.info(
+            "pubkey rejected (wrong length): got %d bytes, expected %d",
+            len(raw),
+            _ED25519_PUBLIC_KEY_SIZE,
+        )
+        raise _InvalidPubkeyError
+
+    # Step 3 — curve-point validity. Re-uses the same loader the
+    # downstream verifier (``crypto.verify_envelope_signature``) uses.
+    try:
+        Ed25519PublicKey.from_public_bytes(raw)
+    except (ValueError, TypeError) as exc:
+        log.info("pubkey rejected (curve-point): %s", exc)
+        raise _InvalidPubkeyError from exc
 
 
 def _build_offer_id(from_enterprise: str, to_enterprise: str, l2_id: str) -> str:
@@ -298,7 +450,7 @@ async def announce_directory_peering(
     req: DirectoryPeerAnnounceRequest,
     admin: str = Depends(require_admin),
     store: SqliteStore = Depends(get_store),
-) -> DirectoryPeerAnnounceResponse:
+) -> DirectoryPeerAnnounceResponse | JSONResponse:
     """Insert (or refresh) one ``aigrp_directory_peerings`` row from a signed admin request.
 
     Behaviour:
@@ -323,7 +475,13 @@ async def announce_directory_peering(
        intra-Enterprise rows AND from directory-pulled rows.
     """
     _validate_l2_id(req.l2_id, req.enterprise, req.group)
-    _validate_pubkey_b64u(req.pubkey)
+    try:
+        _validate_pubkey_ed25519(req.pubkey)
+    except _InvalidPubkeyError:
+        # Concern 1 from #346 — return a single canonical 400 shape so
+        # scripted callers can grep ``error=invalid_pubkey`` regardless
+        # of which sub-check (b64u / length / curve) tripped.
+        return _invalid_pubkey_response()
 
     # ------------------------------------------------------------------
     # Tenancy gate — caller must be admin, AND body MUST be a different

@@ -174,13 +174,43 @@ def test_l2_id_without_slash_is_422(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_invalid_pubkey_base64_is_422(client: TestClient) -> None:
-    """Pubkey field must parse as base64url; junk input lands a clean 422."""
+def test_invalid_pubkey_base64_is_400(client: TestClient) -> None:
+    """Pubkey field must decode as base64url Ed25519 key (#346 concern 1)."""
     headers = _login(client, ADMIN_A)
     body = _valid_body(pubkey="!!!not-base64!!!@@@")
     resp = client.post(ENDPOINT_PATH, headers=headers, json=body)
-    assert resp.status_code == 422, resp.text
-    assert "pubkey" in resp.json()["detail"]
+    assert resp.status_code == 400, resp.text
+    payload = resp.json()
+    assert payload == {
+        "error": "invalid_pubkey",
+        "detail": "pubkey must be base64url-encoded Ed25519 public key (32 bytes)",
+    }
+
+
+def test_invalid_pubkey_wrong_length_is_400(client: TestClient) -> None:
+    """A b64u-decodable string that isn't 32 bytes is rejected (#346 concern 1)."""
+    headers = _login(client, ADMIN_A)
+    # 16 bytes (half an Ed25519 key) — decodes cleanly, wrong length.
+    short_pubkey = base64.urlsafe_b64encode(b"\x01" * 16).rstrip(b"=").decode()
+    body = _valid_body(pubkey=short_pubkey)
+    resp = client.post(ENDPOINT_PATH, headers=headers, json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"] == "invalid_pubkey"
+
+
+def test_invalid_pubkey_hex_string_is_400(client: TestClient) -> None:
+    """A 64-char hex string (common admin mistake) is rejected (#346 concern 1).
+
+    Hex decodes as base64url to 48 bytes (all-zero or otherwise),
+    which trips the length check rather than the b64u-decode step.
+    Either way the canonical 400 shape is returned.
+    """
+    headers = _login(client, ADMIN_A)
+    hex_pubkey = "00" * 32  # 64 hex chars representing 32 bytes — the wrong encoding
+    body = _valid_body(pubkey=hex_pubkey)
+    resp = client.post(ENDPOINT_PATH, headers=headers, json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"] == "invalid_pubkey"
 
 
 # ---------------------------------------------------------------------------
