@@ -55,6 +55,7 @@ from .store._sqlite import SqliteStore
 from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
 from .theme_routes import router as theme_router
 from .tour_routes import router as tour_router
+from .transactional import transactional_router
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -511,6 +512,13 @@ api_router.include_router(theme_router)
 # Founder-tour persistence — GET/PUT /api/v1/users/me/tour-state for
 # the in-app onboarding walkthrough.
 api_router.include_router(tour_router)
+# Decision 34 (agent#348) — central transactional-mail service. Only
+# served by the control-plane deployment (the cq-directory role); L2s
+# leave the route enabled but never receive sends since their HMAC
+# resolver is empty (StaticKeyResolver({})) and every request 401s.
+# That's the right fails-closed default — production wiring is in
+# deploy/aws/ for the control-plane stack.
+api_router.include_router(transactional_router)
 
 
 @api_router.get("/health")
