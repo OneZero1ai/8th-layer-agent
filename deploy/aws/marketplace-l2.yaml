@@ -458,6 +458,20 @@ Resources:
                   - ssmmessages:OpenControlChannel
                   - ssmmessages:OpenDataChannel
                 Resource: "*"
+        # cq-server uses Bedrock Titan Text Embeddings v2 to embed
+        # knowledge units on write and queries on read. Without this
+        # permission `/propose` succeeds (the row is persisted) but the
+        # embedding silently fails with a zero-length BLOB, and every
+        # semantic query returns 0 hits with no error surfaced. Scoped
+        # to the specific model ARN so a leaked task role can't invoke
+        # arbitrary Bedrock models.
+        - PolicyName: BedrockInvokeForEmbeddings
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel]
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -550,8 +564,8 @@ Resources:
       # to the current AWS-published AMI at stack-create. Pinning a
       # specific AMI id would force template churn every AMI release;
       # the SSM alias is the AWS-recommended pattern.
-      ImageId: "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id}}"
-      InstanceType: t4g.small
+      ImageId: "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id}}"
+      InstanceType: t3.small
       IamInstanceProfile: !Ref InstanceProfile
       SubnetId: !Ref PublicSubnetA
       SecurityGroupIds: [!Ref HostSecurityGroup]
@@ -577,19 +591,14 @@ Resources:
           echo "ECS_CONTAINER_START_TIMEOUT=3m" >> /etc/ecs/ecs.config
           systemctl enable ecs || true
 
-          # Ensure ecs.service refuses to start unless /mnt/cq-data is
-          # mounted. Belt-and-braces with the UserData mountpoint guard
-          # below, but the drop-in handles the reboot case (where
-          # UserData doesn't re-run). The mount unit name is the
-          # systemd-escaped form of the mountpoint path; systemd
-          # auto-generates it from the fstab entry written below.
-          mkdir -p /etc/systemd/system/ecs.service.d
-          cat > /etc/systemd/system/ecs.service.d/10-require-data-mount.conf <<'EOF'
-          [Unit]
-          RequiresMountsFor=/mnt/cq-data
-          After=mnt-cq\x2ddata.mount
-          EOF
-          systemctl daemon-reload
+          # NOTE: the RequiresMountsFor systemd drop-in attempted earlier
+          # didn't work — systemd-fstab-generator runs at boot, BEFORE
+          # UserData writes the fstab entry, so the `mnt-cq\x2ddata.mount`
+          # unit doesn't exist when ecs.service evaluates its After=. The
+          # mountpoint guard below + the EBS volume's persistence across
+          # task restarts handle first-boot correctly; reboot safety is a
+          # follow-up (would need either fstab-via-cloud-init-config or a
+          # bootstrapped mount unit shipped via UserData).
 
           # --- Mount the persistent EBS data volume -------------------
           # CFN attaches the volume via EcsHostVolumeAttachment before
@@ -622,8 +631,11 @@ Resources:
           # already match (e2fsprogs prints "Nothing to do").
           resize2fs /dev/nvme1n1 || true
 
-          # Container UID 1000 (cq-server `app` user) must own the data.
-          chown -R 1000:1000 /mnt/cq-data
+          # cq-server's container app user is uid=100, gid=101 (system
+          # user from `adduser --system` in server/Dockerfile). Host
+          # ownership must match exactly or sqlite open() fails with
+          # "unable to open database file".
+          chown -R 100:101 /mnt/cq-data
           chmod 0750 /mnt/cq-data
 
           # --- Verify mount BEFORE starting ECS ------------------------
@@ -635,7 +647,11 @@ Resources:
 
           # Now safe to start the ECS agent — it will register this
           # instance into the cluster and accept task placements.
-          systemctl start ecs
+          # --no-block is REQUIRED: ecs.service has `After=cloud-final.service`,
+          # and cloud-final.service is the very unit running this UserData.
+          # A synchronous `systemctl start ecs` here would deadlock the unit
+          # against itself — observed empirically on a 1h-stuck CREATE.
+          systemctl start --no-block ecs
 
   # CFN owns the volume attachment lifecycle. The ECS service DependsOn
   # this resource, so the cq-server task can't be scheduled before the
@@ -663,7 +679,7 @@ Resources:
       NetworkMode: bridge
       RequiresCompatibilities: [EC2]
       RuntimePlatform:
-        CpuArchitecture: ARM64
+        CpuArchitecture: X86_64
         OperatingSystemFamily: LINUX
       Cpu: "512"
       Memory: "1024"
@@ -838,7 +854,7 @@ Resources:
   CqDataSnapshotPolicy:
     Type: AWS::DLM::LifecyclePolicy
     Properties:
-      Description: !Sub "${EnterpriseSlug} L2 cq-data hourly snapshots (agent#323)"
+      Description: !Sub "${EnterpriseSlug} L2 cq-data hourly snapshots agent-323"
       State: ENABLED
       ExecutionRoleArn: !GetAtt DlmRole.Arn
       PolicyDetails:
