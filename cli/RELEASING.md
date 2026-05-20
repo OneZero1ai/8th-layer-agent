@@ -1,5 +1,17 @@
 # Releasing the cq binary
 
+> **Scope (Decision 35, 2026-05-20):** This binary is **plugin-runtime-only** going
+> forward. It is downloaded by the `8l-cq` Claude Code plugin on first use; it is
+> never installed onto a user's PATH and never published through
+> https://install.8th-layer.ai. The user-facing operator CLI (`8l`) lives in
+> [`OneZero1ai/8l-cli`](https://github.com/OneZero1ai/8l-cli) and releases to the
+> sibling `8l/v*/` prefix on the same S3 bucket via the `8l-cli-release`
+> CodeBuild project. See:
+> https://github.com/OneZero1ai/crosstalk-enterprise/blob/main/docs/decisions/35-cli-unification-one-8l-binary.md
+>
+> A `DEPRECATED.md` marker has been uploaded to `s3://.../cli/DEPRECATED.md` so
+> anyone poking at the prefix sees the same information.
+
 The 8th-Layer fork ships its own `cq` binary because it carries Go-side
 additions (e.g. the `propose_batch` MCP tool) that upstream's published
 binary does not. The plugin (`plugins/cq/scripts/cq_binary.py`) fetches
