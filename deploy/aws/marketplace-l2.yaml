@@ -195,15 +195,18 @@ Parameters:
     AllowedPattern: "^(snap-[0-9a-f]{8,17}|)$"
     ConstraintDescription: Must be empty or a valid snap-XXXXXXXX id.
     Description: |
-      When non-empty, the L2's EBS data volume is initialised from this
-      DLM snapshot rather than as a blank gp3 disk. The documented
-      recovery path: pick the most recent `cq-l2-data: true` snapshot
-      from the DLM-tagged set, then run update-stack with this parameter
-      set to the snapshot id (on a FRESH stack — see
-      docs/ops/l2-substrate-recovery.md for why this property is
-      immutable on the live stack). CFN creates the volume from the
-      snapshot, EcsHostVolumeAttachment binds it to the host, and
-      UserData formats-or-mounts on first boot.
+      Optional. EBS snapshot id (snap-XXXX) to restore the cq-server data
+      volume from. When set on update-stack, CqDataVolume is replaced via
+      UpdateReplacePolicy: Snapshot — the previous volume gets snapshotted
+      then deleted, and a fresh volume is created from RestoreFromSnapshotId.
+      Empty on first deploy = fresh blank gp3 volume.
+
+      After a restore, DO NOT clear this value. Toggling it back to empty
+      also triggers volume replacement (snapshot → delete → fresh blank),
+      wiping the restored data. Leave the snapshot id in place as a
+      permanent stack parameter; it has no runtime effect after the volume
+      is created. See docs/ops/l2-substrate-recovery.md for the full
+      procedure.
 
 Conditions:
   HasAdminEmail: !Not [!Equals [!Ref AdminEmail, ""]]
@@ -212,8 +215,8 @@ Conditions:
   # the L2 slug IS the Enterprise, so CQ_ENTERPRISE falls back to
   # EnterpriseSlug. FO-2 deploys pass the real parent Enterprise id.
   HasCqEnterpriseId: !Not [!Equals [!Ref CqEnterpriseId, ""]]
-  # agent#323 — toggles BlockDeviceMappings between a blank gp3
-  # (fresh L2) and snapshot-restored gp3 (recovery path).
+  # agent#323 — toggles SnapshotId on CqDataVolume between absent
+  # (fresh L2) and the restore-from id (recovery path).
   RestoreFromSnapshot: !Not [!Equals [!Ref RestoreFromSnapshotId, ""]]
 
 Resources:
@@ -573,6 +576,20 @@ Resources:
           # ECR Public (cold pull on a fresh host can take 30-60s).
           echo "ECS_CONTAINER_START_TIMEOUT=3m" >> /etc/ecs/ecs.config
           systemctl enable ecs || true
+
+          # Ensure ecs.service refuses to start unless /mnt/cq-data is
+          # mounted. Belt-and-braces with the UserData mountpoint guard
+          # below, but the drop-in handles the reboot case (where
+          # UserData doesn't re-run). The mount unit name is the
+          # systemd-escaped form of the mountpoint path; systemd
+          # auto-generates it from the fstab entry written below.
+          mkdir -p /etc/systemd/system/ecs.service.d
+          cat > /etc/systemd/system/ecs.service.d/10-require-data-mount.conf <<'EOF'
+          [Unit]
+          RequiresMountsFor=/mnt/cq-data
+          After=mnt-cq\x2ddata.mount
+          EOF
+          systemctl daemon-reload
 
           # --- Mount the persistent EBS data volume -------------------
           # CFN attaches the volume via EcsHostVolumeAttachment before

@@ -55,7 +55,26 @@ The restore is a CFN parameter change, no manual EBS surgery required.
 1. **Identify the target snapshot id** with the `describe-snapshots` call
    above. Note it as `snap-XXXX`.
 
-2. **Update the L2 stack with `RestoreFromSnapshotId`:**
+2. **Stop the cq-server task so the EBS volume can be detached cleanly.**
+   When `RestoreFromSnapshotId` changes, CFN replaces `CqDataVolume`,
+   which means `EcsHostVolumeAttachment` is also replaced (it points
+   to a different volume). To replace the attachment, CFN must detach
+   the existing volume from the running EcsHost — but the ECS task is
+   holding `/data/cq.db` open via the bind mount, so the detach will
+   fail or stall on the in-use volume until force-detach kicks in.
+   Scale the service to zero first:
+
+   ```
+   aws ecs update-service \
+     --profile <l2-profile> --region us-east-1 \
+     --cluster <cluster> --service cq-server \
+     --desired-count 0
+   aws ecs wait services-stable \
+     --profile <l2-profile> --region us-east-1 \
+     --cluster <cluster> --services cq-server
+   ```
+
+3. **Update the L2 stack with `RestoreFromSnapshotId`:**
 
    ```
    aws cloudformation update-stack \
@@ -80,12 +99,13 @@ The restore is a CFN parameter change, no manual EBS surgery required.
 
    The volume has `UpdateReplacePolicy: Snapshot` + a `SnapshotId`
    property — CFN snapshots the existing (possibly corrupt) volume,
-   then creates a new one from the chosen restore point. CFN
-   re-creates the `EcsHostVolumeAttachment` against the existing EC2
-   host (or recreates the host if the volume's AZ changed), and
-   UserData mounts the restored filesystem at /mnt/cq-data on boot.
+   detaches and deletes it, then creates a new one from the chosen
+   restore point. CFN re-creates the `EcsHostVolumeAttachment` against
+   the existing EC2 host (or recreates the host if the volume's AZ
+   changed), and UserData mounts the restored filesystem at
+   /mnt/cq-data on boot.
 
-3. **Wait for stack rollout (~5-10 min):**
+4. **Wait for stack rollout (~5-10 min):**
 
    ```
    aws cloudformation wait stack-update-complete \
@@ -93,7 +113,16 @@ The restore is a CFN parameter change, no manual EBS surgery required.
      --stack-name <L2-stack-name>
    ```
 
-4. **Verify health:**
+5. **Bring the cq-server task back up:**
+
+   ```
+   aws ecs update-service \
+     --profile <l2-profile> --region us-east-1 \
+     --cluster <cluster> --service cq-server \
+     --desired-count 1
+   ```
+
+6. **Verify health:**
 
    ```
    # ALB target healthy:
@@ -109,18 +138,39 @@ The restore is a CFN parameter change, no manual EBS surgery required.
    curl -sS https://<slug>.8th-layer.ai/health
    ```
 
-5. **Do NOT clear `RestoreFromSnapshotId` after restore.** `SnapshotId`
-   is an immutable property on `AWS::EC2::Volume`. Toggling it from
-   `snap-XXX` back to empty triggers volume replacement —
-   CloudFormation will snapshot the just-restored volume then create a
-   fresh blank gp3 in its place, wiping your restored data. Leave the
-   snapshot id in place as a permanent stack parameter; it has no
-   runtime effect after the volume is created.
+7. **Do NOT clear `RestoreFromSnapshotId` after restore.** Changing
+   `RestoreFromSnapshotId` (in either direction — empty → snap-XXX or
+   snap-XXX → empty) triggers volume replacement: CloudFormation takes
+   a snapshot of the current volume (via `UpdateReplacePolicy: Snapshot`),
+   deletes it, and creates a new one. Going back to empty creates a
+   fresh blank gp3 — wiping the restored data. Leave the snapshot id
+   in place as a permanent stack parameter; it has no runtime effect
+   after the volume is created.
 
-   To migrate off the snapshot reference (e.g., for ops hygiene), the
-   only safe path is to take a manual `aws ec2 create-snapshot` of the
-   live volume and use that snapshot id as the new permanent parameter
-   value, or stand up a fresh stack.
+   To move off the snapshot reference for ops hygiene, the safe path
+   is a manual `aws ec2 create-snapshot` of the live volume and using
+   that snapshot id as the new permanent parameter value, or standing
+   up a fresh stack.
+
+## Stop the task first whenever the EcsHost or volume is replaced
+
+The "scale service to zero, update-stack, scale back to one" sequence
+in steps 2 → 5 above applies to **any** update-stack call that causes
+in-place replacement of the EcsHost instance or the CqDataVolume — not
+just snapshot restores. Examples:
+
+- AMI / instance-type change on `EcsHost` (e.g. UserData edit, kernel
+  bump) → EC2 host is replaced → volume must detach from the old host.
+- `CqDbVolumeSizeGiB` change → if CFN treats this as replacement (gp3
+  online-resize is usually preferred but CFN sometimes replaces); the
+  attachment lifecycle is the same.
+- Any cross-AZ move (see "Single-AZ exposure" below).
+
+Without scaling the service to zero, the in-use bind mount blocks the
+detach and the update stalls until force-detach kicks in. The pattern
+is always: `update-service --desired-count 0` → `wait services-stable`
+→ `update-stack` → `wait stack-update-complete` → `update-service
+--desired-count 1`.
 
 ## RTO / RPO
 
