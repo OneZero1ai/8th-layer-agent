@@ -1,4 +1,17 @@
 # =============================================================================
+# WARNING — substrate change from EFS to EBS in this template:
+# Stacks deployed from the prior (EFS) template version include
+# AWS::EFS::FileSystem and related resources that are REMOVED here.
+# CloudFormation will DELETE the EFS filesystem (and its data) on the
+# next update-stack against an EFS-based stack. There is no
+# DeletionPolicy: Retain safety net — those resources are no longer in
+# this template to retroactively annotate.
+#
+# Before update-stacking an EFS-based stack (mvp-s2-a, mvp-s2-b, or any
+# other live EFS-substrate stack) to this template, take a manual data
+# backup (e.g. copy /data out via an EC2 instance attached to the EFS
+# access point) or accept the data loss.
+# =============================================================================
 # 8th-Layer.ai Marketplace L2 stack — stands up a complete, healthy cq-server
 # instance (the customer's Layer-2 semantic backbone) in the customer's AWS
 # account. Instantiated by the 8th-Layer.ai Enterprise Provisioning Service
@@ -10,10 +23,14 @@
 #   - Dedicated VPC (10.0.0.0/16) + 2 public subnets across 2 AZs + IGW.
 #   - ALB (HTTP/80, internet-facing) → ECS-on-EC2 task (port 3000) →
 #     persistent EBS gp3 volume bind-mounted at /data (SQLite at /data/cq.db).
-#   - Single-instance ASG of t4g.small (ARM64) in PublicSubnetA's AZ. EBS
-#     volume is a first-class CFN resource (NOT a LaunchTemplate block
-#     device) so it survives ASG instance refresh / replacement; UserData
-#     attaches + mounts it on every host boot.
+#   - Single bare `AWS::EC2::Instance` (t4g.small, ARM64) in PublicSubnetA's
+#     AZ — no ASG, no capacity provider. The EBS data volume is a first-
+#     class CFN resource attached via `AWS::EC2::VolumeAttachment`, so CFN
+#     owns the attachment lifecycle (no imperative attach in UserData,
+#     no deadlocks on SnapshotId replacement). ECS task launches with
+#     `LaunchType: EC2` against the container instance the ECS agent
+#     registers from the host. Single-instance topology — replacement on
+#     instance loss is operator-driven, not auto-recovered.
 #   - AWS DLM lifecycle policy snapshots the EBS volume hourly, retains
 #     168 snapshots (7 days). RPO=1h, RTO~10min via snapshot restore.
 #   - HTTPS termination is handled by Cloudflare in front of the ALB; the
@@ -34,11 +51,12 @@
 # =============================================================================
 AWSTemplateFormatVersion: "2010-09-09"
 Description: |
-  8th-Layer.ai Marketplace L2 — ALB → ECS-on-EC2 (t4g.small ASG of 1) →
-  persistent EBS gp3 at /data (SQLite). DLM hourly snapshots, 7-day
-  retention. Single-AZ. Substrate moved off SQLite-on-EFS to fix the
-  index-corruption failure mode documented in agent#323; see full
-  rationale in the file-header comments.
+  8th-Layer.ai Marketplace L2 — ALB → ECS-on-EC2 (single t4g.small EC2
+  instance, no ASG) → persistent EBS gp3 at /data (SQLite). CFN-owned
+  AWS::EC2::VolumeAttachment binds the volume before UserData runs. DLM
+  hourly snapshots, 7-day retention. Single-AZ. Substrate moved off
+  SQLite-on-EFS to fix the index-corruption failure mode documented in
+  agent#323; see full rationale in the file-header comments.
 
 Parameters:
   EnterpriseSlug:
