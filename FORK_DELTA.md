@@ -64,6 +64,39 @@ These DO touch the server, which the policy above said we wouldn't. Each is a de
 
   *Why this is a justified deviation from the "do not modify server" policy:* a forking project that deploys cq Remote in production needs intake-time integrity guards that the upstream PoC doesn't yet have. Without them, smoke-test garbage and project-internal manifesto KUs accumulate and pollute the queryable commons. The fix is general (any cq deployment benefits) so the right long-term home is upstream — but we need it deployed today.
 
+## Active 8th-Layer fork-delta surfaces (registered 2026-05-20)
+
+The surfaces below are merged-and-deployed deviations from upstream `mozilla-ai/cq` that must be carried forward across rebases. Each entry names the surface, what is different, the PR that landed it, and the upstream relationship.
+
+### Enterprise Provisioning Service + signed-identity (Decision 31)
+
+A new public-facing anonymous REST surface for enterprise onboarding that has no upstream analog. The provisioning module is a 6-phase async state machine — Ed25519 key mint (KMS `generate-data-key`, SSM SecureString fallback) → directory register (in-process today, remote HTTP call TODO) → Cloudflare DNS + ACM cert → STS AssumeRole + CloudFormation L2 stack → SES magic-link → COMPLETED. Anchors enterprise identity binding for the AIGRP tenant lifecycle and is the canonical home of the signed-identity contract.
+
+- Files: `server/backend/src/cq_server/provisioning/` (new module), `server/backend/alembic/versions/0021_*` (+ `0021a_*` partial-unique), CORS expansion to `https://signup.8th-layer.ai`.
+- Endpoints (additive, anonymous, IP rate-limited): `POST /api/v1/enterprises` (10 req/hr); `GET /api/v1/enterprises/jobs/{job_id}` (ULID, 24h post-COMPLETED).
+- PRs: #228 (provisioning service + signed-identity). Decision: `OneZero1ai/8th-layer-core#61` (Decision 31).
+- Upstream relationship: **additive, bucket-4 (commercial moat)**. Upstream cq has no concept of enterprises, automated onboarding, or KMS-backed key minting. Any rebase touching `cq_server/` must not disturb `provisioning/` or the `0021/0021a` migration sequence.
+- Source issues: #236 (AIGRP-namespace framing), #238 (signed-identity framing), #351 (FORK_DELTA registry placeholder).
+
+### Personas management (L2 admin control)
+
+Per-L2 governance surface for Human→Persona assignments — not present upstream. Adds admin-gated CRUD over `persona_assignments`, integrates with the provisioning magic-link invite path via `role="enterprise_admin"` injection, and ships the L2 admin frontend tab.
+
+- Files: `server/backend/src/cq_server/persona_routes.py` (new), `server/backend/alembic/versions/0022_*` and `0023_*`, edits to `invite_routes.py`, `auth.py`, provisioning models, store layer; `web/admin/src/pages/PersonasPage.tsx` (new) + Layout sidebar + API types.
+- Endpoints (additive, admin-gated): `/admin/personas` list / create / patch / disable.
+- PR: #229.
+- Upstream relationship: **additive, bucket-4 (commercial moat)**. Upstream cq has no personas model; rebases that touch invite minting or auth roles must verify the persona assignment flow.
+- Source issue: #237.
+
+### `GET /consults/{thread_id}` thread-metadata endpoint
+
+Fills an obvious gap in the upstream consults surface — previously only sub-routes (`/{thread_id}/messages`, `/{thread_id}/close`) existed; bare thread URLs returned 404. Adds a `ConsultThreadOut` response model. Auth contract matches existing consults endpoints (401 / 403 / 404). Registered at the end of the file to avoid shadowing `/inbox` and `/forward-request` parameterised paths.
+
+- Files: `server/backend/src/cq_server/consults.py`, `server/backend/tests/test_consults.py` (+66 / −5).
+- PR: #151. Closes `OneZero1ai/8th-layer-core#42`.
+- Upstream relationship: **bucket-2 (upstream this sprint)** — clean, self-contained, well-tested. Candidate to PR back to `mozilla-ai/cq` so the fork can stop carrying it as delta. Until then, watch the upstream consults module for a parallel thread-metadata endpoint that could land with a different schema name/shape.
+- Source issue: #260.
+
 ## Sync discipline
 
 - **Fork base**: pinned at the cq commit at the time of fork creation (2026-04-26).
