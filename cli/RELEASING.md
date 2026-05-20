@@ -64,3 +64,40 @@ for f in $OUT/*.zip; do aws s3 cp "$f" "s3://$B/cli/v$VER/$(basename $f)" \
 
 Then set `cli_min_version` in `plugins/cq/scripts/bootstrap.json` to `$VER`
 and bump the plugin version in `plugins/cq/.claude-plugin/plugin.json`.
+
+## Consumers of `s3://…/cli/v$VER/`
+
+Two distinct consumers pull from this prefix:
+
+1. **The cq plugin** (`plugins/cq/scripts/cq_binary.py`) — fetches the
+   tarball when a Claude Code session needs a `cq` binary on PATH.
+   Installs as `cq` (the upstream name). This is the path that
+   actually runs `propose` / `query` / `mcp` etc.
+
+2. **The public installer at `install.8th-layer.ai`** — lives in
+   [`OneZero1ai/8l-cli`](https://github.com/OneZero1ai/8l-cli)
+   alongside the operator binary it primarily installs (`8l`). It
+   pulls the cq tarball from this prefix and installs the binary as
+   **`8l-cq`** (not as `8l`, which is reserved for the operator CLI
+   built from `OneZero1ai/8l-cli` and published under the
+   `s3://…/8l/v$VER/` prefix). The rename is a no-op against the
+   tarball — the binary inside is still `cq` and the rename happens
+   on the user's filesystem.
+
+The two binaries live side-by-side on PATH:
+
+| Binary | Source | Subcommand surface |
+|---|---|---|
+| `8l` | `OneZero1ai/8l-cli` | `join`, `quick`, `status`, `unjoin`, `doctor`, `rotate-key` (operator) |
+| `8l-cq` | this repo (`cli/`) | `prompt`, `propose`, `query`, `status`, `confirm`, `drain`, `flag`, `mcp` (agent) |
+
+When publishing a new `cq` release here, the public installer keeps
+working without changes — it pins `8l-cq` to the latest `cli/v*`
+tarball published in this bucket. See OneZero1ai/8th-layer-agent#353
+for the cross-repo tracking issue.
+
+> **Follow-up:** the `cli/` S3 prefix predates the split and is no
+> longer self-describing. Renaming it to `cq/` for symmetry with the
+> `8l/` prefix is on the backlog; that change is breaking for the
+> plugin's `cq_binary.py` and the installer at `install.8th-layer.ai`,
+> so it needs to land with coordinated bumps in both consumers.
