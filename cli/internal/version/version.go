@@ -16,6 +16,11 @@ func Version() string {
 }
 
 // String returns the full version string including commit and build date.
+//
+// The CLI is shipped as `8l` (the consumer-facing name) but the source
+// repository identifies as `8l-cq` (an 8th-Layer fork of the upstream
+// mozilla-ai/cq project). The fork identity is included for Apache-2.0
+// attribution context — see NOTICE in this directory.
 func String() string {
-	return fmt.Sprintf("cq v%s (%s), built %s", version, commit, date)
+	return fmt.Sprintf("8l v%s (8l-cq · %s · built %s)", version, commit, date)
 }
