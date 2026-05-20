@@ -28,6 +28,7 @@ from .activity_logger import log_activity, summary_first_60
 from .activity_routes import router as activity_router
 from .admin_routes import router as admin_xgroup_consent_router
 from .agent_key_routes import router as agent_key_router
+from .aigrp_peer_routes import router as aigrp_peer_router
 from .auth import get_current_user, require_admin
 from .auth import router as auth_router
 from .claim_page import router as claim_page_router
@@ -494,6 +495,10 @@ api_router.include_router(l2_provision_router)
 api_router.include_router(persona_router)
 # FO-4 (#194) — admin Add-Agent: mint agent persona + cqa.v1.* key.
 api_router.include_router(agent_key_router)
+# agent#337 — admin AIGRP peer-announce escape hatch (intra-Enterprise
+# mesh discovery for direct-CFN / air-gapped deploys that bypass the
+# directory poll loop).
+api_router.include_router(aigrp_peer_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.
