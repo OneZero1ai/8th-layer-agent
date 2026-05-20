@@ -42,7 +42,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .auth import require_admin
@@ -52,6 +54,54 @@ from .store._sqlite import SqliteStore
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/aigrp/peers", tags=["admin", "aigrp"])
+
+# Ed25519 public keys are exactly 32 bytes per RFC 8032 §5.1.5.
+_ED25519_PUBLIC_KEY_SIZE = 32
+_INVALID_PUBKEY_DETAIL = "pubkey must be base64url-encoded Ed25519 public key (32 bytes)"
+
+
+class _InvalidPubkeyError(Exception):
+    """Internal sentinel for the route handler — convert to 400 response."""
+
+
+def _invalid_pubkey_response() -> JSONResponse:
+    """Standard 400 body for pubkey validation failures (mirrors directory-peer route)."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid_pubkey", "detail": _INVALID_PUBKEY_DETAIL},
+    )
+
+
+def _validate_pubkey_ed25519(pubkey: str) -> None:
+    """Verify ``pubkey`` is a real Ed25519 public key — addresses #346 concern 1.
+
+    Three layers — base64url decode, length == 32, curve-point validity.
+    See ``aigrp_directory_peer_routes._validate_pubkey_ed25519`` for the
+    long-form docstring; this is the intra-Enterprise sibling, applied
+    here because the PR-#345 endpoint shipped with only the implicit
+    Pydantic ``min_length=1, max_length=128`` check, which accepted hex
+    strings and other non-base64url shapes.
+    """
+    try:
+        padded = pubkey + "=" * (-len(pubkey) % 4)
+        raw = base64.urlsafe_b64decode(padded)
+    except (ValueError, TypeError, binascii.Error) as exc:
+        log.info("pubkey rejected (b64u decode): %s", exc)
+        raise _InvalidPubkeyError from exc
+
+    if len(raw) != _ED25519_PUBLIC_KEY_SIZE:
+        log.info(
+            "pubkey rejected (wrong length): got %d bytes, expected %d",
+            len(raw),
+            _ED25519_PUBLIC_KEY_SIZE,
+        )
+        raise _InvalidPubkeyError
+
+    try:
+        Ed25519PublicKey.from_public_bytes(raw)
+    except (ValueError, TypeError) as exc:
+        log.info("pubkey rejected (curve-point): %s", exc)
+        raise _InvalidPubkeyError from exc
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +219,7 @@ async def announce_peer(
     req: PeerAnnounceRequest,
     admin: str = Depends(require_admin),
     store: SqliteStore = Depends(get_store),
-) -> PeerAnnounceResponse:
+) -> PeerAnnounceResponse | JSONResponse:
     """Insert (or refresh) one ``aigrp_peers`` row from a signed admin request.
 
     Behaviour:
@@ -193,6 +243,12 @@ async def announce_peer(
        UI can confirm what landed.
     """
     _validate_l2_id(req.l2_id, req.enterprise, req.group)
+    try:
+        _validate_pubkey_ed25519(req.pubkey)
+    except _InvalidPubkeyError:
+        # Concern 1 from #346 — return the canonical 400 invalid_pubkey
+        # shape (mirrors the cross-Enterprise sibling endpoint).
+        return _invalid_pubkey_response()
 
     user = await store.get_user(admin)
     if user is None:

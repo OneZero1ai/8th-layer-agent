@@ -28,6 +28,7 @@ from .activity_logger import log_activity, summary_first_60
 from .activity_routes import router as activity_router
 from .admin_routes import router as admin_xgroup_consent_router
 from .agent_key_routes import router as agent_key_router
+from .aigrp_directory_peer_routes import router as aigrp_directory_peer_router
 from .aigrp_peer_routes import router as aigrp_peer_router
 from .auth import get_current_user, require_admin
 from .auth import router as auth_router
@@ -499,6 +500,10 @@ api_router.include_router(agent_key_router)
 # mesh discovery for direct-CFN / air-gapped deploys that bypass the
 # directory poll loop).
 api_router.include_router(aigrp_peer_router)
+# agent#347 — cross-Enterprise sibling of the peer-announce escape
+# hatch. Populates ``aigrp_directory_peerings`` so consult forwards
+# work on direct-CFN deploys that have no path to the directory.
+api_router.include_router(aigrp_directory_peer_router)
 # FO-1d (#199) — anonymous /theme endpoint for the per-L2 brand chrome.
 # Mounted on api_router so it lives under both / and /api/v1, same as
 # every other API route. Decision 30 sets the spec.

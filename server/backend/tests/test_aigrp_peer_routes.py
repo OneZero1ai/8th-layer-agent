@@ -214,6 +214,28 @@ def test_announce_packs_centroid_and_decodes_bloom(client: TestClient) -> None:
     assert row["domain_count"] == 4
 
 
+def test_invalid_pubkey_base64_is_400(client: TestClient) -> None:
+    """Non-base64url ``pubkey`` lands the canonical 400 invalid_pubkey body (#346 concern 1)."""
+    headers = _login(client, ADMIN_A)
+    body = _valid_body(pubkey="!!!not-base64!!!@@@")
+    resp = client.post("/api/v1/admin/aigrp/peers", headers=headers, json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json() == {
+        "error": "invalid_pubkey",
+        "detail": "pubkey must be base64url-encoded Ed25519 public key (32 bytes)",
+    }
+
+
+def test_invalid_pubkey_wrong_length_is_400(client: TestClient) -> None:
+    """A b64u-decodable string that isn't 32 bytes is rejected (#346 concern 1)."""
+    headers = _login(client, ADMIN_A)
+    short_pubkey = base64.urlsafe_b64encode(b"\x01" * 16).rstrip(b"=").decode()
+    body = _valid_body(pubkey=short_pubkey)
+    resp = client.post("/api/v1/admin/aigrp/peers", headers=headers, json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"] == "invalid_pubkey"
+
+
 def test_invalid_bloom_base64_is_422(client: TestClient) -> None:
     """Non-alphabet chars in ``domain_bloom`` land a clean 422.
 
