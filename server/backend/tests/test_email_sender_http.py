@@ -214,11 +214,18 @@ def test_missing_key_with_legacy_flag_falls_back(monkeypatch: pytest.MonkeyPatch
         def emit(self, record: logging.LogRecord) -> None:
             captured.append(record.getMessage())
 
-    logger = logging.getLogger("cq_server.email_sender")
+    # Patch the module-level ``log`` attribute directly. Tests in
+    # other files have been observed to disable propagation on
+    # ``cq_server.*`` loggers via app-startup wiring; binding the
+    # handler to the module attribute bypasses that entirely.
+    import cq_server.email_sender as email_sender_mod
+
+    prev_log = email_sender_mod.log
+    logger = logging.getLogger("cq_server.email_sender.test_capture")
     handler = _CaptureHandler(level=logging.WARNING)
     logger.addHandler(handler)
-    prev_level = logger.level
     logger.setLevel(logging.WARNING)
+    email_sender_mod.log = logger
     try:
         result = sender.send_invite(
             to="x@example.com",
@@ -228,8 +235,8 @@ def test_missing_key_with_legacy_flag_falls_back(monkeypatch: pytest.MonkeyPatch
             expiry=datetime(2026, 5, 27),
         )
     finally:
+        email_sender_mod.log = prev_log
         logger.removeHandler(handler)
-        logger.setLevel(prev_level)
 
     assert result["status"] == "sent"
     assert result["MessageId"] == "legacy-1"
