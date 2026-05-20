@@ -23,6 +23,7 @@ from .auth import HmacKeyResolver, verify_hmac_signature
 from .dispatcher import MockSesDispatcher, SesDispatcher
 from .idempotency import IdempotencyStore
 from .routes import router as transactional_router
+from .sns_writer import handle_lambda_event, handle_sns_message
 from .suppression import (
     SuppressionEntry,
     check_suppression,
@@ -36,6 +37,8 @@ __all__ = [
     "SesDispatcher",
     "SuppressionEntry",
     "check_suppression",
+    "handle_lambda_event",
+    "handle_sns_message",
     "record_suppression",
     "transactional_router",
     "verify_hmac_signature",
