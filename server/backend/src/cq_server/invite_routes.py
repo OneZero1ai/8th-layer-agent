@@ -222,7 +222,7 @@ async def create_invite_route(
 
     expiry = datetime.fromisoformat(invite.expires_at)
     try:
-        email_sender.send_invite(
+        send_result = email_sender.send_invite(
             to=str(request.email),
             jwt=token,
             inviter_name=admin_username,
@@ -239,6 +239,41 @@ async def create_invite_route(
             status_code=502,
             detail="invite minted but email delivery failed; revoke + retry",
         ) from None
+
+    # Decision 34: send_invite now returns a structured envelope. A
+    # ``"suppressed"`` outcome is NOT an exception — the central
+    # service blocked the dispatch because the address bounced or
+    # complained on a prior send. Surface it as 409 so the admin UI
+    # can render a meaningful message and prompt revoke+retry to a
+    # different address.
+    status = (send_result or {}).get("status", "sent")
+    if status == "suppressed":
+        log.info(
+            "invite email suppressed invite_id=%s reason=%s",
+            invite.id,
+            (send_result or {}).get("reason"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "email_suppressed",
+                "reason": (send_result or {}).get("reason"),
+                "message": (
+                    "Invite minted but the recipient is on the suppression list "
+                    "(hard bounce or complaint). Revoke and retry to a different address."
+                ),
+            },
+        )
+    if status == "error":
+        log.error(
+            "invite email error invite_id=%s reason=%s",
+            invite.id,
+            (send_result or {}).get("reason"),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="invite minted but email delivery failed; revoke + retry",
+        )
 
     return _to_public(invite)
 

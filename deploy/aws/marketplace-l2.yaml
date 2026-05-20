@@ -114,6 +114,18 @@ Parameters:
       cq-server task — the L2 pulls peerings from here to authorize
       incoming cross-Enterprise consults.
 
+  TxSendBaseUrl:
+    Type: String
+    Default: https://directory.8th-layer.ai
+    Description: |
+      Base URL of the central transactional-mail service (Decision 34,
+      agent#348). Becomes TX_SEND_BASE_URL on the cq-server task; the
+      L2 posts every outbound transactional email here (invite magic-
+      link, password reset, 2FA, account event, security alert) via
+      HMAC-signed JSON. Co-located with the directory by default;
+      operators can split if/when transactional mail moves to its own
+      subdomain.
+
   RootPubkeyB64u:
     Type: String
     Description: |
@@ -369,10 +381,13 @@ Resources:
   # IAM
   #   - TaskExecutionRole: ECS agent pulls image, writes logs, fetches
   #                        secrets at task start (assumed by ecs-tasks).
-  #   - TaskRole:          runtime (SES, secrets, KMS, ssmmessages for
-  #                        ecs execute-command). No volume perms — EBS
-  #                        is host-attached via CFN VolumeAttachment,
-  #                        not by the task.
+  #   - TaskRole:          runtime (SSM read for TX_SEND_KEY, secrets,
+  #                        KMS, ssmmessages for ecs execute-command).
+  #                        SES is GONE — Decision 34 moved all mail
+  #                        dispatch to the central control-plane
+  #                        service; L2s never call SES directly. No
+  #                        volume perms either — EBS is host-attached
+  #                        via CFN VolumeAttachment, not by the task.
   #   - InstanceRole:      EC2 host runs the ECS agent (assumed by ec2).
   #   - DlmRole:           AWS DLM assumes this to create snapshots.
   # =====================================================================
@@ -398,6 +413,24 @@ Resources:
                   - !Ref JwtSecret
                   - !Ref ApiKeyPepper
                   - !Ref AigrpPeerKey
+        # Decision 34 — the ECS-task-secret integration uses the TASK
+        # EXECUTION role to fetch the SSM parameter at task start, then
+        # injects the value as TX_SEND_KEY in the container's env. The
+        # task role above grants the running container read-access; this
+        # one grants ECS itself read-access at startup.
+        - PolicyName: TxSendKeySsmReadAtStart
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ssm:GetParameters]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/8th-layer/l2/${EnterpriseSlug}/${CqGroupId}/tx_send_key"
+              - Effect: Allow
+                Action: [kms:Decrypt]
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com"
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -409,19 +442,27 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: SesSendInvites
+        # Decision 34 (agent#348): SES IAM has been removed. L2 tasks
+        # NO LONGER call SES directly — every transactional send is
+        # routed via HMAC-signed POST to the central control-plane
+        # service at TxSendBaseUrl. The task role gets SSM read on the
+        # per-L2 tx_send_key parameter (below) instead.
+        - PolicyName: TxSendKeyRead
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action:
-                  - ses:SendEmail
-                  - ses:SendRawEmail
+                Action: [ssm:GetParameter, ssm:GetParameters]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/8th-layer/l2/${EnterpriseSlug}/${CqGroupId}/tx_send_key"
+              # ECS task secrets fetched via SSM use kms:Decrypt against
+              # the alias used to encrypt the parameter; allow the
+              # alias-managed decrypt path same as SecretsManager.
+              - Effect: Allow
+                Action: [kms:Decrypt]
                 Resource: "*"
                 Condition:
                   StringEquals:
-                    "ses:FromAddress":
-                      - !Sub "noreply@${EnterpriseSlug}.8th-layer.ai"
+                    "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com"
         - PolicyName: SecretsReadRuntime
           PolicyDocument:
             Version: "2012-10-17"
@@ -721,6 +762,11 @@ Resources:
             - { Name: CQ_DIRECTORY_PULL_INTERVAL_SEC, Value: "60" }
             - { Name: CQ_AIGRP_IS_FIRST_DEPLOY, Value: "true" }
             - { Name: CQ_AIGRP_SEED_PEER_URL, Value: "" }
+            # Decision 34 (agent#348) — base URL of the central
+            # transactional-mail service. The L2's email_sender posts
+            # signed JSON to {TX_SEND_BASE_URL}/api/v1/transactional/send
+            # instead of calling SES directly.
+            - { Name: TX_SEND_BASE_URL, Value: !Ref TxSendBaseUrl }
             # agent#180 — only emitted when AutoApprovePropose=true, so a
             # default deploy leaves the env unset (status='pending').
             - !If
@@ -741,6 +787,13 @@ Resources:
             - { Name: CQ_JWT_SECRET,      ValueFrom: !Ref JwtSecret }
             - { Name: CQ_API_KEY_PEPPER,  ValueFrom: !Ref ApiKeyPepper }
             - { Name: CQ_AIGRP_PEER_KEY,  ValueFrom: !Ref AigrpPeerKey }
+            # Decision 34 — TX_SEND_KEY mounted from SSM at task start.
+            # The parameter is written into the L2's own account by the
+            # provisioning service (or backfilled via bin/backfill-tx-keys
+            # for L2s that pre-date Decision 34). ValueFrom takes the
+            # full SSM parameter ARN for cross-account-safe resolution.
+            - Name: TX_SEND_KEY
+              ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/8th-layer/l2/${EnterpriseSlug}/${CqGroupId}/tx_send_key"
           # Container-level health check uses python (urllib) rather than
           # curl because the cq-server image (Python slim base) doesn't
           # ship curl/wget. The image already declares the same probe in
