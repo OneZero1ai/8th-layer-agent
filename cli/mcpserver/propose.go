@@ -77,15 +77,32 @@ func (s *Server) HandlePropose(ctx context.Context, req mcp.CallToolRequest) (*m
 	}
 
 	result, err := s.client.Propose(ctx, params)
-	// Remote unreachable/rejected: unit was stored locally. Surface the unit
-	// alongside a warning so the caller can summarise the partial success.
+	// Remote unreachable/rejected: unit was stored locally. In quiet mode
+	// (the default) we attach `local_fallback_reason` as a structured JSON
+	// field instead of the legacy "warning: X\n{...}" string envelope, so
+	// callers can ignore it cleanly when expected (no API key) and still
+	// see it when present. Set CQ_QUIET_LOCAL_FALLBACK=false to restore
+	// the legacy string envelope.
 	var fb *cq.FallbackError
 	if errors.As(err, &fb) {
+		if quietLocalFallback() {
+			wrapper := struct {
+				cq.KnowledgeUnit
+				LocalFallbackReason string `json:"local_fallback_reason"`
+			}{
+				KnowledgeUnit:       fb.LocalUnit,
+				LocalFallbackReason: fb.Error(),
+			}
+			data, mErr := json.Marshal(wrapper)
+			if mErr != nil {
+				return nil, fmt.Errorf("encoding result: %w", mErr)
+			}
+			return mcp.NewToolResultText(string(data)), nil
+		}
 		data, mErr := json.Marshal(fb.LocalUnit)
 		if mErr != nil {
 			return nil, fmt.Errorf("encoding result: %w", mErr)
 		}
-
 		return mcp.NewToolResultText(fmt.Sprintf("warning: %s\n%s", fb, data)), nil
 	}
 	if err != nil {

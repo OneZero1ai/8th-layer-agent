@@ -142,10 +142,14 @@ func TestHandlePropose(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, result.IsError)
 
+		// Quiet mode (default): the legacy "warning: ..." string envelope is
+		// replaced by a structured `local_fallback_reason` JSON field so the
+		// successful local store doesn't bury the operator pane.
 		text := result.Content[0].(mcp.TextContent).Text
-		require.Contains(t, text, "warning: stored locally after remote failure")
+		require.Contains(t, text, `"local_fallback_reason":"stored locally after remote failure`)
 		require.Contains(t, text, "remote API unreachable: connection refused")
 		require.Contains(t, text, "ku_0123456789abcdef0123456789abcdef")
+		require.NotContains(t, text, "warning: stored locally")
 	})
 
 	t.Run("surfaces fallback warning when remote rejects with RemoteError", func(t *testing.T) {
@@ -175,10 +179,13 @@ func TestHandlePropose(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, result.IsError)
 
+		// Quiet mode (default): the structured `local_fallback_reason` field
+		// carries the same information without the noisy string envelope.
 		text := result.Content[0].(mcp.TextContent).Text
-		require.Contains(t, text, "warning: stored locally after remote failure")
+		require.Contains(t, text, `"local_fallback_reason":"stored locally after remote failure`)
 		require.Contains(t, text, "remote API rejected request (401): Invalid API key")
 		require.Contains(t, text, "ku_fedcba9876543210fedcba9876543210")
+		require.NotContains(t, text, "warning: stored locally")
 	})
 
 	t.Run("empty domains slice yields distinct message", func(t *testing.T) {

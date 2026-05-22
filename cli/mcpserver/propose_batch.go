@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -84,7 +86,11 @@ type batchStored struct {
 	Summary string `json:"summary"`
 	Tier    string `json:"tier"`
 	// Warning is set when the unit was stored locally after a remote
-	// failure (cq.FallbackError). Empty when the propose succeeded cleanly.
+	// failure (cq.FallbackError) AND quiet-fallback mode is OFF. In quiet
+	// mode (the default) the per-candidate Warning is suppressed; the
+	// response-level LocalFallbackCount + LocalFallbackReason carry the
+	// signal once. Set CQ_QUIET_LOCAL_FALLBACK=false to restore the legacy
+	// per-candidate warning behavior.
 	Warning string `json:"warning,omitempty"`
 }
 
@@ -99,6 +105,15 @@ type batchError struct {
 type batchResponse struct {
 	Stored []batchStored `json:"stored"`
 	Errors []batchError  `json:"errors"`
+	// LocalFallbackCount is the number of candidates that fell back to local
+	// storage (non-zero implies the remote was unreachable or rejected the
+	// request — typically an invalid/missing API key). Zero when omitted.
+	LocalFallbackCount int `json:"local_fallback_count,omitempty"`
+	// LocalFallbackReason is the human-readable reason captured from the
+	// first FallbackError encountered. Empty when no fallbacks occurred.
+	// Callers should render this once at the response level rather than
+	// per-candidate.
+	LocalFallbackReason string `json:"local_fallback_reason,omitempty"`
 }
 
 // HandleProposeBatch creates multiple knowledge units from a single MCP call.
@@ -120,6 +135,8 @@ func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest
 		Stored: []batchStored{},
 		Errors: []batchError{},
 	}
+
+	quiet := quietLocalFallback()
 
 	for i, raw := range candList {
 		cand, ok := raw.(map[string]any)
@@ -190,13 +207,23 @@ func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest
 		ku, err := s.client.Propose(ctx, params)
 		var fb *cq.FallbackError
 		if errors.As(err, &fb) {
-			resp.Stored = append(resp.Stored, batchStored{
+			stored := batchStored{
 				Index:   i,
 				ID:      fb.LocalUnit.ID,
 				Summary: summary,
 				Tier:    string(fb.LocalUnit.Tier),
-				Warning: fb.Error(),
-			})
+			}
+			// Roll up to response-level. In quiet mode (default) the
+			// per-candidate Warning stays empty; non-quiet preserves the
+			// legacy per-candidate string for callers that opted in.
+			resp.LocalFallbackCount++
+			if resp.LocalFallbackReason == "" {
+				resp.LocalFallbackReason = fb.Error()
+			}
+			if !quiet {
+				stored.Warning = fb.Error()
+			}
+			resp.Stored = append(resp.Stored, stored)
 			continue
 		}
 		if err != nil {
@@ -222,6 +249,28 @@ func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// quietLocalFallback reports whether the MCP server should suppress
+// per-candidate / per-call warnings when a propose falls back to local
+// storage because the remote was unreachable or rejected the request.
+//
+// Default behavior is QUIET (true): typical operator UX is a single
+// concluding note ("9 stored locally; check API key") rather than N
+// identical warnings carved into the response shape. Set
+// CQ_QUIET_LOCAL_FALLBACK=false to restore the legacy per-candidate
+// warning string for tools that parse it.
+//
+// Accepted "off" values: "false", "0", "no", "off" (case-insensitive).
+// Any other value (including unset) keeps quiet mode active.
+func quietLocalFallback() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("CQ_QUIET_LOCAL_FALLBACK")))
+	switch v {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 // requireBatchString extracts a required string field from a candidate map.

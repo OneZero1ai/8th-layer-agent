@@ -293,12 +293,56 @@ func TestHandleProposeBatch(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		// Quiet mode (default): per-candidate Warning is suppressed in favor
+		// of response-level LocalFallbackCount + LocalFallbackReason rolled
+		// up once. Callers render a single concluding note instead of N
+		// identical warnings.
 		resp := decodeBatchResult(t, result)
 		require.Len(t, resp.Stored, 1)
 		require.Empty(t, resp.Errors)
 		require.Equal(t, "ku_local", resp.Stored[0].ID)
 		require.Equal(t, "local", resp.Stored[0].Tier)
-		require.Contains(t, resp.Stored[0].Warning, "stored locally after remote failure")
+		require.Empty(t, resp.Stored[0].Warning, "per-candidate warning should be suppressed in quiet mode")
+		require.Equal(t, 1, resp.LocalFallbackCount)
+		require.Contains(t, resp.LocalFallbackReason, "stored locally after remote failure")
+	})
+
+	t.Run("multiple fallback candidates collapse to single response-level reason", func(t *testing.T) {
+		t.Parallel()
+
+		// Default quiet mode. Verify three FallbackError candidates produce
+		// LocalFallbackCount=3 and a single LocalFallbackReason — not three
+		// identical strings on each Stored entry.
+		s := New(&mockClient{
+			proposeFn: func(_ context.Context, _ cq.ProposeParams) (cq.KnowledgeUnit, error) {
+				return cq.KnowledgeUnit{}, &cq.FallbackError{
+					LocalUnit: cq.KnowledgeUnit{ID: "ku_local", Tier: cq.Local},
+					Err:       &cq.RemoteError{StatusCode: 401, Detail: "Invalid API key"},
+				}
+			},
+		}, "test")
+
+		result, err := s.HandleProposeBatch(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name: "propose_batch",
+				Arguments: map[string]any{
+					"candidates": []any{
+						map[string]any{"summary": "a", "detail": "d", "action": "a", "domains": []any{"x"}},
+						map[string]any{"summary": "b", "detail": "d", "action": "a", "domains": []any{"x"}},
+						map[string]any{"summary": "c", "detail": "d", "action": "a", "domains": []any{"x"}},
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		resp := decodeBatchResult(t, result)
+		require.Len(t, resp.Stored, 3)
+		for _, s := range resp.Stored {
+			require.Empty(t, s.Warning)
+		}
+		require.Equal(t, 3, resp.LocalFallbackCount)
+		require.Contains(t, resp.LocalFallbackReason, "Invalid API key")
 	})
 
 	t.Run("non-string domain item is reported", func(t *testing.T) {
