@@ -97,6 +97,21 @@ Fills an obvious gap in the upstream consults surface — previously only sub-ro
 - Upstream relationship: **bucket-2 (upstream this sprint)** — clean, self-contained, well-tested. Candidate to PR back to `mozilla-ai/cq` so the fork can stop carrying it as delta. Until then, watch the upstream consults module for a parallel thread-metadata endpoint that could land with a different schema name/shape.
 - Source issue: #260.
 
+### `CQ_QUIET_LOCAL_FALLBACK` — suppress per-candidate fallback warnings in MCP propose/propose_batch
+
+The MCP `propose` and `propose_batch` handlers historically echoed a per-call / per-candidate warning string whenever the remote API was unreachable or rejected the request (e.g. invalid API key) and the unit fell back to local storage. In a typical reflect-cycle with N candidates that produced N identical warnings burying the operator pane.
+
+This change adds an env-gated quiet mode (default ON) that:
+
+- Drops the per-candidate `Warning` field on `batchStored` entries (now `omitempty` and only populated when `CQ_QUIET_LOCAL_FALLBACK=false`).
+- Adds response-level `local_fallback_count` (int) and `local_fallback_reason` (string) to `batchResponse` so callers render the signal exactly once.
+- Replaces the legacy `"warning: <msg>\n<json>"` envelope on single `propose` with a structured JSON wrapper carrying `local_fallback_reason` alongside the unit, again only in quiet mode.
+
+Files: `cli/mcpserver/propose.go`, `cli/mcpserver/propose_batch.go`, `cli/mcpserver/propose_test.go`, `cli/mcpserver/propose_batch_test.go`, `cli/mcpserver/propose_quiet_test.go` (new).
+Env: `CQ_QUIET_LOCAL_FALLBACK` — accepts `false`, `0`, `no`, `off` to restore legacy behavior; anything else (including unset) keeps quiet mode active.
+Source issue: 8th-layer-core operator directive 2026-05-22 ("ensure our forked cq does not surface this in the foreground").
+Upstream relationship: **bucket-2 (upstream this sprint)** — clean UX-tightening change, response schema is backward-compatible for existing callers (new fields are `omitempty`, existing `warning` field still populated when env opts back into legacy mode). Candidate to PR back to `mozilla-ai/cq` once the skill-side `/8l-cq:reflect` rendering update lands.
+
 ## Sync discipline
 
 - **Fork base**: pinned at the cq commit at the time of fork creation (2026-04-26).
