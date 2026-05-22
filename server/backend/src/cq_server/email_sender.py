@@ -77,6 +77,7 @@ class EmailSendOutcome:
 
     @property
     def ok(self) -> bool:
+        """Return True when the send status indicates a successful delivery."""
         return self.status == "sent"
 
 
@@ -212,9 +213,15 @@ class EmailSender:
         l2_id: str | None = None,
         timeout_sec: float = DEFAULT_HTTP_TIMEOUT_SEC,
     ) -> None:
-        # ``from_email`` + ``region`` retained for backwards-compat with
-        # any test fixtures that still pass them — central service
-        # ignores them (sender is persona-keyed).
+        """Initialise the transactional-mail HTTP sender.
+
+        All parameters are optional; missing values resolve from env at
+        first-send time so import-time cost stays low and test fixtures
+        can construct without setting AWS env vars. ``from_email`` and
+        ``region`` are retained for backwards-compat with fixtures that
+        still pass them — the central service ignores them (sender is
+        persona-keyed). See ``_resolve_*`` helpers for defaulting rules.
+        """
         self._from_email = from_email or _from_email()
         self._region = region or _aws_region()
         self._public_host = public_host
@@ -276,9 +283,7 @@ class EmailSender:
                 "email_sender: TX_SEND_KEY missing and legacy SES not enabled; "
                 "cannot deliver email (set TX_SEND_KEY or CQ_EMAIL_LEGACY_SES=1)"
             )
-            return EmailSendOutcome(
-                status="error", reason="tx_send_key_missing"
-            )
+            return EmailSendOutcome(status="error", reason="tx_send_key_missing")
 
         body: dict[str, Any] = {
             "from_persona": from_persona,
@@ -517,6 +522,7 @@ class MockEmailSender:
         enterprise_name: str,
         expiry: datetime,
     ) -> dict[str, Any]:
+        """Capture an invite send in-memory for tests and return a mock receipt."""
         claim_url = _claim_url(jwt, host=self.public_host)
         expiry_iso = expiry.isoformat()
         subject = _render_subject(inviter_name, enterprise_name)
@@ -547,12 +553,8 @@ class MockEmailSender:
         )
         outcome = EmailSendOutcome(
             status=self.next_outcome,
-            delivery_handle=f"mock-handle-{len(self.sent)}"
-            if self.next_outcome == "sent"
-            else None,
-            ses_message_id=f"mock-{len(self.sent)}"
-            if self.next_outcome == "sent"
-            else None,
+            delivery_handle=f"mock-handle-{len(self.sent)}" if self.next_outcome == "sent" else None,
+            ses_message_id=f"mock-{len(self.sent)}" if self.next_outcome == "sent" else None,
             reason=self.next_reason,
         )
         return _outcome_to_legacy_dict(outcome)
