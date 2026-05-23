@@ -117,8 +117,6 @@ type batchResponse struct {
 }
 
 // HandleProposeBatch creates multiple knowledge units from a single MCP call.
-//
-//nolint:gocyclo // The handler is straightforward; per-candidate validation drives the branching.
 func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	rawCandidates, ok := args["candidates"]
@@ -131,6 +129,23 @@ func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("candidates must be an array"), nil
 	}
 
+	resp := s.proposeCandidates(ctx, candList)
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("encoding batch result: %w", err)
+	}
+
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// proposeCandidates runs the shared per-candidate validation + propose loop
+// for both propose_batch (inline candidates) and propose_batch_file (candidates
+// read from disk). Both handlers must keep the same observable behavior so the
+// existing propose_batch contract is preserved — see propose_batch_test.go.
+//
+//nolint:gocyclo // The handler is straightforward; per-candidate validation drives the branching.
+func (s *Server) proposeCandidates(ctx context.Context, candList []any) batchResponse {
 	resp := batchResponse{
 		Stored: []batchStored{},
 		Errors: []batchError{},
@@ -243,12 +258,7 @@ func (s *Server) HandleProposeBatch(ctx context.Context, req mcp.CallToolRequest
 		})
 	}
 
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return nil, fmt.Errorf("encoding batch result: %w", err)
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return resp
 }
 
 // quietLocalFallback reports whether the MCP server should suppress

@@ -3,6 +3,7 @@ package mcpserver_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -23,6 +24,7 @@ func newMCPTestClient(t *testing.T, srv *mcpserver.Server) *client.Client {
 		{Tool: mcpserver.QueryTool(), Handler: srv.HandleQuery},
 		{Tool: mcpserver.ProposeTool(), Handler: srv.HandlePropose},
 		{Tool: mcpserver.ProposeBatchTool(), Handler: srv.HandleProposeBatch},
+		{Tool: mcpserver.ProposeBatchFileTool(), Handler: srv.HandleProposeBatchFile},
 		{Tool: mcpserver.ConfirmTool(), Handler: srv.HandleConfirm},
 		{Tool: mcpserver.FlagTool(), Handler: srv.HandleFlag},
 		{Tool: mcpserver.StatusTool(), Handler: srv.HandleStatus},
@@ -175,6 +177,76 @@ func TestE2EProposeBatch(t *testing.T) {
 	var units []cq.KnowledgeUnit
 	require.NoError(t, json.Unmarshal([]byte(queryResp.Content[0].(mcp.TextContent).Text), &units))
 	require.Len(t, units, 3)
+}
+
+// TestE2EProposeBatchFile exercises the propose_batch_file tool end-to-end: the candidate list
+// lives on disk (a temp file the caller writes), the MCP call passes only the path, and the
+// resulting units land in the real SDK store and are queryable. This is the smoke check that
+// the new tool is registered and the file-path entry point reaches the same per-candidate
+// propose loop as propose_batch. The compact response shape (no per-stored summary/tier) is
+// the load-bearing detail — that's what cuts the operator-visible echo to ~250B for /cq:reflect.
+func TestE2EProposeBatchFile(t *testing.T) {
+	realClient := newSDKClient(t)
+	srv := mcpserver.New(realClient, "test")
+	c := newMCPTestClient(t, srv)
+	ctx := context.Background()
+
+	candidates := []any{
+		map[string]any{
+			"summary": "file-batch unit one",
+			"detail":  "first via batch_file",
+			"action":  "noop",
+			"domains": []any{"batch-file"},
+		},
+		map[string]any{
+			"summary":   "file-batch unit two",
+			"detail":    "second via batch_file",
+			"action":    "noop",
+			"domains":   []any{"batch-file"},
+			"languages": []any{"go"},
+		},
+	}
+	payload, err := json.Marshal(candidates)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "candidates.json")
+	require.NoError(t, os.WriteFile(path, payload, 0o600))
+
+	batchResp, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "propose_batch_file",
+			Arguments: map[string]any{
+				"candidates_path": path,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, batchResp.IsError, "tool call should succeed; got: %s", batchResp.Content[0].(mcp.TextContent).Text)
+
+	var resp struct {
+		Stored []struct {
+			Index int    `json:"index"`
+			ID    string `json:"id"`
+		} `json:"stored"`
+		Errors []any `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(batchResp.Content[0].(mcp.TextContent).Text), &resp))
+	require.Len(t, resp.Stored, 2)
+	require.Empty(t, resp.Errors)
+	for _, s := range resp.Stored {
+		require.NotEmpty(t, s.ID)
+	}
+
+	// Confirm the units stored via the file path are visible to subsequent queries.
+	queryResp, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{Name: "query", Arguments: map[string]any{"domains": []any{"batch-file"}, "limit": 10}},
+	})
+	require.NoError(t, err)
+	require.False(t, queryResp.IsError)
+
+	var units []cq.KnowledgeUnit
+	require.NoError(t, json.Unmarshal([]byte(queryResp.Content[0].(mcp.TextContent).Text), &units))
+	require.Len(t, units, 2)
 }
 
 // TestE2EPatternBoost verifies that the MCP query tool threads the pattern filter through to
