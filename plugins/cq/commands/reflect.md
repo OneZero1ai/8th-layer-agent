@@ -75,31 +75,41 @@ If a hard finding cannot be coherently sanitized, the candidate fails Step 2's g
 
 #### Auto-propose phase (Step 3a — silent)
 
-Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch`** ONCE with that list. The `propose_batch` tool stores all candidates in one MCP round-trip and returns one combined response, capping the harness's tool-call echo at a single tool invocation regardless of candidate count.
+Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch_file`** ONCE with the absolute path to a JSON file holding that list. `propose_batch_file` stores all candidates in one MCP round-trip and returns one combined response — same as `propose_batch`, but the bulky candidate payload lives on disk so the harness's echo of the tool call stays at ~250B regardless of candidate count.
 
-```
-propose_batch(
-  candidates=[
-    {summary: ..., detail: ..., action: ..., domains: [...], languages?, frameworks?, pattern?},
-    ...
-  ]
-)
-```
+Procedure for Step 3a:
+
+1. Choose an absolute temp-file path under `$XDG_CACHE_HOME/cq/` (fallback `~/.cache/cq/`). Use a millisecond-resolution timestamp: `reflect-<ts>.json`.
+2. Ensure the parent directory exists (create it if not — the cache root is per-user and may be empty on a fresh box).
+3. Write the candidate list to that file as a JSON array — same per-candidate shape `propose_batch` accepts:
+   ```json
+   [
+     {"summary": "...", "detail": "...", "action": "...", "domains": ["..."], "languages": ["..."], "frameworks": ["..."], "pattern": "..."},
+     ...
+   ]
+   ```
+   `languages`, `frameworks`, and `pattern` are optional — omit when not relevant.
+4. Call `propose_batch_file(candidates_path: "<that absolute path>")`.
+5. After the response returns, best-effort remove the temp file. It is the skill's lifecycle to manage — the server does not clean up. (The cache directory is OS-managed, so a missed remove is harmless.)
 
 Use the per-candidate `propose` tool only for hard findings (Step 5), where each candidate needs human judgment and earns its own tool call.
 
-The batch response shape:
+The `propose_batch_file` response is the **compact** shape (no per-stored `summary` or `tier` — the skill already has summaries locally from Step 2, and tier is uniform):
 
 ```json
 {
-  "stored": [{"index": 0, "id": "ku_...", "summary": "...", "tier": "private"}, ...],
-  "errors": [{"index": 2, "summary": "...", "error": "..."}]
+  "stored": [{"index": 0, "id": "ku_..."}, ...],
+  "errors": [{"index": 2, "summary": "...", "error": "..."}],
+  "local_fallback_count": 0,
+  "local_fallback_reason": ""
 }
 ```
 
-`index` is the candidate's original position in the input list. Carry the `clean`/`soft` classification per index from Step 2.5 so Step 6 can render the correct provenance annotation against each stored ID.
+`index` is the candidate's original position in the file's array. Carry the `clean`/`soft` classification per index from Step 2.5 so Step 6 can render the correct provenance annotation against each stored ID, AND keep the original candidate list in local memory so Step 6 can look summaries up by `stored[i].index`.
 
-If `candidates` is empty (no clean or soft candidates this session), skip the `propose_batch` call entirely.
+If the candidate list is empty (no clean or soft candidates this session), skip Step 3a entirely — do not write a temp file and do not call the tool.
+
+**Alternative (inline mode).** `propose_batch(candidates: [...])` is still available for callers that prefer not to manage temp-file lifecycle — same per-candidate behavior, but the full candidate list is echoed in the tool-call argument. File mode (`propose_batch_file`) is preferred for `/cq:reflect` because the input echo dominates operator-visible output at typical candidate counts.
 
 Soft concerns are not lost — they are listed in the Step 6 final summary so the operator can see what flags were raised.
 
@@ -212,7 +222,7 @@ IDs stored this session:
 
 Always show the `{total} candidates identified.` line. Omit any line whose count is zero. Omit any VIBE√ findings bullet whose category has no entries.
 
-Render the `IDs stored this session` list by combining the `propose_batch` response (auto-stored clean+soft candidates) with the per-candidate `propose` results from Step 5 (hard findings). For each entry in the batch response's `stored` array, look up the original `clean` or `soft` classification by `index` and use it as the bracketed annotation. If the batch response includes any `errors` entries, list them as a final bullet:
+Render the `IDs stored this session` list by combining the `propose_batch_file` response (auto-stored clean+soft candidates) with the per-candidate `propose` results from Step 5 (hard findings). The batch response is the compact shape — `stored[i]` carries only `index` and `id`, NOT `summary`. Look the summary up in the **local candidate list** (the same list the skill wrote to the temp file in Step 3a) keyed by `stored[i].index`, and look up the `clean`/`soft` classification the same way. If the batch response includes any `errors` entries (these DO carry `summary` because they never went through the local-list pipeline), list them as a final bullet:
 
 ```
 Errors during batch store:
