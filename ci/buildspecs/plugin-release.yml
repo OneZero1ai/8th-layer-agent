@@ -1,0 +1,147 @@
+version: 0.2
+
+# Build + publish the cq plugin tarball (`8l-cq-plugin.tar.gz`) as a
+# GitHub Release on OneZero1ai/8th-layer-agent. Consumed by the unified
+# bootstrapper at https://get.8th-layer.ai/setup.sh
+# (OneZero1ai/8th-layer-installer).
+#
+# Project: cq-plugin-release (account 124074140789, us-east-1).
+# Trigger: a `plugin/v*` tag push, via the 8th-layer-github CodeConnections
+# webhook. Manual:
+#   aws codebuild start-build --project-name cq-plugin-release \
+#     --source-version plugin/vX.Y.Z --profile 8th-layer-app --region us-east-1
+#
+# Tarball layout (consumed verbatim by cq_install):
+#   plugins/cq/           - the plugin
+#   scripts/install/      - the cq_install Python package
+#
+# Excludes (so the tarball stays small + reproducible):
+#   .venv/ .pytest_cache/ __pycache__/ node_modules/ .ruff_cache/ tests/
+#   *.pyc
+#
+# The bootstrapper extracts to ~/.local/share/8th-layer/8l-cq (POSIX) /
+# %LOCALAPPDATA%\8th-layer\8l-cq (Windows), then runs:
+#   CQ_INSTALL_PLUGIN_ROOT=<extract>/plugins/cq \
+#     uv run --directory <extract>/scripts/install \
+#     python -m cq_install install --target <host> [--global|--project ...]
+#
+# Closes #369.
+
+env:
+  variables:
+    TARBALL_NAME: 8l-cq-plugin.tar.gz
+  secrets-manager:
+    # PAT with `contents:write` scope on OneZero1ai/8th-layer-agent.
+    # Created via: gh auth token  (or a fine-grained PAT) + stored in
+    # account 124074140789 us-east-1 as `github/release-publisher-pat`.
+    GH_TOKEN: github/release-publisher-pat:token
+
+phases:
+  install:
+    commands:
+      # gh CLI ships with the standard CodeBuild image; verify version.
+      - gh --version
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        REF="${CODEBUILD_WEBHOOK_TRIGGER:-}"
+        case "$REF" in
+          tag/plugin/v*) TAG="${REF#tag/}" ;;
+          *)
+            SV="${CODEBUILD_SOURCE_VERSION:-}"
+            case "$SV" in
+              *plugin/v*) TAG="plugin/v${SV##*plugin/v}" ;;
+              *) echo "ERROR: not a plugin/v* tag build (trigger='$REF' source='$SV')"; exit 1 ;;
+            esac
+            ;;
+        esac
+        echo "Releasing plugin tag $TAG"
+        echo "export TAG=$TAG" > /tmp/release.env
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/release.env
+
+        STAGE="${CODEBUILD_SRC_DIR}/_stage"
+        rm -rf "$STAGE"
+        mkdir -p "$STAGE"
+
+        # Stage plugin + install package; strip dev-only artifacts.
+        rsync -a \
+          --exclude='.venv' --exclude='.pytest_cache' --exclude='__pycache__' \
+          --exclude='node_modules' --exclude='.ruff_cache' --exclude='*.pyc' \
+          plugins/cq "$STAGE/plugins/"
+
+        rsync -a \
+          --exclude='.venv' --exclude='.pytest_cache' --exclude='__pycache__' \
+          --exclude='node_modules' --exclude='.ruff_cache' --exclude='*.pyc' \
+          --exclude='tests' \
+          scripts/install "$STAGE/scripts/"
+
+        OUT="${CODEBUILD_SRC_DIR}/_dist"
+        mkdir -p "$OUT"
+        ( cd "$STAGE" && tar -czf "$OUT/$TARBALL_NAME" plugins scripts )
+
+        # Reproducibility verification: extract + smoke-test before we publish.
+        VERIFY="${CODEBUILD_SRC_DIR}/_verify"
+        mkdir -p "$VERIFY"
+        tar -xzf "$OUT/$TARBALL_NAME" -C "$VERIFY"
+        test -d "$VERIFY/plugins/cq"
+        test -d "$VERIFY/scripts/install"
+        test -f "$VERIFY/scripts/install/pyproject.toml"
+
+        # Hash for the release notes.
+        cd "$OUT"
+        sha256sum "$TARBALL_NAME" | tee "$TARBALL_NAME.sha256"
+
+        ls -lh "$OUT"
+
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        source /tmp/release.env
+
+        OUT="${CODEBUILD_SRC_DIR}/_dist"
+        SHA="$(awk '{print $1}' "$OUT/$TARBALL_NAME.sha256")"
+        COMMIT_SHA="$(git rev-parse --short HEAD)"
+
+        NOTES_FILE=/tmp/release-notes.md
+        cat > "$NOTES_FILE" <<NOTES
+        Auto-published by \`cq-plugin-release\` CodeBuild (commit \`$COMMIT_SHA\`).
+
+        Consumed by https://get.8th-layer.ai/setup.sh — see [\`OneZero1ai/8th-layer-installer\`](https://github.com/OneZero1ai/8th-layer-installer).
+
+        ## SHA256
+
+        \`\`\`
+        $SHA  $TARBALL_NAME
+        \`\`\`
+
+        ## Tarball layout
+
+        - \`plugins/cq/\` — the plugin
+        - \`scripts/install/\` — \`cq_install\` Python package (entry point: \`python -m cq_install\`)
+        NOTES
+
+        export GH_TOKEN
+        # Idempotent: if the release already exists (manual create + re-run),
+        # upload the asset under --clobber so the rebuilt tarball wins.
+        if gh release view "$TAG" --repo OneZero1ai/8th-layer-agent >/dev/null 2>&1; then
+          gh release upload "$TAG" "$OUT/$TARBALL_NAME" \
+            --repo OneZero1ai/8th-layer-agent --clobber
+        else
+          gh release create "$TAG" "$OUT/$TARBALL_NAME" \
+            --repo OneZero1ai/8th-layer-agent \
+            --title "cq plugin ${TAG#plugin/}" \
+            --notes-file "$NOTES_FILE"
+        fi
+
+artifacts:
+  files:
+    - _dist/8l-cq-plugin.tar.gz
+    - _dist/8l-cq-plugin.tar.gz.sha256
+  discard-paths: yes

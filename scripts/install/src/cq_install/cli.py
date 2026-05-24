@@ -82,14 +82,33 @@ def _print_results(host_name: str, results: list[ChangeResult]) -> None:
 def _resolve_plugin_root() -> Path:
     override = os.environ.get("CQ_INSTALL_PLUGIN_ROOT")
     if override:
-        return Path(override).resolve()
-    # scripts/install/src/cq_install/cli.py
-    #   parents[0] = cq_install/
-    #   parents[1] = src/
-    #   parents[2] = install/
-    #   parents[3] = scripts/
-    #   parents[4] = repo root
-    return (Path(__file__).resolve().parents[4] / "plugins" / "cq").resolve()
+        resolved = Path(override).resolve()
+        if not resolved.is_dir():
+            raise SystemExit(
+                f"CQ_INSTALL_PLUGIN_ROOT={override!r} does not point at a "
+                f"directory (resolved to {resolved}). When installing from a "
+                f"release tarball, set CQ_INSTALL_PLUGIN_ROOT to "
+                f"<extract-dir>/plugins/cq."
+            )
+        return resolved
+    # Source-tree fallback. Walks up to:
+    #   scripts/install/src/cq_install/cli.py
+    #     parents[0] = cq_install/
+    #     parents[1] = src/
+    #     parents[2] = install/
+    #     parents[3] = scripts/
+    #     parents[4] = repo root
+    # If you're running from an UNPACKED RELEASE TARBALL (where the path
+    # above won't exist), set CQ_INSTALL_PLUGIN_ROOT explicitly.
+    fallback = (Path(__file__).resolve().parents[4] / "plugins" / "cq").resolve()
+    if not fallback.is_dir():
+        raise SystemExit(
+            f"Could not locate plugins/cq directory. The source-tree fallback "
+            f"({fallback}) does not exist, and CQ_INSTALL_PLUGIN_ROOT was not "
+            f"set. When invoked from an unpacked release tarball, set "
+            f"CQ_INSTALL_PLUGIN_ROOT=<extract-dir>/plugins/cq."
+        )
+    return fallback
 
 
 def _resolve_target(host: HostDef, args: argparse.Namespace) -> Path:
