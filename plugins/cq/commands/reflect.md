@@ -7,9 +7,21 @@ description: Mine the current session for knowledge worth sharing — identify l
 
 Retrospectively mine this session for shareable knowledge units and submit approved candidates to cq.
 
+## Output discipline
+
+`/cq:reflect` is mostly silent. Only **three** things ever produce operator-visible pane text:
+
+1. **One status line at start** — `Reflecting…` (or equivalent). One line, no narrative.
+2. **Step 3b hard-finding presentations** — ONLY when `hard_count > 0`. Skip entirely when zero.
+3. **Step 6 final summary** — counts + stored IDs. The canonical end-of-reflect output.
+
+Steps 1, 2, 2.5, 3a, 4, 5 produce **zero pane output**. The session summary (Step 1), candidate identification (Step 2), VIBE√ classification (Step 2.5), auto-propose call (Step 3a), edits (Step 4), and human-reviewed propose calls (Step 5) all run in agent internal reasoning — they do not emit narrative, candidate listings, intermediate "Stored: …" lines, or "VIBE√ findings: …" preambles to the pane. All of that information surfaces in the Step 6 summary instead.
+
+A `/cq:reflect` invocation with zero hard findings should produce exactly two pane outputs: the opening status line and the Step 6 summary. Anything more is a regression — the skill's signal-to-noise ratio degrades the operator experience and the issue is reproducible across sessions.
+
 ## Instructions
 
-### Step 1 — Summarize the session context
+### Step 1 — Summarize the session context (internal reasoning, no pane output)
 
 Construct a compact session summary covering:
 
@@ -23,7 +35,7 @@ Construct a compact session summary covering:
 
 The summary should be dense prose — enough for a reader with no prior context to reconstruct the session's technical events. Omit routine file edits, standard library calls, and anything already well-documented.
 
-### Step 2 — Identify candidate knowledge units
+### Step 2 — Identify candidate knowledge units (internal reasoning, no pane output)
 
 Reflection is agent-led — there is no MCP tool for this step. Using your own reasoning, scan the session for insights worth sharing.
 
@@ -63,7 +75,7 @@ For each candidate, assign:
 
 If the session contained no events meeting the above criteria, skip Steps 3–5 and follow the "no candidates" instruction in Step 6.
 
-### Step 2.5 — Run the VIBE√ safety check on each candidate
+### Step 2.5 — Run the VIBE√ safety check on each candidate (internal reasoning, no pane output)
 
 Apply the VIBE√ safety check as defined in the cq skill against every candidate from Step 2. Classify each finding as clean, soft-concern, or hard-finding. For hard findings, generate the sanitized rewrite covering every `propose` field that could carry the violating content (`summary`, `detail`, `action`, `domains`, `languages`, `frameworks`, `pattern`). Record the classification per candidate — Steps 3 and 6 use these results for presentation and the final summary.
 
@@ -73,7 +85,9 @@ If a hard finding cannot be coherently sanitized, the candidate fails Step 2's g
 
 **Default policy (changed 2026-05-06):** clean + soft-concern candidates are auto-proposed without inline review. Only **hard-finding** candidates are presented for human judgment. This minimizes interruption when the session has nothing risky to surface, while preserving operator oversight on the candidates that actually need it.
 
-#### Auto-propose phase (Step 3a — silent)
+**Branching rule (#373):** `if hard_count == 0`, skip the entire Step 3b presentation block — go straight to Step 6 after Step 3a completes. The skill must NOT emit a "0 hard findings" sentence, a "presenting candidates" preamble, or any other narrative when hard_count is zero. Only when hard_count >= 1 does Step 3b produce pane output.
+
+#### Auto-propose phase (Step 3a — silent: no pane output)
 
 Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch_file`** ONCE with the absolute path to a JSON file holding that list. `propose_batch_file` stores all candidates in one MCP round-trip and returns one combined response — same as `propose_batch`, but the bulky candidate payload lives on disk so the harness's echo of the tool call stays at ~250B regardless of candidate count.
 
@@ -115,11 +129,11 @@ Soft concerns are not lost — they are listed in the Step 6 final summary so th
 
 Do NOT auto-propose hard findings, even with sanitization. Hard findings always require human judgment because the sanitized rewrite may have stripped content the operator cares about, or the operator may want to escalate the finding rather than store either form.
 
-#### Present-hard-only phase (Step 3b)
+#### Present-hard-only phase (Step 3b — pane output only when hard_count >= 1)
 
-If there are zero hard findings, skip presentation entirely — go straight to Step 6.
+**Hard branch.** This block runs ONLY when `hard_count >= 1`. When `hard_count == 0`, this entire phase produces zero pane output — including the opening "cq auto-stored …" line below. The auto-stored count surfaces in the Step 6 summary instead.
 
-If there are one or more hard findings, open with:
+When `hard_count >= 1`, open with:
 
 ```
 cq auto-stored {clean+soft} candidate(s) from this session ({clean} clean, {soft} with soft concerns — see summary below).
@@ -172,11 +186,13 @@ Hard findings presented inline are evaluated *only* against this session's runni
 ⚠ Reply to capture these — pending L2-queued review (#103), unanswered hard findings end with the session.
 ```
 
-### Step 4 — Handle edits (hard findings only)
+### Step 4 — Handle edits (hard findings only; only reachable when hard_count >= 1)
 
-If the user requests an edit on a hard-finding candidate, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing.
+If the user requests an edit on a hard-finding candidate, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing. This step is unreachable when `hard_count == 0` (Step 3b was skipped, so there's no operator-facing prompt for them to respond to).
 
-### Step 5 — Propose human-reviewed candidates
+### Step 5 — Propose human-reviewed candidates (only reachable when hard_count >= 1; no per-call pane output)
+
+This step runs for hard findings only. **Do NOT emit a `Stored: {id} — "{summary}"` line per call** — the Step 6 summary lists every stored ID at once. Per-call confirmations turn into N lines of narrative that defeats the silent-default policy.
 
 For each hard-finding candidate the operator approved, call `propose` with the chosen variant (sanitized by default; original on explicit `N original`):
 
@@ -194,13 +210,9 @@ propose(
 
 `domains`, `languages`, and `frameworks` are arrays of strings. `pattern` is a single string. Omit optional arguments entirely when not relevant.
 
-Confirm each inline after the call:
+Track each stored ID + classification in local memory so Step 6 can render the consolidated list. Do not emit a per-call confirmation to the pane.
 
-```
-Stored: {id} — "{summary}"
-```
-
-### Step 6 — Final summary
+### Step 6 — Final summary (mandatory pane output)
 
 ```
 ## Session Reflect Complete
