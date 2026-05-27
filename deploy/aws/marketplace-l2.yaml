@@ -138,14 +138,25 @@ Parameters:
 
   CqServerImage:
     Type: String
-    Default: public.ecr.aws/w2i0e4m6/cq-server:fo-2-as-1
+    Default: public.ecr.aws/w2i0e4m6/cq-server:git-cbd53533b433
     Description: |
       cq-server image tag the L2 will run. Default points at the public
       ECR mirror of OneZero1ai/8th-layer-agent main, pinned to a known-
-      good linux/amd64 build. Bump the tag here when promoting a new
-      cq-server build for marketplace deploys. Note: ":latest" is not
-      maintained as a multi-arch alias in the public ECR mirror today;
-      use an explicit tag.
+      good linux/amd64 build.
+
+      Bump 2026-05-27 from `:fo-2-as-1` (built 2026-05-12, predates
+      bootstrap_admin.py at commits aaeaf31+d865a1d) to
+      `:git-cbd53533b433` (build #21 from 2026-05-22, contains the
+      first-boot magic-link mint). Without this, customer L2s never
+      auto-mint the founder's admin invite and signup completion
+      requires manual operator intervention. See PR
+      OneZero1ai/8th-layer-core#124 for the full root-cause analysis.
+
+      Bump the tag here when promoting a new cq-server build for
+      marketplace deploys. The CodeBuild pipeline `cq-server-image`
+      pushes `:latest` and `:git-<sha12>` on every main push, but use
+      an explicit SHA tag here for reproducibility — `:latest` can
+      drift to a multi-arch manifest that breaks Fargate (amd64-only).
 
   ProvisionerExternalId:
     Type: String
