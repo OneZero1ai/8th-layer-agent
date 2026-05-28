@@ -204,6 +204,14 @@ class TestQuery:
         assert len(results) == 1
         assert results[0]["domains"] == ["databases"]
 
+    def test_knowledge_alias_returns_same_results(self, client: TestClient) -> None:
+        self._insert_unit(client, domains=["databases"])
+        resp = client.get("/knowledge", params={"domains": ["databases"]})
+        assert resp.status_code == 200
+        results = resp.json()
+        assert len(results) == 1
+        assert results[0]["domains"] == ["databases"]
+
     def test_query_returns_empty_for_no_match(self, client: TestClient) -> None:
         self._insert_unit(client, domains=["databases"])
         resp = client.get("/query", params={"domains": ["networking"]})

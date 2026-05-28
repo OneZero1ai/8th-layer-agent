@@ -98,6 +98,18 @@ Fills an obvious gap in the upstream consults surface — previously only sub-ro
 - Upstream relationship: **bucket-2 (upstream this sprint)** — clean, self-contained, well-tested. Candidate to PR back to `mozilla-ai/cq` so the fork can stop carrying it as delta. Until then, watch the upstream consults module for a parallel thread-metadata endpoint that could land with a different schema name/shape.
 - Source issue: #260.
 
+### `/api/v1/knowledge` alias for `/api/v1/query` + envelope-shape divergence note
+
+Upstream `mozilla-ai/cq` PR #372 (merged 2026-05-15) renamed the knowledge-search endpoint to `/api/v1/knowledge` and unified list responses on a `{data: [...]}` envelope. Our fork carries `/api/v1/query` (returning a bare `list[KnowledgeUnit]`) — diverged from upstream at the URL layer AND the response shape.
+
+This entry registers the divergence and adds a URL alias so upstream `cli/v0.10.0+` clients pointed at our L2 hit the same handler instead of 404'ing.
+
+- Files: `server/backend/src/cq_server/app.py` (stacked `@api_router.get("/knowledge")` decorator on `query_units`), `server/backend/tests/test_app.py` (`test_knowledge_alias_returns_same_results`).
+- Endpoint: `GET /api/v1/knowledge` — same handler as `/api/v1/query`, same response shape (bare list).
+- Upstream relationship: **HOLD + COORDINATE**. URL parity is now achieved, but response shape still differs (bare list vs upstream's `{data, count}` envelope). Adopting the envelope is a coordinated SDK + server change — both our Python and Go SDKs parse the bare array in `sdk/python/src/cq/client.py:420` and `sdk/go/remote.go:227`; flipping the server response shape without lock-step SDK bumps would silently break every plugin/v0.1.0 in the field across the 10-L2 fleet. The api-keys half of upstream #372 was already done in our fork (commit `fe91491`, `ApiKeysPublic(data=..., count=...)` in `auth.py:639`).
+- Suggested next move when we're ready to converge: ship SDKs with a backward-compat reader (try `data` field, fall back to bare array), wait for fleet plugin rebuild, then wrap the server response. Tracked at agent#377.
+- Surfaced by: cq-fanboy crosstalk thread `197ae3491e5dcebd` (2026-05-27 fresh upstream pull).
+
 ### `CQ_QUIET_LOCAL_FALLBACK` — suppress per-candidate fallback warnings in MCP propose/propose_batch
 
 The MCP `propose` and `propose_batch` handlers historically echoed a per-call / per-candidate warning string whenever the remote API was unreachable or rejected the request (e.g. invalid API key) and the unit fell back to local storage. In a typical reflect-cycle with N candidates that produced N identical warnings burying the operator pane.
