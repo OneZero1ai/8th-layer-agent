@@ -7,9 +7,21 @@ description: Mine the current session for knowledge worth sharing — identify l
 
 Retrospectively mine this session for shareable knowledge units and submit approved candidates to cq.
 
+## Output discipline
+
+`/cq:reflect` is mostly silent. Only **three** things ever produce operator-visible pane text:
+
+1. **One status line at start** — `Reflecting…` (or equivalent). One line, no narrative.
+2. **Step 3b hard-finding presentations** — ONLY when `hard_count > 0`. Skip entirely when zero.
+3. **Step 6 final summary** — counts + stored IDs. The canonical end-of-reflect output.
+
+Steps 1, 2, 2.5, 3a, 4, 5 produce **zero pane output**. The session summary (Step 1), candidate identification (Step 2), VIBE√ classification (Step 2.5), auto-propose call (Step 3a), edits (Step 4), and human-reviewed propose calls (Step 5) all run in agent internal reasoning — they do not emit narrative, candidate listings, intermediate "Stored: …" lines, or "VIBE√ findings: …" preambles to the pane. All of that information surfaces in the Step 6 summary instead.
+
+A `/cq:reflect` invocation with zero hard findings should produce exactly two pane outputs: the opening status line and the Step 6 summary. Anything more is a regression — the skill's signal-to-noise ratio degrades the operator experience and the issue is reproducible across sessions.
+
 ## Instructions
 
-### Step 1 — Summarize the session context
+### Step 1 — Summarize the session context (internal reasoning, no pane output)
 
 Construct a compact session summary covering:
 
@@ -23,7 +35,7 @@ Construct a compact session summary covering:
 
 The summary should be dense prose — enough for a reader with no prior context to reconstruct the session's technical events. Omit routine file edits, standard library calls, and anything already well-documented.
 
-### Step 2 — Identify candidate knowledge units
+### Step 2 — Identify candidate knowledge units (internal reasoning, no pane output)
 
 Reflection is agent-led — there is no MCP tool for this step. Using your own reasoning, scan the session for insights worth sharing.
 
@@ -63,7 +75,7 @@ For each candidate, assign:
 
 If the session contained no events meeting the above criteria, skip Steps 3–5 and follow the "no candidates" instruction in Step 6.
 
-### Step 2.5 — Run the VIBE√ safety check on each candidate
+### Step 2.5 — Run the VIBE√ safety check on each candidate (internal reasoning, no pane output)
 
 Apply the VIBE√ safety check as defined in the cq skill against every candidate from Step 2. Classify each finding as clean, soft-concern, or hard-finding. For hard findings, generate the sanitized rewrite covering every `propose` field that could carry the violating content (`summary`, `detail`, `action`, `domains`, `languages`, `frameworks`, `pattern`). Record the classification per candidate — Steps 3 and 6 use these results for presentation and the final summary.
 
@@ -73,43 +85,55 @@ If a hard finding cannot be coherently sanitized, the candidate fails Step 2's g
 
 **Default policy (changed 2026-05-06):** clean + soft-concern candidates are auto-proposed without inline review. Only **hard-finding** candidates are presented for human judgment. This minimizes interruption when the session has nothing risky to surface, while preserving operator oversight on the candidates that actually need it.
 
-#### Auto-propose phase (Step 3a — silent)
+**Branching rule (#373):** `if hard_count == 0`, skip the entire Step 3b presentation block — go straight to Step 6 after Step 3a completes. The skill must NOT emit a "0 hard findings" sentence, a "presenting candidates" preamble, or any other narrative when hard_count is zero. Only when hard_count >= 1 does Step 3b produce pane output.
 
-Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch`** ONCE with that list. The `propose_batch` tool stores all candidates in one MCP round-trip and returns one combined response, capping the harness's tool-call echo at a single tool invocation regardless of candidate count.
+#### Auto-propose phase (Step 3a — silent: no pane output)
 
-```
-propose_batch(
-  candidates=[
-    {summary: ..., detail: ..., action: ..., domains: [...], languages?, frameworks?, pattern?},
-    ...
-  ]
-)
-```
+Collect every candidate classified as `clean` or `soft` in Step 2.5 into a single list, then call **`propose_batch_file`** ONCE with the absolute path to a JSON file holding that list. `propose_batch_file` stores all candidates in one MCP round-trip and returns one combined response — same as `propose_batch`, but the bulky candidate payload lives on disk so the harness's echo of the tool call stays at ~250B regardless of candidate count.
+
+Procedure for Step 3a:
+
+1. Choose an absolute temp-file path under `$XDG_CACHE_HOME/cq/` (fallback `~/.cache/cq/`). Use a millisecond-resolution timestamp: `reflect-<ts>.json`.
+2. Ensure the parent directory exists (create it if not — the cache root is per-user and may be empty on a fresh box).
+3. Write the candidate list to that file as a JSON array — same per-candidate shape `propose_batch` accepts:
+   ```json
+   [
+     {"summary": "...", "detail": "...", "action": "...", "domains": ["..."], "languages": ["..."], "frameworks": ["..."], "pattern": "..."},
+     ...
+   ]
+   ```
+   `languages`, `frameworks`, and `pattern` are optional — omit when not relevant.
+4. Call `propose_batch_file(candidates_path: "<that absolute path>")`.
+5. After the response returns, best-effort remove the temp file. It is the skill's lifecycle to manage — the server does not clean up. (The cache directory is OS-managed, so a missed remove is harmless.)
 
 Use the per-candidate `propose` tool only for hard findings (Step 5), where each candidate needs human judgment and earns its own tool call.
 
-The batch response shape:
+The `propose_batch_file` response is the **compact** shape (no per-stored `summary` or `tier` — the skill already has summaries locally from Step 2, and tier is uniform):
 
 ```json
 {
-  "stored": [{"index": 0, "id": "ku_...", "summary": "...", "tier": "private"}, ...],
-  "errors": [{"index": 2, "summary": "...", "error": "..."}]
+  "stored": [{"index": 0, "id": "ku_..."}, ...],
+  "errors": [{"index": 2, "summary": "...", "error": "..."}],
+  "local_fallback_count": 0,
+  "local_fallback_reason": ""
 }
 ```
 
-`index` is the candidate's original position in the input list. Carry the `clean`/`soft` classification per index from Step 2.5 so Step 6 can render the correct provenance annotation against each stored ID.
+`index` is the candidate's original position in the file's array. Carry the `clean`/`soft` classification per index from Step 2.5 so Step 6 can render the correct provenance annotation against each stored ID, AND keep the original candidate list in local memory so Step 6 can look summaries up by `stored[i].index`.
 
-If `candidates` is empty (no clean or soft candidates this session), skip the `propose_batch` call entirely.
+If the candidate list is empty (no clean or soft candidates this session), skip Step 3a entirely — do not write a temp file and do not call the tool.
+
+**Alternative (inline mode).** `propose_batch(candidates: [...])` is still available for callers that prefer not to manage temp-file lifecycle — same per-candidate behavior, but the full candidate list is echoed in the tool-call argument. File mode (`propose_batch_file`) is preferred for `/cq:reflect` because the input echo dominates operator-visible output at typical candidate counts.
 
 Soft concerns are not lost — they are listed in the Step 6 final summary so the operator can see what flags were raised.
 
 Do NOT auto-propose hard findings, even with sanitization. Hard findings always require human judgment because the sanitized rewrite may have stripped content the operator cares about, or the operator may want to escalate the finding rather than store either form.
 
-#### Present-hard-only phase (Step 3b)
+#### Present-hard-only phase (Step 3b — pane output only when hard_count >= 1)
 
-If there are zero hard findings, skip presentation entirely — go straight to Step 6.
+**Hard branch.** This block runs ONLY when `hard_count >= 1`. When `hard_count == 0`, this entire phase produces zero pane output — including the opening "cq auto-stored …" line below. The auto-stored count surfaces in the Step 6 summary instead.
 
-If there are one or more hard findings, open with:
+When `hard_count >= 1`, open with:
 
 ```
 cq auto-stored {clean+soft} candidate(s) from this session ({clean} clean, {soft} with soft concerns — see summary below).
@@ -162,11 +186,13 @@ Hard findings presented inline are evaluated *only* against this session's runni
 ⚠ Reply to capture these — pending L2-queued review (#103), unanswered hard findings end with the session.
 ```
 
-### Step 4 — Handle edits (hard findings only)
+### Step 4 — Handle edits (hard findings only; only reachable when hard_count >= 1)
 
-If the user requests an edit on a hard-finding candidate, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing.
+If the user requests an edit on a hard-finding candidate, show the current field values and ask which field to change. Apply the changes and confirm the updated candidate before proposing. This step is unreachable when `hard_count == 0` (Step 3b was skipped, so there's no operator-facing prompt for them to respond to).
 
-### Step 5 — Propose human-reviewed candidates
+### Step 5 — Propose human-reviewed candidates (only reachable when hard_count >= 1; no per-call pane output)
+
+This step runs for hard findings only. **Do NOT emit a `Stored: {id} — "{summary}"` line per call** — the Step 6 summary lists every stored ID at once. Per-call confirmations turn into N lines of narrative that defeats the silent-default policy.
 
 For each hard-finding candidate the operator approved, call `propose` with the chosen variant (sanitized by default; original on explicit `N original`):
 
@@ -184,13 +210,9 @@ propose(
 
 `domains`, `languages`, and `frameworks` are arrays of strings. `pattern` is a single string. Omit optional arguments entirely when not relevant.
 
-Confirm each inline after the call:
+Track each stored ID + classification in local memory so Step 6 can render the consolidated list. Do not emit a per-call confirmation to the pane.
 
-```
-Stored: {id} — "{summary}"
-```
-
-### Step 6 — Final summary
+### Step 6 — Final summary (mandatory pane output)
 
 ```
 ## Session Reflect Complete
@@ -212,7 +234,7 @@ IDs stored this session:
 
 Always show the `{total} candidates identified.` line. Omit any line whose count is zero. Omit any VIBE√ findings bullet whose category has no entries.
 
-Render the `IDs stored this session` list by combining the `propose_batch` response (auto-stored clean+soft candidates) with the per-candidate `propose` results from Step 5 (hard findings). For each entry in the batch response's `stored` array, look up the original `clean` or `soft` classification by `index` and use it as the bracketed annotation. If the batch response includes any `errors` entries, list them as a final bullet:
+Render the `IDs stored this session` list by combining the `propose_batch_file` response (auto-stored clean+soft candidates) with the per-candidate `propose` results from Step 5 (hard findings). The batch response is the compact shape — `stored[i]` carries only `index` and `id`, NOT `summary`. Look the summary up in the **local candidate list** (the same list the skill wrote to the temp file in Step 3a) keyed by `stored[i].index`, and look up the `clean`/`soft` classification the same way. If the batch response includes any `errors` entries (these DO carry `summary` because they never went through the local-list pipeline), list them as a final bullet:
 
 ```
 Errors during batch store:
