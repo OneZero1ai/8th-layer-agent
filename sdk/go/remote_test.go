@@ -31,6 +31,23 @@ func TestRemoteQuery(t *testing.T) {
 	require.Equal(t, "S", units[0].Insight.Summary)
 }
 
+func TestRemoteQueryAcceptsDataEnvelope(t *testing.T) {
+	// SDK accepts the upstream `{data: [...]}` envelope shape (#377).
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{testRemoteKUJSON("ku_00000000000000000000000000000003")},
+		})
+	}))
+	defer srv.Close()
+
+	rc := newRemoteClient(srv.URL, "", 5*time.Second)
+	units := rc.query(context.Background(), QueryParams{Domains: []string{"api"}})
+	require.Len(t, units, 1)
+	require.Equal(t, "ku_00000000000000000000000000000003", units[0].ID)
+}
+
 func TestRemoteQueryWithAuth(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

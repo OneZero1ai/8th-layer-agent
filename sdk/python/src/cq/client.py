@@ -419,7 +419,13 @@ class Client:
             params["pattern"] = pattern
         resp = self._http.get("/query", params=params)
         resp.raise_for_status()
-        return [KnowledgeUnit.model_validate(item) for item in resp.json()]
+        payload = resp.json()
+        # Backward-compat reader for upstream PR #372: list endpoints may emit
+        # `{data: [...]}` (upstream cli/v0.10.0+) OR a bare array (this fork).
+        # Accept both so the SDK works against either server shape during the
+        # transition window — see #377.
+        items = payload["data"] if isinstance(payload, dict) and "data" in payload else payload
+        return [KnowledgeUnit.model_validate(item) for item in items]
 
     def _remote_propose(self, unit: KnowledgeUnit) -> KnowledgeUnit:
         """Push a unit to the remote API.
