@@ -424,7 +424,12 @@ class Client:
         # `{data: [...]}` (upstream cli/v0.10.0+) OR a bare array (this fork).
         # Accept both so the SDK works against either server shape during the
         # transition window — see #377.
-        items = payload["data"] if isinstance(payload, dict) and "data" in payload else payload
+        if isinstance(payload, dict) and "data" in payload:
+            # Server explicitly returned a `data: null` envelope — treat as
+            # empty result rather than raising an opaque iteration error.
+            items = payload["data"] or []
+        else:
+            items = payload
         return [KnowledgeUnit.model_validate(item) for item in items]
 
     def _remote_propose(self, unit: KnowledgeUnit) -> KnowledgeUnit:

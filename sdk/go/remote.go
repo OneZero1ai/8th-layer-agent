@@ -248,10 +248,21 @@ func (r *remoteClient) query(ctx context.Context, params QueryParams) []Knowledg
 		return nil
 	}
 
-	var enveloped struct {
-		Data []KnowledgeUnit `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &enveloped); err == nil && enveloped.Data != nil {
+	// Probe the shape: leading `{` means envelope, leading `[` means bare list.
+	// Doing the probe before Unmarshal avoids the trap where {"data": null}
+	// decodes cleanly into a nil slice and silently masks a server bug.
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var enveloped struct {
+			Data []KnowledgeUnit `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &enveloped); err != nil {
+			return nil
+		}
+		// {"data": null} → empty result, not a parse error.
+		if enveloped.Data == nil {
+			return []KnowledgeUnit{}
+		}
 		return enveloped.Data
 	}
 

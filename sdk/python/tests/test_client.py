@@ -370,6 +370,19 @@ class TestRemoteIntegration:
         assert result.units[0].id == "ku_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02"
         c.close()
 
+    def test_remote_query_accepts_data_null_envelope(self, tmp_path: Path, httpx_mock):
+        """`{data: null}` envelope means empty result, not an error (#377 review)."""
+        httpx_mock.add_response(
+            url=httpx.URL("http://test-remote/query", params={"domains": ["api"], "limit": "5"}),
+            json={"data": None},
+        )
+        c = Client(addr="http://test-remote", local_db_path=tmp_path / "test.db")
+        result = c.query(["api"])
+        assert result.warnings == [], f"unexpected warnings: {result.warnings}"
+        assert result.source == "remote"
+        assert result.units == []
+        c.close()
+
     def test_remote_query_sends_plural_language_and_framework_params(self, tmp_path: Path, httpx_mock):
         """Remote query sends plural 'languages'/'frameworks' keys, not singular."""
         remote_unit = {

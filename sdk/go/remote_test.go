@@ -48,6 +48,23 @@ func TestRemoteQueryAcceptsDataEnvelope(t *testing.T) {
 	require.Equal(t, "ku_00000000000000000000000000000003", units[0].ID)
 }
 
+func TestRemoteQueryAcceptsDataNullEnvelope(t *testing.T) {
+	// {"data": null} envelope means empty result, not silent nil (#377 review).
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": null}`))
+	}))
+	defer srv.Close()
+
+	rc := newRemoteClient(srv.URL, "", 5*time.Second)
+	units := rc.query(context.Background(), QueryParams{Domains: []string{"api"}})
+	// Should return an empty slice (non-nil) representing "explicit empty result"
+	// — distinguishable from `nil` which signals a transport/parse failure.
+	require.NotNil(t, units)
+	require.Empty(t, units)
+}
+
 func TestRemoteQueryWithAuth(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
