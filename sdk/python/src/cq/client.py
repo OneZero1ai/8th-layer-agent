@@ -419,7 +419,22 @@ class Client:
             params["pattern"] = pattern
         resp = self._http.get("/query", params=params)
         resp.raise_for_status()
-        return [KnowledgeUnit.model_validate(item) for item in resp.json()]
+        payload = resp.json()
+        # Backward-compat reader for upstream PR #372: list endpoints may emit
+        # `{data: [...]}` (upstream cli/v0.10.0+) OR a bare array (this fork).
+        # Accept both so the SDK works against either server shape during the
+        # transition window — see #377.
+        if isinstance(payload, dict) and "data" in payload:
+            # Server explicitly returned a `data: null` envelope — treat as
+            # empty result rather than raising an opaque iteration error.
+            # Use `is None` rather than `or []` — the latter would silently
+            # coerce schema-violating falsy values (`{}`, `0`, `""`) into an
+            # empty list instead of letting model_validate raise a catchable
+            # ValidationError that surfaces as a warning to the caller.
+            items = payload["data"] if payload["data"] is not None else []
+        else:
+            items = payload
+        return [KnowledgeUnit.model_validate(item) for item in items]
 
     def _remote_propose(self, unit: KnowledgeUnit) -> KnowledgeUnit:
         """Push a unit to the remote API.

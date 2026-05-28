@@ -239,8 +239,35 @@ func (r *remoteClient) query(ctx context.Context, params QueryParams) []Knowledg
 		return nil
 	}
 
+	// Backward-compat reader for upstream PR #372: list endpoints may emit
+	// `{data: [...]}` (upstream cli/v0.10.0+) OR a bare array (this fork).
+	// Accept both so the SDK works against either server shape during the
+	// transition window — see #377.
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil
+	}
+
+	// Probe the shape: leading `{` means envelope, leading `[` means bare list.
+	// Doing the probe before Unmarshal avoids the trap where {"data": null}
+	// decodes cleanly into a nil slice and silently masks a server bug.
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var enveloped struct {
+			Data []KnowledgeUnit `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &enveloped); err != nil {
+			return nil
+		}
+		// {"data": null} → empty result, not a parse error.
+		if enveloped.Data == nil {
+			return []KnowledgeUnit{}
+		}
+		return enveloped.Data
+	}
+
 	var units []KnowledgeUnit
-	if err := json.NewDecoder(resp.Body).Decode(&units); err != nil {
+	if err := json.Unmarshal(raw, &units); err != nil {
 		// Query degrades gracefully; log-worthy but not a hard error.
 		return nil
 	}
