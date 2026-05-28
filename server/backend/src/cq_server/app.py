@@ -1757,6 +1757,7 @@ async def query_semantic(
 
 
 @api_router.get("/query")
+@api_router.get("/knowledge")
 async def query_units(
     background_tasks: BackgroundTasks,
     domains: Annotated[list[str], Query()],
