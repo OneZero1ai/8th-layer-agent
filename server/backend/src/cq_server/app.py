@@ -1756,8 +1756,8 @@ async def query_semantic(
     return [SemanticHit(knowledge_unit=u, similarity=s) for u, s in hits]
 
 
-@api_router.get("/query")
-@api_router.get("/knowledge")
+@api_router.get("/query", operation_id="query_knowledge_units")
+@api_router.get("/knowledge", operation_id="list_knowledge_units")
 async def query_units(
     background_tasks: BackgroundTasks,
     domains: Annotated[list[str], Query()],
