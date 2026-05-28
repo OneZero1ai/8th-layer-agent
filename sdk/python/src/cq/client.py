@@ -427,7 +427,11 @@ class Client:
         if isinstance(payload, dict) and "data" in payload:
             # Server explicitly returned a `data: null` envelope — treat as
             # empty result rather than raising an opaque iteration error.
-            items = payload["data"] or []
+            # Use `is None` rather than `or []` — the latter would silently
+            # coerce schema-violating falsy values (`{}`, `0`, `""`) into an
+            # empty list instead of letting model_validate raise a catchable
+            # ValidationError that surfaces as a warning to the caller.
+            items = payload["data"] if payload["data"] is not None else []
         else:
             items = payload
         return [KnowledgeUnit.model_validate(item) for item in items]
