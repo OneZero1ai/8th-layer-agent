@@ -576,3 +576,175 @@ class TestOpenAPIVisibility:
         assert "/api/v1/admin/invites/{invite_id}" in paths
         assert "/api/v1/invites/{token}" in paths
         assert "/api/v1/invites/{token}/claim" in paths
+
+
+class TestEnsureUserTenancy:
+    """8th-layer-core#133 — invite-claimed users must inherit the L2's
+    CQ_ENTERPRISE/CQ_GROUP, not land on default-* (which caused approve to
+    404 a KU the same admin had just proposed: the write path env-rescued
+    the default row, the review path trusted it verbatim)."""
+
+    def test_pins_l2_tenancy_when_both_env_set(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from cq_server.invites import ensure_user
+
+        monkeypatch.setenv("CQ_ENTERPRISE", "acme-corp")
+        monkeypatch.setenv("CQ_GROUP", "engineering")
+        store = _get_store()
+        uid = asyncio.run(
+            ensure_user(
+                store,
+                username="founder@acme",
+                password="password123",
+                email="founder@acme",
+                role="enterprise_admin",
+            )
+        )
+        assert uid > 0
+        row = asyncio.run(store.get_user("founder@acme"))
+        assert row is not None
+        assert row["enterprise_id"] == "acme-corp"
+        assert row["group_id"] == "engineering"
+
+    def test_falls_back_to_default_when_env_partial(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from cq_server.invites import ensure_user
+
+        # Only one of the two set — a misconfiguration; must NOT half-wire.
+        monkeypatch.setenv("CQ_ENTERPRISE", "acme-corp")
+        monkeypatch.delenv("CQ_GROUP", raising=False)
+        store = _get_store()
+        asyncio.run(
+            ensure_user(
+                store,
+                username="partial@acme",
+                password="password123",
+                email="partial@acme",
+                role="enterprise_admin",
+            )
+        )
+        row = asyncio.run(store.get_user("partial@acme"))
+        assert row is not None
+        # Schema server_default — never the half-wired "acme-corp"/None.
+        assert row["enterprise_id"] == "default-enterprise"
+        assert row["group_id"] == "default-group"
+
+
+class TestProposeApproveTenancyRoundTrip:
+    """8th-layer-core#133 end-to-end. The symptom: a freshly-provisioned
+    admin could propose a KU (201) but got 404 approving it, because the
+    WRITE path (_resolve_write_tenancy) env-stamped the KU while the
+    REVIEW path (_admin_scope) used the user row's default tenancy.
+
+    test_pinned_admin_round_trips proves the fix: an admin created via
+    ensure_user with CQ_ENTERPRISE/CQ_GROUP set round-trips propose ->
+    approve (200, was 404).
+
+    test_default_tenancy_admin_reproduces_404 is the control: the pre-fix
+    shape (admin row left on default tenancy while env is set) still 404s,
+    proving this test is actually sensitive to the regression rather than
+    passing vacuously.
+    """
+
+    @staticmethod
+    def _boot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        monkeypatch.setenv("CQ_DB_PATH", str(tmp_path / "rt.db"))
+        monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
+        monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
+        monkeypatch.setenv("CQ_ENTERPRISE", "acme-corp")
+        monkeypatch.setenv("CQ_GROUP", "engineering")
+        # KU must land pending so approve is a real transition (not a no-op).
+        monkeypatch.delenv("CQ_AUTO_APPROVE_PROPOSE", raising=False)
+        return TestClient(app)
+
+    @staticmethod
+    def _login(client: TestClient, username: str, password: str) -> str:
+        r = client.post(
+            "/api/v1/auth/login",
+            json={"username": username, "password": password},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["token"]
+
+    @staticmethod
+    def _propose(client: TestClient, token: str) -> int:
+        body = {
+            "domains": ["e2e", "tenancy-roundtrip"],
+            "insight": {
+                "summary": "core#133 round-trip: a pinned admin proposes then approves its own KU.",
+                "detail": (
+                    "Proves the write path (_resolve_write_tenancy) and the review "
+                    "path (_admin_scope) resolve the same (enterprise, group) once "
+                    "the claimer's row carries the L2 tenancy."
+                ),
+                "action": "Pin CQ_ENTERPRISE/CQ_GROUP on the user row at claim time.",
+            },
+        }
+        r = client.post(
+            "/api/v1/propose",
+            headers={"Authorization": f"Bearer {token}"},
+            json=body,
+        )
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def test_pinned_admin_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from cq_server.app import _get_store
+        from cq_server.invites import ensure_user
+
+        with self._boot(tmp_path, monkeypatch) as client:
+            store = _get_store()
+            # Create the admin through the SAME path the claim flow uses —
+            # this is the function under test. role=enterprise_admin is in
+            # _ADMIN_ROLES so it passes require_admin.
+            asyncio.run(
+                ensure_user(
+                    store,
+                    username="founder@acme",
+                    password="founder-pw-123",  # pragma: allowlist secret
+                    email="founder@acme",
+                    role="enterprise_admin",
+                )
+            )
+            token = self._login(client, "founder@acme", "founder-pw-123")
+            ku_id = self._propose(client, token)
+            approve = client.post(
+                f"/api/v1/review/{ku_id}/approve",
+                headers={"Authorization": f"Bearer {token}"},
+                json={},
+            )
+            # Pre-fix this was 404 "Knowledge unit not found".
+            assert approve.status_code == 200, approve.text
+
+    def test_default_tenancy_admin_reproduces_404(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cq_server.app import _get_store
+
+        with self._boot(tmp_path, monkeypatch) as client:
+            store = _get_store()
+            # The pre-fix shape: admin row created WITHOUT tenancy (lands on
+            # default-*) even though CQ_ENTERPRISE/CQ_GROUP are set. This is
+            # exactly what ensure_user produced before #133.
+            store.sync.create_user("legacy@acme", hash_password("legacy-pw-123"))
+            store.sync.set_user_role("legacy@acme", "admin")
+            token = self._login(client, "legacy@acme", "legacy-pw-123")
+            # propose still 201 — the write path env-rescues the default row.
+            ku_id = self._propose(client, token)
+            approve = client.post(
+                f"/api/v1/review/{ku_id}/approve",
+                headers={"Authorization": f"Bearer {token}"},
+                json={},
+            )
+            # KU stamped under env tenancy, looked up under default-* -> 404.
+            assert approve.status_code == 404, approve.text
