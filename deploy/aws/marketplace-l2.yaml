@@ -138,7 +138,7 @@ Parameters:
 
   CqServerImage:
     Type: String
-    Default: public.ecr.aws/w2i0e4m6/cq-server:git-cbd53533b433
+    Default: public.ecr.aws/w2i0e4m6/cq-server:git-e9a0fe3ed2c3
     Description: |
       cq-server image tag the L2 will run. Default points at the public
       ECR mirror of OneZero1ai/8th-layer-agent main, pinned to a known-
