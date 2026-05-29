@@ -87,6 +87,13 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "arn:aws:ssm:*::parameter/aws/service/*"
+              # The EBS-on-EC2 template snapshots the L2 data volume via an
+              # AWS::DLM::LifecyclePolicy. dlm:CreateLifecyclePolicy can't be
+              # ARN-scoped at create time, so dlm is granted on "*". Without
+              # it the stack rolls back at the lifecycle-policy resource.
+              - Effect: Allow
+                Action: dlm:*
+                Resource: "*"
               # IAM scoped by name pattern. The marketplace template
               # explicitly names task roles `eighth-layer-l2-<slug>-*`
               # (the "eighth-" prefix — CFN logical/stack names must start
@@ -109,6 +116,23 @@ Resources:
                   - iam:UntagRole
                 Resource:
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/eighth-layer-l2-*"
+              # The EBS-on-EC2 host attaches its role via an
+              # AWS::IAM::InstanceProfile. Instance-profile ARNs are a
+              # SEPARATE namespace from role/ — a role-only scope denies
+              # CreateInstanceProfile/AddRoleToInstanceProfile on create and
+              # RemoveRoleFromInstanceProfile/DeleteInstanceProfile on
+              # rollback (the latter leaves the stack in ROLLBACK_FAILED).
+              - Effect: Allow
+                Action:
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:UntagInstanceProfile
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:instance-profile/eighth-layer-l2-*"
 
 Outputs:
   RoleArn:
