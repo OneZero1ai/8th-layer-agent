@@ -73,11 +73,40 @@ def test_partial_env_warns_and_defaults(
     assert any("partial env" in r.message for r in caplog.records)
 
 
-def test_configured_l2_can_never_resolve_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The agent#339 invariant: with BOTH env vars set, no input resolves to
-    # source 'default' — so a fully-configured L2 can't silently default.
+def test_partial_default_row_falls_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 8l-reviewer HIGH (PR #390): a row with ONE real field + ONE default
+    # field must NOT be returned as "row" on a configured L2 — env wins, so
+    # the literal "default-group" never reaches the write.
     monkeypatch.setenv("CQ_ENTERPRISE", "acme")
     monkeypatch.setenv("CQ_GROUP", "eng")
-    for user in (None, {}, {"enterprise_id": DEFAULT_ENTERPRISE_ID, "group_id": DEFAULT_GROUP_ID}, {"enterprise_id": "", "group_id": ""}):
-        _, _, source = resolve_tenancy(user)
+    for partial in (
+        {"enterprise_id": "acme", "group_id": DEFAULT_GROUP_ID},
+        {"enterprise_id": DEFAULT_ENTERPRISE_ID, "group_id": "eng"},
+    ):
+        ent, grp, source = resolve_tenancy(partial)
+        assert (ent, grp, source) == ("acme", "eng", "env"), (
+            f"partial-default row {partial!r} leaked a default value: {(ent, grp, source)!r}"
+        )
+
+
+def test_configured_l2_can_never_resolve_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The agent#339 invariant: with BOTH env vars set, no input resolves to
+    # source 'default' AND no returned value is default-* — so a fully-
+    # configured L2 can't silently default. Includes the partial-default rows
+    # that triggered the reviewer HIGH.
+    monkeypatch.setenv("CQ_ENTERPRISE", "acme")
+    monkeypatch.setenv("CQ_GROUP", "eng")
+    inputs = (
+        None,
+        {},
+        {"enterprise_id": DEFAULT_ENTERPRISE_ID, "group_id": DEFAULT_GROUP_ID},
+        {"enterprise_id": "", "group_id": ""},
+        {"enterprise_id": "acme", "group_id": DEFAULT_GROUP_ID},
+        {"enterprise_id": DEFAULT_ENTERPRISE_ID, "group_id": "eng"},
+    )
+    for user in inputs:
+        ent, grp, source = resolve_tenancy(user)
         assert source != "default", f"configured L2 defaulted for user={user!r}"
+        assert ent != DEFAULT_ENTERPRISE_ID and grp != DEFAULT_GROUP_ID, (
+            f"configured L2 returned a default VALUE for user={user!r}: {(ent, grp)!r}"
+        )

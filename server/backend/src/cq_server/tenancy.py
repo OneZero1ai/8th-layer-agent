@@ -49,21 +49,42 @@ def resolve_tenancy(
                          or the schema constants when the row is empty too.
 
     Runtime guard (agent#339): a *fully* configured L2 (both env vars set)
-    can NEVER resolve to ``default-*`` here — branch 2 returns env first. The
-    only way ``source == "default"`` arises with env present is a PARTIAL env
-    (one var set, the other not), which is a misconfiguration we warn on
-    loudly. Routing every write through this function therefore eliminates
-    the silent-default class; strict callers additionally reject ``source ==
-    "default"`` so a misconfigured L2 fails loud instead of mis-attributing.
+    can NEVER resolve to ``default-*`` here — neither in ``source`` NOR in the
+    returned value, because a real-or-partial-default row falls through to the
+    env branch (see the per-field real check above). The only way
+    ``source == "default"`` arises with env present is a PARTIAL env (one var
+    set, the other not), a misconfiguration we warn on loudly. Strict callers
+    additionally reject ``source == "default"`` so a misconfigured L2 fails
+    loud instead of mis-attributing.
+
+    SCOPE: routing a write through this function eliminates the silent-default
+    class FOR THAT path. As of #339 slice 1 the migrated paths are: KU propose
+    (``_resolve_write_tenancy``), agent-key mint (``_resolve_admin_tenancy``),
+    and activity-log (``log_activity``). Still carrying ad-hoc default literals
+    and tracked for migration (#339):
+      * ``consults._self_identity`` — WRITE-ADJACENT (stamps the ``from_l2_id``
+        on outbound consult envelopes); migrate together with the
+        cross-Enterprise gate at consults.py's ``self_enterprise`` compare so
+        the two stay consistent (gating is security-sensitive — do them as one
+        change, not piecemeal).
+      * cross-enterprise consents, raw api_keys, and the ``auth.scope_filter``
+        read-path.
 
     Never raises — see module docstring.
     """
     row_ent = ((user or {}).get("enterprise_id") or "").strip()
     row_grp = ((user or {}).get("group_id") or "").strip()
-    row_is_default = (
-        row_ent in ("", DEFAULT_ENTERPRISE_ID) and row_grp in ("", DEFAULT_GROUP_ID)
-    )
-    if not row_is_default and row_ent and row_grp:
+    # Per-field real check (8l-reviewer HIGH on PR #390): the row is
+    # authoritative only when BOTH fields carry a real (non-empty,
+    # non-default) value. A PARTIAL-default row — e.g. enterprise_id="acme",
+    # group_id="default-group" (bootstrap_admin.py's independent per-column
+    # `or "default-…"` fallbacks can produce these) — must NOT be returned
+    # as "row", or a configured L2 would write the literal "default-group"
+    # value (source="row" hides it) — the exact #324/#333/#335 leak with a
+    # half-default row. Such rows fall through to env below.
+    row_ent_real = bool(row_ent) and row_ent != DEFAULT_ENTERPRISE_ID
+    row_grp_real = bool(row_grp) and row_grp != DEFAULT_GROUP_ID
+    if row_ent_real and row_grp_real:
         return row_ent, row_grp, "row"
 
     env_ent = os.environ.get("CQ_ENTERPRISE", "").strip()
