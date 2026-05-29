@@ -437,7 +437,44 @@ async def ensure_user(
     existing = await store.get_user(username)
     if existing is not None:
         return int(existing["id"])
-    await store.create_user(username, hash_password(password), role=role)
+
+    # Tenancy (8th-layer-core#133): pin the L2's CQ_ENTERPRISE/CQ_GROUP
+    # onto the new user row, applying the same "pin only when BOTH set"
+    # rule bootstrap_admin uses (including the partial-config warning).
+    # Without this the invite-claimed admin landed on the schema default
+    # (default-enterprise/default-group). That default row was a latent
+    # split-brain: the WRITE path (`propose` -> `_resolve_write_tenancy`)
+    # rescues a default row by stamping KUs from env, but the REVIEW path
+    # (`approve`/`reject`/queue -> `_admin_scope`) trusts the row verbatim
+    # — so a freshly-provisioned admin could propose a KU (stamped under
+    # the env tenancy) yet get 404 trying to approve it (looked up under
+    # default-*). Pinning the row at creation makes every path agree.
+    # A partial config (one var set, the other not) is a misconfiguration
+    # — fall back to defaults rather than half-wiring, and warn so the
+    # operator notices rather than discovering it via a confused 404.
+    env_ent = os.environ.get("CQ_ENTERPRISE", "").strip()
+    env_grp = os.environ.get("CQ_GROUP", "").strip()
+    if bool(env_ent) != bool(env_grp):
+        log.warning(
+            "[INVITE_CLAIM] only one of CQ_ENTERPRISE/CQ_GROUP is set "
+            "(enterprise=%r group=%r); seeding claimer %r on the default "
+            "tenancy. Set both or neither.",
+            env_ent,
+            env_grp,
+            username,
+        )
+    enterprise_id: str | None = None
+    group_id: str | None = None
+    if env_ent and env_grp:
+        enterprise_id, group_id = env_ent, env_grp
+
+    await store.create_user(
+        username,
+        hash_password(password),
+        role=role,
+        enterprise_id=enterprise_id,
+        group_id=group_id,
+    )
     fresh = await store.get_user(username)
     if fresh is None:  # pragma: no cover — race that breaks the world
         raise RuntimeError("user creation succeeded but lookup returned None")
