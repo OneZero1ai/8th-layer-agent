@@ -6,7 +6,7 @@ Description: |
   ProvisionerExternalId parameter below MUST match.
 
   The role grants the 8th-Layer.ai provisioning service (running as
-  arn:aws:iam::124074140789:role/cq-directory-TaskRole-bSrWDXFvmr1q)
+  arn:aws:iam::929812812027:role/cq-directory-task-role)
   permission to instantiate a single CloudFormation stack — the L2
   marketplace template — in your account. AssumeRole is gated by the
   ExternalId confused-deputy protection.
@@ -34,13 +34,13 @@ Resources:
       RoleName: 8thLayerL2Provisioner
       Description: |
         8th-Layer.ai marketplace L2 deploy role. Assumed by the 8th-Layer
-        provisioning service (account 124074140789) to stand up your L2.
+        provisioning service (account 929812812027) to stand up your L2.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
-              AWS: arn:aws:iam::124074140789:role/cq-directory-TaskRole-bSrWDXFvmr1q
+              AWS: arn:aws:iam::929812812027:role/cq-directory-task-role
             Action: sts:AssumeRole
             Condition:
               StringEquals:
@@ -76,9 +76,22 @@ Resources:
                   - logs:*
                   - secretsmanager:*
                 Resource: "*"
+              # The EBS-on-EC2 L2 template resolves the ECS-optimized AMI
+              # id from AWS's PUBLIC SSM parameter
+              # (/aws/service/ecs/optimized-ami/.../image_id). Without
+              # ssm:GetParameters the CFN deploy rolls back at the EC2
+              # host launch. Scoped to AWS's public service-parameter
+              # namespace (account-less ARN) — never your own SSM params.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: "arn:aws:ssm:*::parameter/aws/service/*"
               # IAM scoped by name pattern. The marketplace template
-              # explicitly names task roles `8th-layer-l2-<slug>-task*`
-              # so this prefix is sufficient.
+              # explicitly names task roles `eighth-layer-l2-<slug>-*`
+              # (the "eighth-" prefix — CFN logical/stack names must start
+              # with a letter, not "8"). This MUST match the actual role
+              # names or iam:CreateRole is denied and the stack rolls back.
               - Effect: Allow
                 Action:
                   - iam:CreateRole
@@ -95,7 +108,7 @@ Resources:
                   - iam:TagRole
                   - iam:UntagRole
                 Resource:
-                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/8th-layer-l2-*"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/eighth-layer-l2-*"
 
 Outputs:
   RoleArn:
