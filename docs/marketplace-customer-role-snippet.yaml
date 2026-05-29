@@ -13,14 +13,18 @@ Description: |
 
   The trust policy is the security boundary. The permissions block is
   scoped to exactly what the L2 marketplace template creates: VPC +
-  networking, ECS + Fargate, EFS, ALB, IAM (for the L2's task roles),
-  CloudWatch Logs, and Secrets Manager.
+  networking, ECS-on-EC2 (EC2 launch type — a single EC2 container
+  host, no Fargate), a persistent EBS data volume + DLM snapshot
+  policy, ALB, IAM (the L2's task/instance/dlm roles + instance
+  profile), the public-SSM AMI lookup, CloudWatch Logs, and Secrets
+  Manager.
 
 Parameters:
   ProvisionerExternalId:
     Type: String
     NoEcho: true
     MinLength: 22
+    MaxLength: 1224  # AWS sts:ExternalId hard limit
     Description: >
       Paste the same value you set as "ExternalId" in the sign-up
       wizard. The wizard's Generate UUID button produces a value of
@@ -54,15 +58,26 @@ Resources:
           # the marketplace template creates. We previously enumerated
           # every action, but the enumeration is a maintenance trap —
           # !GetAtt-style resolutions can call non-obvious describe APIs
-          # (e.g. EFS::FileSystem.Arn calls
-          # elasticfilesystem:DescribeFileSystemPolicy, not just
-          # DescribeFileSystems) and every miss is a rollback. The
-          # service prefixes here all correspond to resource types
-          # present in the marketplace template — nothing broader.
+          # (e.g. an ALB's .Arn resolves elasticloadbalancing:Describe* you
+          # didn't list), and every miss is a rollback. The service
+          # prefixes here all correspond to resource types present in the
+          # marketplace template — nothing broader.
           #
-          # IAM is the one exception: scoped to role/8th-layer-l2-* so
-          # the role can ONLY manage roles we explicitly name with this
-          # prefix in the marketplace template.
+          # IAM is the one exception: scoped by NAME PREFIX to
+          # eighth-layer-l2-*. Note the template does NOT set an explicit
+          # RoleName/InstanceProfileName on its IAM resources — CFN
+          # auto-generates physical names as <StackName>-<LogicalId>-<hash>,
+          # and the provisioning service names the stack
+          # `eighth-layer-l2-<slug>` (see _assume_role_session_policy in
+          # 8th-layer-directory). So every auto-generated role/instance-
+          # profile name BEGINS WITH `eighth-layer-l2-`, which is exactly
+          # what this prefix matches. (Checking the template for a literal
+          # RoleName: eighth-layer-l2-* will find none — the match is via
+          # the stack-name prefix, not an explicit name. The directory's
+          # session policy uses the identical scope; both are proven by the
+          # tier-create-and-use live E2E.) If this scope ever stops matching
+          # the auto-generated names, iam:CreateRole is denied and the stack
+          # rolls back.
           # ---------------------------------------------------------------
           PolicyDocument:
             Version: "2012-10-17"
@@ -72,7 +87,6 @@ Resources:
                   - ec2:*
                   - ecs:*
                   - elasticloadbalancing:*
-                  - elasticfilesystem:*
                   - logs:*
                   - secretsmanager:*
                 Resource: "*"
@@ -94,17 +108,16 @@ Resources:
               - Effect: Allow
                 Action: dlm:*
                 Resource: "*"
-              # IAM scoped by name pattern. The marketplace template
-              # explicitly names task roles `eighth-layer-l2-<slug>-*`
-              # (the "eighth-" prefix — CFN logical/stack names must start
-              # with a letter, not "8"). This MUST match the actual role
-              # names or iam:CreateRole is denied and the stack rolls back.
+              # IAM role lifecycle, scoped to the eighth-layer-l2-* name
+              # prefix (see the prefix-matching note above — the names are
+              # CFN-auto-generated from the stack name, not explicit). Note
+              # iam:PassRole is intentionally NOT in this statement; it gets
+              # its own PassedToService-conditioned statement below.
               - Effect: Allow
                 Action:
                   - iam:CreateRole
                   - iam:DeleteRole
                   - iam:GetRole
-                  - iam:PassRole
                   - iam:AttachRolePolicy
                   - iam:DetachRolePolicy
                   - iam:PutRolePolicy
@@ -116,6 +129,28 @@ Resources:
                   - iam:UntagRole
                 Resource:
                   - !Sub "arn:aws:iam::${AWS::AccountId}:role/eighth-layer-l2-*"
+              # iam:PassRole, separated so it can carry an
+              # iam:PassedToService guard. Without the condition, CreateRole
+              # + PutRolePolicy + PassRole on the same prefix lets the
+              # provisioner craft and pass an arbitrarily-privileged role to
+              # ANY service principal — a cross-service privilege-escalation
+              # surface on the one role billed as the security boundary. The
+              # three services below are EXACTLY the principals the L2
+              # template's roles trust (TaskRole/TaskExecutionRole ->
+              # ecs-tasks, InstanceRole -> ec2, DlmRole -> dlm), verified
+              # against deploy/aws/marketplace-l2.yaml — so this is tight,
+              # not merely defensive, and cannot deny a legitimate deploy.
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/eighth-layer-l2-*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - ecs-tasks.amazonaws.com
+                      - ec2.amazonaws.com
+                      - dlm.amazonaws.com
               # The EBS-on-EC2 host attaches its role via an
               # AWS::IAM::InstanceProfile. Instance-profile ARNs are a
               # SEPARATE namespace from role/ — a role-only scope denies
