@@ -32,8 +32,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from . import aigrp
 from .activity import EVENT_TYPES, generate_activity_id, now_iso_z
+from .tenancy import resolve_tenancy
 
 if TYPE_CHECKING:
     from .store._sqlite import SqliteStore
@@ -98,29 +98,25 @@ async def log_activity(
         tenant_enterprise: str
         tenant_group: str | None
         persona: str | None
+        # agent#335 — resolve tenancy through the single resolver (agent#339)
+        # so a default-* user row on a CONFIGURED L2 stamps the env tenancy
+        # instead of the literal "default-enterprise". The old code did
+        # ``user.get("enterprise_id") or aigrp.enterprise()`` — but a
+        # "default-enterprise" row value is TRUTHY, so the ``or`` never
+        # consulted env and the audit row drifted to default-* even though
+        # the KU row (which already used the resolver) was stamped correctly.
         if username is None:
-            tenant_enterprise = aigrp.enterprise()
-            tenant_group = aigrp.group()
-            persona = None
+            ent, grp, _ = resolve_tenancy(None, context="activity_log")
+            tenant_enterprise, tenant_group, persona = ent, grp, None
         else:
+            # ``user`` may be None (deletion race between auth and this
+            # background task) — resolve_tenancy(None) then falls to env,
+            # same as the system-event path. ``persona`` is still the
+            # username the auth layer accepted.
             user = await store.get_user(username)
-            if user is None:
-                # The user row vanished between the auth check and the
-                # background-task run (deletion race). Fall back to
-                # this L2's own identity so the event is still
-                # recorded; persona is the username string the auth
-                # layer accepted.
-                tenant_enterprise = aigrp.enterprise()
-                tenant_group = aigrp.group()
-                persona = username
-            else:
-                tenant_enterprise = str(user.get("enterprise_id") or aigrp.enterprise())
-                # ``group_id`` is column-NOT-NULL on the users table per
-                # migration 0001_phase6_step1, but defensive cast keeps
-                # the helper safe if a future schema makes it nullable.
-                grp = user.get("group_id")
-                tenant_group = str(grp) if grp is not None else None
-                persona = username
+            ent, grp, _ = resolve_tenancy(user, context="activity_log")
+            tenant_enterprise, tenant_group = ent, grp
+            persona = username
 
         await store.append_activity(
             activity_id=generate_activity_id(),

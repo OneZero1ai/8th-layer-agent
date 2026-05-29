@@ -367,3 +367,47 @@ class TestActivityLogFailureNeverBreaksResponse:
             assert all(r["event_type"] != "propose" for r in rows)
         finally:
             monkeypatch.setattr(store, "append_activity", original)
+
+
+# ---------------------------------------------------------------------------
+# agent#335 — activity_log tenancy must follow the configured-L2 env, not a
+# default-* user row (the bug: a "default-enterprise" row value is truthy, so
+# `user.get("enterprise_id") or aigrp.enterprise()` never consulted env).
+# ---------------------------------------------------------------------------
+
+
+def test_activity_log_uses_env_tenancy_for_default_row_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cq_server.tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
+
+    db_path = tmp_path / "activity_env.db"
+    monkeypatch.setenv("CQ_DB_PATH", str(db_path))
+    monkeypatch.setenv("CQ_JWT_SECRET", "test-secret-thirty-two-chars-min!")
+    monkeypatch.setenv("CQ_API_KEY_PEPPER", "test-pepper")
+    # Configured L2 — but the user row carries the schema defaults (the
+    # #324/#333 pre-pin shape). Pre-fix the audit row drifted to default-*.
+    monkeypatch.setenv("CQ_ENTERPRISE", "s3-dirk")
+    monkeypatch.setenv("CQ_GROUP", "default")
+
+    with TestClient(app) as client:
+        _seed_user(
+            username="dirk@s3",
+            password="password123",  # pragma: allowlist secret
+            enterprise_id=DEFAULT_ENTERPRISE_ID,
+            group_id=DEFAULT_GROUP_ID,
+        )
+        jwt = _login_jwt(client, "dirk@s3", "password123")
+        api_key = _mint_api_key(client, jwt)
+        _propose_one(client, api_key)
+
+    rows = _activity_rows(db_path)
+    propose_rows = [r for r in rows if r["event_type"] == "propose"]
+    assert propose_rows, f"no propose activity row; saw {[r['event_type'] for r in rows]}"
+    row = propose_rows[0]
+    # The fix: env tenancy, NOT the literal default the row carried.
+    assert row["tenant_enterprise"] == "s3-dirk", (
+        f"activity_log tenant_enterprise={row['tenant_enterprise']!r} — expected the "
+        f"configured env 's3-dirk', not the default-* row value (agent#335 regression)"
+    )
+    assert row["tenant_enterprise"] != DEFAULT_ENTERPRISE_ID
