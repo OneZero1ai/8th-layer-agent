@@ -60,7 +60,8 @@ def resolve_tenancy(
     SCOPE: routing a write through this function eliminates the silent-default
     class FOR THAT path. As of #339 slice 1 the migrated paths are: KU propose
     (``_resolve_write_tenancy``), agent-key mint (``_resolve_admin_tenancy``),
-    and activity-log (``log_activity``). Still carrying ad-hoc default literals
+    and activity-log (``log_activity`` — see the #335 fix narrative in
+    ``activity_logger.py``'s tenancy block). Still carrying ad-hoc default literals
     and tracked for migration (#339):
       * ``consults._self_identity`` — WRITE-ADJACENT (stamps the ``from_l2_id``
         on outbound consult envelopes); migrate together with the
