@@ -36,7 +36,7 @@ from .api_keys import encode_token, generate_secret, hash_secret, secret_prefix
 from .auth import ApiKeyPublic, _to_public, hash_password, require_admin
 from .deps import get_api_key_pepper, get_store
 from .store._sqlite import SqliteStore
-from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
+from .tenancy import resolve_tenancy
 from .ttl import parse_ttl
 
 log = logging.getLogger(__name__)
@@ -143,8 +143,11 @@ async def _resolve_admin_tenancy(store: SqliteStore, admin: str) -> tuple[str, s
     convention the rest of cq-server uses (see ``auth.scope_filter``).
     """
     admin_user = await store.get_user(admin)
-    enterprise_id = (admin_user or {}).get("enterprise_id") or DEFAULT_ENTERPRISE_ID
-    group_id = (admin_user or {}).get("group_id") or DEFAULT_GROUP_ID
+    # agent#339 — resolve through the single resolver so a minted agent
+    # inherits the L2's env tenancy even when the admin row carries the
+    # schema defaults (the #324/#333 class). A bare ``row or DEFAULT`` here
+    # would land the agent on default-* on a configured L2, the same bug.
+    enterprise_id, group_id, _ = resolve_tenancy(admin_user, context="agent_key_mint")
     return enterprise_id, group_id
 
 

@@ -52,7 +52,7 @@ from .review import router as review_router
 from .scoring import apply_confirmation, apply_flag
 from .store import normalize_domains
 from .store._sqlite import SqliteStore
-from .tables import DEFAULT_ENTERPRISE_ID, DEFAULT_GROUP_ID
+from .tenancy import resolve_tenancy
 from .theme_routes import router as theme_router
 from .tour_routes import router as tour_router
 from .transactional import transactional_router
@@ -1839,38 +1839,27 @@ def _resolve_write_tenancy(user: dict) -> tuple[str, str]:
     is missing the tenancy columns entirely (empty strings) — the
     legacy 500 branch in ``propose_unit`` still catches that.
     """
-    row_ent = (user.get("enterprise_id") or "").strip()
-    row_grp = (user.get("group_id") or "").strip()
-    # Treat the row as authoritative unless it carries the
-    # schema-level defaults — in which case the env is the
-    # tie-breaker so a configured L2 never silently writes into
-    # default-*.
-    row_is_default = row_ent in ("", DEFAULT_ENTERPRISE_ID) and row_grp in ("", DEFAULT_GROUP_ID)
-    if not row_is_default and row_ent and row_grp:
-        return row_ent, row_grp
-
-    env_ent = os.environ.get("CQ_ENTERPRISE", "").strip()
-    env_grp = os.environ.get("CQ_GROUP", "").strip()
-    if env_ent and env_grp:
-        return env_ent, env_grp
-
-    # Row is default and env is unset (or partial). On an
-    # unconfigured-but-functional dev L2 the row will carry the
-    # defaults non-empty — fall back to those rather than 400, so the
-    # local-dev workflow keeps working.
-    if row_ent and row_grp:
-        return row_ent, row_grp
-
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "L2 tenancy not configured: the authenticated user has no "
-            "enterprise/group tenancy on its row and CQ_ENTERPRISE / "
-            "CQ_GROUP are not set on this L2. Set both env vars on the "
-            "task definition and restart, or remint the agent key on a "
-            "configured-tenancy admin."
-        ),
-    )
+    # Delegate to the single resolver (agent#339). /propose is a STRICT
+    # caller: it rejects when resolution falls all the way to "default" AND
+    # the row carried no tenancy at all (the truly-unconfigured case) — a
+    # silent default-* KU write is the exact bug this guards. A fully
+    # default-but-populated row (unconfigured dev L2) keeps working.
+    ent, grp, source = resolve_tenancy(user, context="propose")
+    if source == "default":
+        row_ent = (user.get("enterprise_id") or "").strip()
+        row_grp = (user.get("group_id") or "").strip()
+        if not (row_ent and row_grp):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "L2 tenancy not configured: the authenticated user has no "
+                    "enterprise/group tenancy on its row and CQ_ENTERPRISE / "
+                    "CQ_GROUP are not set on this L2. Set both env vars on the "
+                    "task definition and restart, or remint the agent key on a "
+                    "configured-tenancy admin."
+                ),
+            )
+    return ent, grp
 
 
 @api_router.post("/propose", status_code=201)
