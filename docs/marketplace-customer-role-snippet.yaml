@@ -101,6 +101,34 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "arn:aws:ssm:*::parameter/aws/service/*"
+              # The provisioning service SEEDS, and the L2 task READS, per-L2
+              # secrets stored under THIS account's own SSM namespace
+              # /8th-layer/l2/<slug>/<group>/* — currently tx_send_key (the
+              # central-mail HMAC secret, Decision 34) and, for Quick-enabled
+              # Enterprises, liaison_key. Without ssm write+read here the
+              # provision session's seed step fails with AccessDenied and the L2
+              # ECS task can never fetch its secret — the stack then hangs at
+              # L2_STANDUP with no CFN failure event. The per-provision session
+              # policy narrows this to the one slug being provisioned; the role
+              # itself allows the whole namespace because it is reused across
+              # provisions. SecureString ⇒ kms (next statement) is also required.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:AddTagsToResource
+                Resource: !Sub "arn:aws:ssm:*:${AWS::AccountId}:parameter/8th-layer/l2/*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    kms:ViaService: "ssm.*.amazonaws.com"
               # The EBS-on-EC2 template snapshots the L2 data volume via an
               # AWS::DLM::LifecyclePolicy. dlm:CreateLifecyclePolicy can't be
               # ARN-scoped at create time, so dlm is granted on "*". Without
