@@ -141,11 +141,25 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/*"
+              # ECR Public (the V1 default image location) ...
               - Effect: Allow
                 Action:
                   - ecr-public:GetAuthorizationToken
                   - sts:GetServiceBearerToken
                 Resource: "*"
+              # ... and private ECR (same-account image, e.g. a test/private
+              # registry or an enterprise mirror). GetAuthorizationToken needs
+              # Resource "*"; the layer/image reads are scoped to this account's
+              # registry.
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*"
 
   # ── The Liaison Server on AgentCore Runtime ───────────────────────────────
   LiaisonRuntime:
