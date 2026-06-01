@@ -379,6 +379,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # Idempotent: skipped when any non-system user already exists.
     from .bootstrap_admin import (
         bootstrap_first_admin_if_needed,
+        bootstrap_liaison_key_if_needed,
         bootstrap_password_admin_if_needed,
     )
 
@@ -403,6 +404,21 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
         _logging.getLogger("bootstrap_admin").exception(
             "bootstrap_password_admin_if_needed raised; continuing without password admin"
+        )
+
+    # Decision 42 / W2 — Quick-enablement. On a first boot with
+    # CQ_INITIAL_LIAISON_KEY set (the provisioning worker seeds the same
+    # cqa.v1.* token here and into the co-deployed Liaison Server), insert it
+    # as a full-capability agent key so the LS can authenticate to this L2
+    # without an admin principal (which does not exist at cold boot in the
+    # founder path). Idempotent + NOT mutually exclusive with the admin paths.
+    try:
+        await bootstrap_liaison_key_if_needed(_store)
+    except Exception:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger("bootstrap_admin").exception(
+            "bootstrap_liaison_key_if_needed raised; continuing without liaison key"
         )
 
     # Provisioning crash recovery moved to 8th-layer-directory per
