@@ -459,6 +459,23 @@ Resources:
                 Condition:
                   StringEquals:
                     "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com"
+        # decision 42 — when Quick-enabled, ECS must ALSO read the liaison_key
+        # SSM param at task start to inject CQ_INITIAL_LIAISON_KEY. The KMS
+        # decrypt is already covered by the kms:ViaService=ssm statement above;
+        # only the ssm:GetParameters grant on the liaison_key path is needed.
+        # Gated on MountLiaisonKey so non-Quick L2s never carry the grant (and
+        # so the task doesn't fail to start on a missing-param/AccessDenied —
+        # the exact failure the M1 live run caught).
+        - !If
+          - MountLiaisonKey
+          - PolicyName: LiaisonKeySsmReadAtStart
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: [ssm:GetParameters]
+                  Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/8th-layer/l2/${EnterpriseSlug}/${CqGroupId}/liaison_key"
+          - !Ref "AWS::NoValue"
 
   TaskRole:
     Type: AWS::IAM::Role
