@@ -20,11 +20,13 @@ The flow this enables (P2 demo path):
   1. Founder fills wizard, hits Provision.
   2. Provisioning service stands up the L2.
   3. THIS HOOK on first boot: creates 'system' user (no password / no
-     passkey — never logs in), mints invite for AdminEmail, logs
-     ``[BOOTSTRAP_ADMIN] magic_link=https://<slug>.8th-layer.ai/invite/<token>``.
-  4. Operator copies that URL from CloudWatch and emails it (or
-     in-process the wizard could surface it directly on the
-     "you're done" screen — that's a follow-up).
+     passkey — never logs in), mints invite for AdminEmail, and logs ONLY
+     that an invite was minted (invite_id + expiry) — NOT the token
+     (security audit 2026-06-01: the magic-link embeds a founder-identity
+     bearer; CloudWatch read is too broad an audience for it).
+  4. The link is delivered to the founder by email (provisioning phase 5,
+     SES) and surfaced on the wizard "you're done" screen (job result
+     magic_link_url). It is no longer recoverable from CloudWatch.
   5. Founder clicks → /invite/<token> → registers passkey → lands
      in admin UI → goes to Invites tab → sends teammate #2 invite.
 
@@ -97,7 +99,7 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
         return
 
     try:
-        invite, token = mint_invite(
+        invite, _token = mint_invite(  # _token: link delivered via email/wizard, never logged
             store,
             email=admin_email,
             role="enterprise_admin",
@@ -109,19 +111,20 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
         log.exception("bootstrap_first_admin: mint_invite failed for %s", admin_email)
         return
 
-    public_url_base = os.environ.get("CQ_PUBLIC_BASE_URL", "").rstrip("/")
-    if public_url_base:
-        magic_link = f"{public_url_base}/invite/{token}"
-    else:
-        magic_link = f"/invite/{token}  (set CQ_PUBLIC_BASE_URL to surface the absolute URL)"
-
-    # Bracketed sentinel makes it greppable in CloudWatch Logs Insights.
+    # SECURITY (audit 2026-06-01): do NOT log the full magic-link — its URL embeds
+    # a single-use bearer token that grants the founder identity for the invite
+    # TTL (7d), and CloudWatch read is a much broader audience than the founder.
+    # The link is now delivered to the founder via email (provisioning phase 5,
+    # SES) and surfaced on the wizard done-screen (job result magic_link_url), so
+    # the CloudWatch copy was pure exposure with no remaining delivery role. We
+    # log only that an invite was minted (greppable sentinel + invite_id), never
+    # the token.
     log.warning(
-        "[BOOTSTRAP_ADMIN] First-admin invite minted for %s (invite_id=%d, expires=%s). magic_link=%s",
+        "[BOOTSTRAP_ADMIN] First-admin invite minted for %s (invite_id=%d, expires=%s) — "
+        "magic-link delivered via email + wizard done-screen; token NOT logged.",
         admin_email,
         invite.id,
         invite.expires_at,
-        magic_link,
     )
 
 
