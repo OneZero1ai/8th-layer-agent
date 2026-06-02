@@ -99,7 +99,7 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
         return
 
     try:
-        invite, _token = mint_invite(  # _token: link delivered via email/wizard, never logged
+        invite, _token = mint_invite(  # _token: link delivered via SSM handoff (below), never logged
             store,
             email=admin_email,
             role="enterprise_admin",
@@ -111,21 +111,70 @@ async def bootstrap_first_admin_if_needed(store: SqliteStore) -> None:
         log.exception("bootstrap_first_admin: mint_invite failed for %s", admin_email)
         return
 
-    # SECURITY (audit 2026-06-01): do NOT log the full magic-link — its URL embeds
-    # a single-use bearer token that grants the founder identity for the invite
-    # TTL (7d), and CloudWatch read is a much broader audience than the founder.
-    # The link is now delivered to the founder via email (provisioning phase 5,
-    # SES) and surfaced on the wizard done-screen (job result magic_link_url), so
-    # the CloudWatch copy was pure exposure with no remaining delivery role. We
-    # log only that an invite was minted (greppable sentinel + invite_id), never
-    # the token.
+    # Hand the magic-link to the provisioning worker via SSM (the same
+    # access-controlled channel that already carries tx_send_key). The
+    # 2026-06-01 audit removed the token from CloudWatch logs (correctly — it was
+    # plaintext to a broad audience), but the worker's phase-5 ONLY knew how to
+    # get the token by scraping that log line, so removing it silently broke
+    # delivery: every cold provision came back COMPLETED_DEGRADED with an empty
+    # magic_link. SSM is the fix — encrypted at rest (SecureString), IAM-scoped to
+    # the same /8th-layer/l2/<slug>/* path, read-and-deleted by the worker.
+    _write_bootstrap_link_to_ssm(_token)
+
+    # SECURITY (audit 2026-06-01): never log the token itself — log only the
+    # greppable sentinel + invite_id so operators can confirm a bootstrap fired.
     log.warning(
         "[BOOTSTRAP_ADMIN] First-admin invite minted for %s (invite_id=%d, expires=%s) — "
-        "magic-link delivered via email + wizard done-screen; token NOT logged.",
+        "magic-link handed to provisioning via SSM; token NOT logged.",
         admin_email,
         invite.id,
         invite.expires_at,
     )
+
+
+# Worker reads this SSM parameter in phase 5 (then deletes it). Path mirrors the
+# tx_send_key convention so the same IAM scope (/8th-layer/l2/<slug>/*) covers it.
+_BOOTSTRAP_LINK_SSM_SUFFIX = "bootstrap_admin_link"
+
+
+def _write_bootstrap_link_to_ssm(token: str) -> None:
+    """Write the founder's magic-link PATH (/invite/<token>) to SSM for the
+    provisioning worker to pick up and email + return on the done-screen.
+
+    We write only the PATH, not an absolute URL — the worker prepends the L2's
+    own edge host (l2_admin_url), which is the authoritative, edge-mode-aware
+    base (route53 `.enterprise.8th-layer.ai` vs the legacy host). SecureString so
+    the bearer token is encrypted at rest. Best-effort: a failure here must NOT
+    fail boot — the link is still claimable from the admin UI, and the worker
+    degrades gracefully if the parameter is absent.
+    """
+    slug = (os.environ.get("CQ_L2_SLUG") or os.environ.get("CQ_ENTERPRISE") or "").strip()
+    group = (os.environ.get("CQ_GROUP") or "default").strip()
+    if not slug:
+        log.warning(
+            "[BOOTSTRAP_ADMIN] neither CQ_L2_SLUG nor CQ_ENTERPRISE set — "
+            "cannot hand bootstrap link to provisioning via SSM"
+        )
+        return
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    param = f"/8th-layer/l2/{slug}/{group}/{_BOOTSTRAP_LINK_SSM_SUFFIX}"
+    try:
+        import boto3  # lazy — boot path, avoid a hard import at module load
+
+        ssm = boto3.client("ssm", region_name=region) if region else boto3.client("ssm")
+        ssm.put_parameter(
+            Name=param,
+            Value=f"/invite/{token}",
+            Type="SecureString",
+            Overwrite=True,
+        )
+        log.warning(
+            "[BOOTSTRAP_ADMIN] bootstrap link handed to provisioning via SSM %s "
+            "(worker reads + deletes it)",
+            param,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[BOOTSTRAP_ADMIN] failed to write bootstrap link to SSM %s", param)
 
 
 _DEFAULT_ADMIN_USERNAME = "admin"
