@@ -827,6 +827,11 @@ Resources:
           Environment:
             - { Name: CQ_PORT, Value: "3000" }
             - { Name: CQ_DB_PATH, Value: /data/cq.db }
+            # boto3 region resolution: ECS-on-EC2 gives the task CREDENTIALS via
+            # IMDS but NOT a region for client construction, so `boto3.client(...)`
+            # with no region raises NoRegionError. The bootstrap-admin SSM write
+            # (and any other in-task boto3 use) needs this set explicitly.
+            - { Name: AWS_REGION, Value: !Ref "AWS::Region" }
             # agent#303 — CQ_ENTERPRISE / CQ_GROUP drive tenancy stamping
             # (tenant_enterprise / tenant_group on activity_log, KUs, agents).
             # CQ_ENTERPRISE must be the *parent Enterprise* id, which for an
