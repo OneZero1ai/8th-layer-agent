@@ -518,6 +518,26 @@ Resources:
                 Condition:
                   StringEquals:
                     "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com"
+        # First-boot bootstrap-admin writes the founder magic-link to SSM as a
+        # SecureString for the provisioning worker to pick up + delete (replaces
+        # the CloudWatch-log delivery removed in the 2026-06-01 audit, which had
+        # silently broken every cold provision's invite). Scoped to the single
+        # bootstrap_admin_link parameter under this L2's own slug namespace; plus
+        # the kms encrypt path a SecureString write requires (ViaService-fenced
+        # to SSM, mirroring the decrypt grant above).
+        - PolicyName: BootstrapLinkWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ssm:PutParameter]
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/8th-layer/l2/${EnterpriseSlug}/${CqGroupId}/bootstrap_admin_link"
+              - Effect: Allow
+                Action: [kms:Encrypt, kms:GenerateDataKey]
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com"
         - PolicyName: SecretsReadRuntime
           PolicyDocument:
             Version: "2012-10-17"
@@ -810,6 +830,12 @@ Resources:
             - Name: CQ_ENTERPRISE
               Value: !If [HasCqEnterpriseId, !Ref CqEnterpriseId, !Ref EnterpriseSlug]
             - { Name: CQ_GROUP, Value: !Ref CqGroupId }
+            # The L2's OWN slug (always EnterpriseSlug, even for an additional-L2
+            # where CQ_ENTERPRISE is the parent id). The first-boot bootstrap-admin
+            # writes the founder magic-link to SSM under this slug, and the path
+            # MUST match the BootstrapLinkWrite IAM scope (which uses EnterpriseSlug)
+            # and the customer-side SSM convention the worker reads.
+            - { Name: CQ_L2_SLUG, Value: !Ref EnterpriseSlug }
             - { Name: CQ_DIRECTORY_URL, Value: !Ref DirectoryUrl }
             - { Name: CQ_ENTERPRISE_ROOT_PUBKEY, Value: !Ref RootPubkeyB64u }
             - { Name: CQ_DIRECTORY_ENABLED, Value: "true" }
