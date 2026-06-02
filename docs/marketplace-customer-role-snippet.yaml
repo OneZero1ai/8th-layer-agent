@@ -136,6 +136,17 @@ Resources:
               - Effect: Allow
                 Action: dlm:*
                 Resource: "*"
+              # Decision 43 (AWS-native L2 edge): when the provisioning service
+              # runs in route53 edge-mode, the L2 terminates its OWN TLS — it
+              # requests an ACM cert for <slug>.enterprise.8th-layer.ai IN THIS
+              # account, polls for DNS-validation + ISSUED, attaches it to the
+              # ALB HTTPS:443 listener, and deletes it on teardown. ACM cert ARNs
+              # aren't knowable at RequestCertificate time, so acm can't be
+              # ARN-scoped — granted on "*", same pattern as dlm. Unused (harmless)
+              # while the service runs in the legacy cloudflare edge-mode.
+              - Effect: Allow
+                Action: acm:*
+                Resource: "*"
               # IAM role lifecycle, scoped to the eighth-layer-l2-* name
               # prefix (see the prefix-matching note above — the names are
               # CFN-auto-generated from the stack name, not explicit). Note
