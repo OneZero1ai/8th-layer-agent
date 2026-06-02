@@ -231,6 +231,14 @@ Parameters:
       is created. See docs/ops/l2-substrate-recovery.md for the full
       procedure.
 
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: |
+      ACM certificate ARN for this L2's <slug>.8th-layer.ai HTTPS:443
+      listener (Decision 43). Empty = HTTP:80 only (Cloudflare-fronted,
+      legacy).
+
   LiaisonKeySsmPath:
     Type: String
     Default: ""
@@ -258,6 +266,8 @@ Conditions:
   # decision 42 — only mount CQ_INITIAL_LIAISON_KEY when the worker passed an
   # SSM path (Quick-enabled provision). Keeps non-Quick L2 updates clean.
   MountLiaisonKey: !Not [!Equals [!Ref LiaisonKeySsmPath, ""]]
+  # Decision 43 — optional ALB TLS termination when provisioning passes an ACM cert.
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
 
 Resources:
   # =====================================================================
@@ -920,6 +930,20 @@ Resources:
       LoadBalancerArn: !Ref Alb
       Port: 80
       Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
