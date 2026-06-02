@@ -138,11 +138,17 @@ Parameters:
 
   CqServerImage:
     Type: String
-    Default: public.ecr.aws/w2i0e4m6/cq-server:git-b6d4c8747790
+    Default: public.ecr.aws/w2i0e4m6/cq-server:git-d93d080aeaf0
     Description: |
       cq-server image tag the L2 will run. Default points at the public
       ECR mirror of OneZero1ai/8th-layer-agent main, pinned to a known-
       good linux/amd64 build.
+
+      Bump 2026-06-02 to `:git-d93d080aeaf0` — the first build carrying the
+      SSM bootstrap-link handoff (PR #394): the L2 writes the founder
+      magic-link to SSM for the worker to read, replacing the CloudWatch-log
+      delivery a 2026-06-01 audit removed (which had silently broken every
+      cold provision's invite). Without this image the magic_link is empty.
 
       Bump 2026-05-27 from `:fo-2-as-1` (built 2026-05-12, predates
       bootstrap_admin.py at commits aaeaf31+d865a1d) to
