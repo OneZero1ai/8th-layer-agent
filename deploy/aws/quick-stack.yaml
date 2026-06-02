@@ -175,12 +175,16 @@ Resources:
         NetworkMode: PUBLIC
       ProtocolConfiguration: MCP
       EnvironmentVariables:
-        L2_BASE_URL: !Sub "https://${L2DirectOrigin}"
+        # The marketplace L2 ALB serves HTTP/80 only — TLS is terminated by
+        # Cloudflare in front of it (443 is reserved/unbound in v1, no ACM cert
+        # on the ALB). So the co-located LS reaches the L2 at its DIRECT ALB
+        # origin over HTTP, exactly as Cloudflare reaches the origin (decision 42,
+        # W1 corrected by the M1 live run: there is no TLS to the raw ALB, so no
+        # SNI/cert handling is needed — the earlier https+SNI design was moot).
+        L2_BASE_URL: !Sub "http://${L2DirectOrigin}"
         L2_AUTH_MODE: "bearer"
         L2_AUTH_TOKEN: !Ref L2AuthToken
-        # The ALB cert is for *.8th-layer.ai, not the raw ALB DNS, so a direct
-        # https call to L2DirectOrigin needs SNI/Host=<slug>.8th-layer.ai and
-        # cert handling on the LS side (decision 42, wrinkle W1).
+        # Host header the cq-server sees (matches what it gets via Cloudflare).
         L2_TLS_SERVER_NAME: !Sub "${EnterpriseSlug}.8th-layer.ai"
         AWS_REGION: !Ref AWS::Region
       AuthorizerConfiguration:
