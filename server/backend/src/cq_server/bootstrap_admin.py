@@ -151,16 +151,29 @@ def _write_bootstrap_link_to_ssm(token: str) -> None:
     slug = (os.environ.get("CQ_L2_SLUG") or os.environ.get("CQ_ENTERPRISE") or "").strip()
     group = (os.environ.get("CQ_GROUP") or "default").strip()
     if not slug:
-        log.warning(
-            "[BOOTSTRAP_ADMIN] neither CQ_L2_SLUG nor CQ_ENTERPRISE set — "
-            "cannot hand bootstrap link to provisioning via SSM"
+        # Distinct, greppable sentinel (8l-reviewer): CQ_L2_SLUG is set by the
+        # CFN template, so missing-here means a systemically misconfigured task
+        # def — surface it in the L2 log audit rather than degrading silently to
+        # the exact "empty magic_link" failure this code exists to kill.
+        log.error(
+            "[BOOTSTRAP_ADMIN_SSM_FATAL] CQ_L2_SLUG/CQ_ENTERPRISE both empty — "
+            "cannot hand bootstrap link to provisioning; the cold provision WILL "
+            "return degraded (empty magic_link)"
         )
         return
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     param = f"/8th-layer/l2/{slug}/{group}/{_BOOTSTRAP_LINK_SSM_SUFFIX}"
     try:
         import boto3  # lazy — boot path, avoid a hard import at module load
-
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:
+        log.error(
+            "[BOOTSTRAP_ADMIN_SSM_FATAL] boto3 unavailable — cannot hand bootstrap "
+            "link to provisioning via SSM %s (provision will return degraded)",
+            param,
+        )
+        return
+    try:
         ssm = boto3.client("ssm", region_name=region) if region else boto3.client("ssm")
         ssm.put_parameter(
             Name=param,
@@ -173,8 +186,15 @@ def _write_bootstrap_link_to_ssm(token: str) -> None:
             "(worker reads + deletes it)",
             param,
         )
-    except Exception:  # noqa: BLE001
-        log.exception("[BOOTSTRAP_ADMIN] failed to write bootstrap link to SSM %s", param)
+    except (BotoCoreError, ClientError):
+        # Only AWS-call failures are swallowed (best-effort — the link is still
+        # claimable from the admin UI). A genuine code bug here (AttributeError,
+        # etc.) propagates to the boot wrapper instead of hiding as a degrade.
+        log.exception(
+            "[BOOTSTRAP_ADMIN_SSM_FATAL] failed to write bootstrap link to SSM %s "
+            "(provision will return degraded)",
+            param,
+        )
 
 
 _DEFAULT_ADMIN_USERNAME = "admin"
