@@ -101,6 +101,34 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: "arn:aws:ssm:*::parameter/aws/service/*"
+              # The provisioning service SEEDS, and the L2 task READS, per-L2
+              # secrets stored under THIS account's own SSM namespace
+              # /8th-layer/l2/<slug>/<group>/* — currently tx_send_key (the
+              # central-mail HMAC secret, Decision 34) and, for Quick-enabled
+              # Enterprises, liaison_key. Without ssm write+read here the
+              # provision session's seed step fails with AccessDenied and the L2
+              # ECS task can never fetch its secret — the stack then hangs at
+              # L2_STANDUP with no CFN failure event. The per-provision session
+              # policy narrows this to the one slug being provisioned; the role
+              # itself allows the whole namespace because it is reused across
+              # provisions. SecureString ⇒ kms (next statement) is also required.
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:AddTagsToResource
+                Resource: !Sub "arn:aws:ssm:*:${AWS::AccountId}:parameter/8th-layer/l2/*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    kms:ViaService: "ssm.*.amazonaws.com"
               # The EBS-on-EC2 template snapshots the L2 data volume via an
               # AWS::DLM::LifecyclePolicy. dlm:CreateLifecyclePolicy can't be
               # ARN-scoped at create time, so dlm is granted on "*". Without
@@ -168,6 +196,46 @@ Resources:
                   - iam:UntagInstanceProfile
                 Resource:
                   - !Sub "arn:aws:iam::${AWS::AccountId}:instance-profile/eighth-layer-l2-*"
+              # Quick-enablement (decision 42): for a Quick-enabled cold
+              # provision the service ALSO deploys the quick-stack (Liaison
+              # Server on Bedrock AgentCore + Cognito client-credentials OAuth)
+              # into this account, in a separate `eighth-layer-quick-<slug>`
+              # stack. CloudFormation itself is covered by the
+              # AWSCloudFormationFullAccess managed policy above; these are the
+              # resource-create actions that aren't, plus the Liaison exec role
+              # the quick-stack creates and passes to the AgentCore runtime.
+              # Without these a Quick-enabled provision fails at phase 6 (the
+              # L2 still stands up; phase 6 degrades to COMPLETED_DEGRADED).
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:*
+                  - cognito-idp:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/8l-liaison-exec-*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/8l-liaison-exec-*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - bedrock-agentcore.amazonaws.com
 
 Outputs:
   RoleArn:
