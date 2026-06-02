@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field, field_validator
 from .auth import _get_jwt_secret, require_admin
 from .deps import get_store
 from .email_sender import EmailSender, MockEmailSender
+from .directory_client import directory_enabled, schedule_funnel_event
 from .invites import (
     Invite,
     InviteRole,
@@ -438,6 +439,8 @@ async def claim_invite_route(
         assignment = await store.get_persona_assignment(canonical_username)
         if assignment is not None and assignment.get("disabled_at") is not None:
             raise HTTPException(status_code=403, detail="user is disabled")
+        if metadata.role in ("enterprise_admin", "l2_admin") and directory_enabled():
+            schedule_funnel_event("admin_claimed")
         # FO-1c: set the session cookie + return the bearer in the body.
         # The HTML claim page navigates to "/" after this; the browser
         # sends the cookie along, so the user lands authenticated.

@@ -74,8 +74,10 @@ __all__ = [
     "directory_bootstrap_and_loop",
     "directory_enabled",
     "directory_url",
+    "emit_funnel_event",
     "publish_reputation_root",
     "reputation_publish_loop",
+    "schedule_funnel_event",
     "fingerprint_sha256",
     "load_private_key",
     "now_iso",
@@ -91,6 +93,11 @@ if not log.handlers:
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     log.addHandler(_h)
+
+# Set after a successful first_ku_proposed emit in-process so subsequent
+# proposes skip the directory round-trip. The directory is idempotent;
+# this is a cheap local guard only.
+_first_ku_funnel_emitted = False
 
 # Public directory base URL. Override in tests via env.
 DEFAULT_DIRECTORY_URL = "https://directory.8th-layer.ai"
@@ -143,6 +150,87 @@ def pull_interval_sec() -> int:
 
 def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def emit_funnel_event(event: str, *, enterprise_id: str | None = None) -> None:
+    """Best-effort POST of one cold-start funnel signal to the directory.
+
+    Uses the same Ed25519 signed-envelope auth as ``/announce`` and
+    ``/reputation/root``. Never raises — callers treat this as fire-and-forget.
+    """
+    if not directory_enabled():
+        return
+
+    ent = enterprise_id or os.environ.get("CQ_ENTERPRISE", "")
+    if not ent:
+        log.debug("directory: funnel emit skipped — CQ_ENTERPRISE unset")
+        return
+
+    privkey_path = os.environ.get("CQ_ENTERPRISE_ROOT_PRIVKEY_PATH", "")
+    if not privkey_path:
+        log.debug("directory: funnel emit skipped — CQ_ENTERPRISE_ROOT_PRIVKEY_PATH unset")
+        return
+
+    try:
+        privkey = load_private_key(Path(privkey_path))
+    except (FileNotFoundError, ValueError) as e:
+        log.warning("directory: funnel emit — cannot load privkey path=%s err=%s", privkey_path, e)
+        return
+
+    payload = {
+        "enterprise_id": ent,
+        "event": event,
+        "ts": now_iso(),
+    }
+    envelope = sign_envelope(privkey, payload)
+    url = f"{directory_url()}/api/v1/directory/enterprises/{ent}/funnel"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=envelope, timeout=10.0)
+    except httpx.RequestError as e:
+        log.warning("directory: funnel emit failed (network) event=%s err=%s", event, e)
+        return
+
+    if r.status_code in (200, 201):
+        log.info(
+            "directory: funnel emit ok enterprise=%s event=%s status=%d",
+            ent,
+            event,
+            r.status_code,
+        )
+        if event == "first_ku_proposed":
+            global _first_ku_funnel_emitted  # noqa: PLW0603 — module-level guard
+            _first_ku_funnel_emitted = True
+        return
+
+    log.warning(
+        "directory: funnel emit rejected enterprise=%s event=%s status=%d body=%s",
+        ent,
+        event,
+        r.status_code,
+        r.text[:200],
+    )
+
+
+def schedule_funnel_event(event: str, *, enterprise_id: str | None = None) -> None:
+    """Fire-and-forget wrapper for :func:`emit_funnel_event`.
+
+    Safe to call from request handlers; never blocks or raises.
+    """
+    if not directory_enabled():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(emit_funnel_event(event, enterprise_id=enterprise_id))
+
+
+def should_emit_first_ku_proposed(*, ku_count_in_enterprise: int) -> bool:
+    """Return True when this propose should emit ``first_ku_proposed``."""
+    if _first_ku_funnel_emitted:
+        return False
+    return ku_count_in_enterprise == 1
 
 
 # ---------------------------------------------------------------------------

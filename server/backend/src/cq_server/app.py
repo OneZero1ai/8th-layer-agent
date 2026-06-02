@@ -37,6 +37,7 @@ from .consults import router as consults_router
 from .crosstalk_routes import router as crosstalk_router
 from .db_url import resolve_sqlite_db_path
 from .deps import API_KEY_PEPPER_ENV
+from .directory_client import directory_enabled, schedule_funnel_event, should_emit_first_ku_proposed
 from .embed import compose_text, embed_text
 from .embed import model_id as embed_model_id
 from .invite_routes import router as invite_router
@@ -2004,6 +2005,10 @@ async def propose_unit(
             # Race against an unexpected delete; the propose response
             # itself already returned 201, so this is best-effort.
             pass
+
+    ku_count = await store.count_in_enterprise(enterprise_id)
+    if directory_enabled() and should_emit_first_ku_proposed(ku_count_in_enterprise=ku_count):
+        schedule_funnel_event("first_ku_proposed", enterprise_id=enterprise_id)
 
     return unit
 
